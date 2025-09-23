@@ -4,6 +4,9 @@ use core::fmt::Arguments;
 use spin::Mutex;
 use lazy_static::lazy_static;
 /*
+ * Created by Oskar Przybylski
+ * 22/09/2025
+ *
  * Vga buffer has typically two dimensional array
  * with size of 25 rows and 80 columns which is directly
  * rendered to the screen.
@@ -61,7 +64,7 @@ impl ColorCode{
     // handy abstraction for making colors without
     // dealing with manual bytes making
     fn new(foreground: Color, background: Color) -> Self{
-        Self((background as u8) << 4 | (foreground as u8))
+        Self((background as u8) << 4 | (foreground as u8) )
     }
 
     // returns background color of ColorCode
@@ -182,7 +185,11 @@ impl VgaWriter {
    // writes single ascii byte to the buffer
    fn write_byte(&mut self, byte: u8) {
         match byte {
-            _byte if self.column_position >= VGA_BUFFER_WIDTH => self.new_line(),
+
+            byte if self.column_position == VGA_BUFFER_WIDTH-1 => {
+                self.new_line();
+                self.write_byte(byte);
+            },
 
             _ => {
                 let row = self.row_position;
@@ -201,23 +208,28 @@ impl VgaWriter {
         }
    }
 
-   pub fn clear(&mut self) {
-       self.column_position = 0;
-       self.row_position = 0;
-       for _ in 0..VGA_BUFFER_HEIGHT{
-            for _ in 0..VGA_BUFFER_WIDTH{
-                self.write_byte(0 as u8);
-            }
+   fn new_line(&mut self){
+       if self.row_position + 1>= VGA_BUFFER_HEIGHT {
+           self.shift_up();
+       }else{
+           self.row_position += 1;
        }
        self.column_position = 0;
-       self.row_position = 0;
    }
 
-   fn new_line(&mut self){
-       self.row_position    += 1;
-       self.column_position = 0;
+   pub fn shift_up(&mut self){
+       for row in 1..VGA_BUFFER_HEIGHT{
+           self.buffer.chars[row-1] = self.buffer.chars[row];
+       }
+
+       self.buffer.chars[VGA_BUFFER_HEIGHT-1]
+           .fill(ScreenChar {
+               ascii_char_code: b' ',
+               color_code: self.color_code
+           });
    }
 }
+
 
 impl core::fmt::Write for VgaWriter{
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
@@ -227,9 +239,9 @@ impl core::fmt::Write for VgaWriter{
 }
 
 // static instance of VgaWriter
-// to access use vga::WRITER.lock()
+// to access use vga::VGAWRITER.lock()
 lazy_static! {
-    pub static ref WRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
+    pub static ref VGAWRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
 }
 
 #[macro_export]
@@ -246,5 +258,5 @@ macro_rules! vgaprintln {
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
     use core::fmt::Write;
-    WRITER.lock().write_fmt(args).unwrap();
+    VGAWRITER.lock().write_fmt(args).unwrap();
 }
