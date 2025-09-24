@@ -19,6 +19,15 @@ pub extern "C" fn _start() -> ! {
     interrupts::exceptions::init_idt();
     interrupts::gdt::init_gdt();
 
+unsafe {
+    core::arch::asm!(
+        "xor rdx, rdx",        // wysokie bity dividend = 0
+        "mov rax, 1",
+        "xor rbx, rbx",        // rbx = 0 -> dzielenie przez 0
+        "div rbx",
+        options(nomem, nostack)
+    );
+}
     loop{}
 }
 

@@ -1,5 +1,7 @@
+use core::sync::atomic::{AtomicU8, Ordering};
+
 use lazy_static::lazy_static;
-use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use x86_64::{instructions::hlt, registers::control::Cr2, structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode}};
 
 use crate::{drivers::vga::{Color, VGAWRITER}, interrupts::gdt::DOUBLE_FAULT_IST_INDEX, vgaprint, vgaprintln};
 
@@ -13,22 +15,22 @@ use crate::{drivers::vga::{Color, VGAWRITER}, interrupts::gdt::DOUBLE_FAULT_IST_
  * (Note: Some of the exceptions push Error code (32 bit in real mode, 64 bit in long mode)
  *  to the stack, this value MUST be pulled from the stack before returning)
  * Each exception has a predefined IDT index as following:
- *  Name                    IDT index   Type        Mnemonic    Error code?
- *  Division Error              0  (0x0)     Fault       #DE         No
+ *  Name                    IDT index   Type        Mnemonic    Error code?         Implemented
+ *  Division Error              0  (0x0)     Fault       #DE         No             Yes
  *  Debug                       1  (0x1)     Fault/Trap  #DB         No
  *  Non-maskable Interrupt      2  (0x2)     Interrupt   -           No
- *  Breakpoint                  3  (0x3)     Trap        #BP         No
+ *  Breakpoint                  3  (0x3)     Trap        #BP         No             Yes 
  *  Overflow                    4  (0x4)     Trap        #OF         No
  *  Bound Range Exceeded        5  (0x5)     Fault       #BR         No
- *  Invalid Optcode             6  (0x6)     Fault       #UD         No
+ *  Invalid Optcode             6  (0x6)     Fault       #UD         No             Yes 
  *  Device Not Available        7  (0x7)     Fault       #NM         No
- *  Double Fault                8  (0x8)     Abort       #DF         Yes (Zero)
+ *  Double Fault                8  (0x8)     Abort       #DF         Yes (Zero)     Yes 
  *  Reserved                    9  (0x9)     Fault       -           No
  *  Invalid TSS                 10 (0xA)     Fault       #TS         Yes
  *  Segment Not Present         11 (0xB)     Fault       #NP         Yes
  *  Stack-Segment Fault         12 (0xC)     Fault       #SS         Yes
- *  General Protection Fault    13 (0xD)     Fault       #GP         Yes
- *  Page Fault                  14 (0xE)     Fault       #PF         Yes
+ *  General Protection Fault    13 (0xD)     Fault       #GP         Yes            Yes 
+ *  Page Fault                  14 (0xE)     Fault       #PF         Yes            Yes 
  *  Reserved                    15 (0xF)     -           -           No
  *  x87 FP Exception            16 (0x10)    Fault       #MF         No
  *  Alignment Check             17 (0x11)    Fault       #AC         Yes
@@ -72,10 +74,16 @@ use crate::{drivers::vga::{Color, VGAWRITER}, interrupts::gdt::DOUBLE_FAULT_IST_
  *
  */
 
+static LAST_EXCEPTION: AtomicU8 = AtomicU8::new(0);
+
 lazy_static!{
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
+        idt.invalid_opcode.set_handler_fn(invalid_optcode_handler);
+        idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+        idt.page_fault.set_handler_fn(page_fault_handler);
+        idt.divide_error.set_handler_fn(division_error_handler);
         unsafe{
             idt.double_fault.set_handler_fn(double_fault_handler)
                 .set_stack_index(DOUBLE_FAULT_IST_INDEX); // <- this line is unsafe 
@@ -99,6 +107,7 @@ pub fn init_idt() {
 /* thanks to x86_64 we do not have to worry about calling convention */
 // this handler is invoked when x86_64 int3 is called
 extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame){
+    LAST_EXCEPTION.store(3,Ordering::SeqCst);
     vgaprintln!("EXCEPTION: BREAKPOINT: \n {:#?}",stack_frame);
 }
 
@@ -125,6 +134,32 @@ extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame){
 * followed by a general-protection fault leads to a double fault.
 */
 extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) -> !{
+    vgaprintln!("LAST_EXCEPTION: {:?}",LAST_EXCEPTION);
     vgaprintln!("EXCEPTION: DOUBLE FAULT (_e:{}): \n {:?}",_error_code,stack_frame);
-    panic!("dobul folt");
+    panic!("Double fault occured");
+}
+
+extern "x86-interrupt" fn invalid_optcode_handler(stack_frame: InterruptStackFrame ){
+    LAST_EXCEPTION.store(6, Ordering::SeqCst);
+    vgaprintln!("EXCEPTION: INVALID OPTCODE: \n {:?}",stack_frame);
+    loop{ hlt(); }
+}
+
+extern "x86-interrupt" fn general_protection_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64){
+    LAST_EXCEPTION.store(13, Ordering::SeqCst);
+    vgaprintln!("EXCEPTION: GENERAL PROTECTION FAULT (_e:{}): \n {:?}",_error_code,stack_frame);
+    loop{ hlt(); }
+}
+
+extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, _error_code: PageFaultErrorCode){
+    LAST_EXCEPTION.store(14, Ordering::SeqCst);
+    vgaprintln!("EXCEPTION: PAGE FAULT (_e:{:#?}): \n {:?}",_error_code,stack_frame);
+    vgaprintln!("CR2: {:?}",Cr2::read());
+    loop{ hlt(); }
+}
+
+extern "x86-interrupt" fn division_error_handler(stack_frame: InterruptStackFrame ){
+    LAST_EXCEPTION.store(0, Ordering::SeqCst);
+    vgaprintln!("EXCEPTION: DIVISION ERROR: \n {:?}",stack_frame);
+    loop{ hlt(); }
 }
