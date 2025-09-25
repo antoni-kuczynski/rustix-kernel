@@ -8,7 +8,7 @@
 
 use core::panic::PanicInfo;
 
-use crate::drivers::vga::{Color, VGAWRITER};
+use crate::{drivers::vga::{Color, VGAWRITER}};
 
 mod drivers;
 mod interrupts;
@@ -16,10 +16,14 @@ mod interrupts;
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
 
-    interrupts::exceptions::init_idt();
+    interrupts::init_idt();
     interrupts::gdt::init_gdt();
+    interrupts::hardware::pic8259::init_pics();
+    interrupts::enable();
 
-    loop{}
+    loop{
+        x86_64::instructions::hlt();
+    }
 }
 
 #[panic_handler]
