@@ -17,6 +17,8 @@
  *   (ascii art source https://os.phil-opp.com/hardware-interrupts/#the-8259-pic)
  */
 
+use lazy_static::lazy_static;
+use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
@@ -75,10 +77,28 @@ pub fn get_ticks() -> u64 {
 }
 
 // keyboard interrupt handler (PS/2)
+lazy_static!{
+    static ref PS2KEYBOARD: Mutex<Keyboard<Us104Key,ScancodeSet1>> = Mutex::new(
+        Keyboard::new(ScancodeSet1::new(), Us104Key, HandleControl::Ignore)
+    );
+}
+// TODO after init heap add here buffer for reading
 pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame){
+
+    let mut keyboard = PS2KEYBOARD.lock();
     let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe {port.read()};
-    vgaprintln!("{}",scancode);
+
+    let scancode : u8 = unsafe{ port.read() };
+
+    if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+        if let Some(key) = keyboard.process_keyevent(key_event) {
+            match key {
+                DecodedKey::Unicode(_character) =>(),
+                DecodedKey::RawKey(_key) => (),
+            }
+        }
+    }
+
     end_of_interrupt(PicInterruptIndex::Keyboard.as_u8());
 }
 
