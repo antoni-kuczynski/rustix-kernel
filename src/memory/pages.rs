@@ -38,4 +38,66 @@
  * Page table 4 location is set in Cr3 register
  */
 
+use bootloader::BootInfo;
+use spin::Once;
+use x86_64::{registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable, Translate}, PhysAddr, VirtAddr};
+
+static PHYSICAL_MEMORY_OFFSET: Once<VirtAddr> = Once::new();
+static MAPPER: Once<OffsetPageTable<'static>> = Once::new();
+
+pub fn init(boot_info: &'static BootInfo){
+    init_offset(&boot_info);
+    init_mapper();
+}
+
+// translates virtual adress to physical if mapped
+pub fn v_to_p(v: VirtAddr) -> Option<PhysAddr>{
+    get_mapper().translate_addr(v)
+}
+
+// translates physical adress to virtual
+pub fn p_to_v(p: PhysAddr) -> VirtAddr{
+    get_physical_memory_offset() + p.as_u64()
+}
+
+fn init_offset(boot_info: &'static BootInfo){
+    PHYSICAL_MEMORY_OFFSET.call_once(
+        || VirtAddr::new(boot_info.physical_memory_offset));
+}
+
+fn init_mapper(){
+    let page_table4            = get_active_page_table4();
+    let physical_memory_offset = get_physical_memory_offset();
+    unsafe{
+        MAPPER.call_once(
+            ||OffsetPageTable::new(page_table4,physical_memory_offset));
+    }
+}
+
+fn get_physical_memory_offset() -> VirtAddr{
+    match PHYSICAL_MEMORY_OFFSET.get(){
+        Some(&offset) => offset,
+        None          => panic!("Calling \"get_physical_memory_offset\" before initialization! "),
+    }
+}
+
+fn get_mapper() -> &'static OffsetPageTable<'static> {
+    match MAPPER.get() {
+        Some(mapper) => mapper,
+        None          => panic!("Calling \"get_mapper\" before initialization! "),
+    }
+}
+
+
+fn get_active_page_table4() -> &'static mut PageTable{
+    let (page_table4_frame,_) = Cr3::read();    // read physical adress of page table 4 
+    let phys = page_table4_frame.start_address();
+
+    let virt = p_to_v(phys); // convert to virtual adress
+
+    let page_table4 : *mut PageTable = virt.as_mut_ptr(); // interpret as pointer
+
+    return unsafe {&mut *page_table4};
+}
+
 
