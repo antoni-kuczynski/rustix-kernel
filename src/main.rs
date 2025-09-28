@@ -9,7 +9,6 @@
 use core::panic::PanicInfo;
 
 use bootloader::BootInfo;
-use x86_64::registers::control::Cr3;
 
 use crate::{drivers::vga::{Color, VGAWRITER}};
 
