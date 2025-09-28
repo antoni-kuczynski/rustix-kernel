@@ -246,7 +246,7 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! vgaprint {
-    ($($arg:tt)*) => ($crate::drivers::vga::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::drivers::vga_text::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
