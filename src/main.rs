@@ -8,13 +8,20 @@
 
 use core::panic::PanicInfo;
 
+use bootloader::BootInfo;
+use x86_64::registers::control::Cr3;
+
 use crate::{drivers::vga::{Color, VGAWRITER}};
 
 mod drivers;
 mod interrupts;
+mod memory;
+mod bootinfo;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start(boot_info: &'static BootInfo) -> ! {
+
+    bootinfo::show_vitals(boot_info);
 
     interrupts::init_idt();
     interrupts::gdt::init_gdt();
