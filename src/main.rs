@@ -8,7 +8,7 @@
 
 use core::panic::PanicInfo;
 
-use crate::{drivers::vga::{Color, VGAWRITER}};
+use crate::{drivers::vga_text::{Color, VGAWRITER}};
 
 mod drivers;
 mod interrupts;
