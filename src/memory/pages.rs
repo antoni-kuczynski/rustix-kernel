@@ -1,4 +1,4 @@
-
+#![allow(dead_code)]
 /*
  *  Created by Oskar Przybylski 
  *  28/09/2025
@@ -40,19 +40,18 @@
 
 use bootloader::BootInfo;
 use spin::Once;
-use x86_64::{registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable, Translate}, PhysAddr, VirtAddr};
+use x86_64::{registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable,  Translate}, PhysAddr, VirtAddr};
 
 static PHYSICAL_MEMORY_OFFSET: Once<VirtAddr> = Once::new();
-static MAPPER: Once<OffsetPageTable<'static>> = Once::new();
 
-pub fn init(boot_info: &'static BootInfo){
+pub fn init(boot_info: &'static BootInfo) -> OffsetPageTable<'static>{
     init_offset(&boot_info);
-    init_mapper();
+    init_mapper()
 }
 
 // translates virtual adress to physical if mapped
-pub fn v_to_p(v: VirtAddr) -> Option<PhysAddr>{
-    get_mapper().translate_addr(v)
+pub fn v_to_p(v: VirtAddr, mapper: OffsetPageTable) -> Option<PhysAddr>{
+    mapper.translate_addr(v)
 }
 
 // translates physical adress to virtual
@@ -65,12 +64,11 @@ fn init_offset(boot_info: &'static BootInfo){
         || VirtAddr::new(boot_info.physical_memory_offset));
 }
 
-fn init_mapper(){
+fn init_mapper() -> OffsetPageTable<'static> {
     let page_table4            = get_active_page_table4();
     let physical_memory_offset = get_physical_memory_offset();
     unsafe{
-        MAPPER.call_once(
-            ||OffsetPageTable::new(page_table4,physical_memory_offset));
+        OffsetPageTable::new(page_table4,physical_memory_offset)
     }
 }
 
@@ -80,14 +78,6 @@ fn get_physical_memory_offset() -> VirtAddr{
         None          => panic!("Calling \"get_physical_memory_offset\" before initialization! "),
     }
 }
-
-fn get_mapper() -> &'static OffsetPageTable<'static> {
-    match MAPPER.get() {
-        Some(mapper) => mapper,
-        None          => panic!("Calling \"get_mapper\" before initialization! "),
-    }
-}
-
 
 fn get_active_page_table4() -> &'static mut PageTable{
     let (page_table4_frame,_) = Cr3::read();    // read physical adress of page table 4 
@@ -99,5 +89,4 @@ fn get_active_page_table4() -> &'static mut PageTable{
 
     return unsafe {&mut *page_table4};
 }
-
 

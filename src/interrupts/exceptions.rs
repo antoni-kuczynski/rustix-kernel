@@ -1,6 +1,6 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use x86_64::{instructions::hlt, registers::control::Cr2, structures::idt::{InterruptDescriptorTable, InterruptStackFrame, PageFaultErrorCode}};
+use x86_64::{instructions::hlt, registers::control::Cr2, structures::idt::{InterruptStackFrame, PageFaultErrorCode}};
 
 use crate::{vgaprintln};
 
