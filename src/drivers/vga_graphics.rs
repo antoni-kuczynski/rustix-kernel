@@ -547,6 +547,7 @@ unsafe fn load_4bit_color_palette_into_dac() {
 
 
 #[derive(Clone, Copy)]
+#[repr(transparent)]
 pub struct VgaVideoColor(pub u8);
 
 impl VgaVideoColor {
@@ -664,9 +665,32 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         self.video_buffer[location] = color;
     }
 
+    /*
+    Notes for mode 0x12:
+    - can use Map Mask register to write to only a specific VGA memory plane
+    VGA memory layout for mode 0x12:
+    MAP_0     |   MAP_1    |   MAP_2   |   MAP_3
+    blue bit  |  green bit |  red bit  |  intensity
+
+    (https://www.phatcode.net/res/224/files/html/ch23/23-05.html)
+    Beware, however, of writing to an area of memory that is not zeroed.
+    Planes that are disabled by the Map Mask register are not altered by CPU writes, so old and new images can mix on the screen,
+    producing unwanted color effects as, say, three planes from the old image mix with one plane from the new image.
+    You can solve this by ensuring that the memory written to is zeroed.
+    A better way to set all planes at once is provided by the set/reset capabilities of the VGA.
+
+    The sample program writes the image of the colored ball to VGA memory by enabling one plane at a time
+    and writing the image of the ball for that plane. Each image is written to the same VGA addresses;
+    only the destination plane, selected by the Map Mask register, is different.
+    You might think of the ball’s image as consisting of four colored overlays, which together make up a multicolored image.
+    The sample program writes a blank image to VGA memory by enabling all planes and writing a block of zero bytes;
+    the zero bytes are written to all four VGA planes simultaneously.
+     */
+    //TODO: fixme
     pub fn put_pixel_12h(&mut self, pos_x: usize, pos_y: usize, color: VgaVideoColor) {
-        let location = self.video_width_px * pos_y + (pos_x >> 1);
-        self.video_buffer[location] = VgaVideoColor((color.0 << 2) | (self.video_buffer[location].0 >> 2));
+        let location = self.pitch * pos_y + (pos_x >> 1);
+        self.video_buffer[location] = VgaVideoColor((color.0 << 4) | (self.video_buffer[location].0 >> 4));
+        // self.video_buffer[location] = color;
     }
 
     pub fn draw_char_transparent<const BYTES_PER_CHAR: usize>(&mut self, x: usize, y: usize, c: char, font: &Font<BYTES_PER_CHAR>, foreground: VgaVideoColor) {
@@ -793,7 +817,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
 
     pub fn clear_buffer(&mut self) {
         for i in 0..BUF_SIZE {
-            self.video_buffer[i] = VgaVideoColor(0x0);
+            self.video_buffer[i] = VgaVideoColor(0x00);
         }
     }
 
