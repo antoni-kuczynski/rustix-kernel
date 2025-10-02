@@ -1,11 +1,6 @@
-use bootloader::{bootinfo::{FrameRange, MemoryMap, MemoryRegionType}, BootInfo};
+use bootloader::{bootinfo::{MemoryMap, MemoryRegionType}, BootInfo};
 
 use crate::vgaprintln;
-
-#[repr(usize)]
-enum MemoryMapIndex{
-    KERNEL = 10,
-}
 
 #[derive(Debug)]
 pub struct MemInfo {
@@ -42,13 +37,7 @@ impl MemInfo{
     }
 }
 
-fn get_frame_range(boot_info: &'static BootInfo, index: MemoryMapIndex) -> FrameRange{
-    boot_info.memory_map[index as usize].range
-}
-
 pub fn show_vitals(boot_info: &'static BootInfo){
-    vgaprintln!("Kernel loaded at: {:?}",get_frame_range(boot_info, MemoryMapIndex::KERNEL));
-    vgaprintln!("Physical mem offset: {:?}",boot_info.physical_memory_offset);
     vgaprintln!("Memory Info: ");
     print_meminfo(&MemInfo::from(&boot_info.memory_map));
 }

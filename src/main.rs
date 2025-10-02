@@ -8,7 +8,7 @@
 use core::{panic::PanicInfo};
 use bootloader::{entry_point, BootInfo};
 
-use crate::{drivers::vga::{Color, VGAWRITER}, memory::pages };
+use crate::{drivers::vga::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
 
 mod drivers;
 mod interrupts;
@@ -26,6 +26,8 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
     let _offset_page_table = pages::init(&boot_info);
 
+    let _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
+
     vgaprintln!("nie wyjebalo sie jupi");
 
     loop{
@@ -39,5 +41,7 @@ fn panic(_info: &PanicInfo) -> ! {
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);
     vgaprintln!("=!==============================!=");
-    loop {}
+    loop{
+        x86_64::instructions::hlt();
+    }
 }

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
 use x86_64::{structures::paging::{FrameAllocator, PhysFrame, Size4KiB}, PhysAddr};
 
@@ -13,7 +15,7 @@ impl BootInfoFrameAllocator{
     }
 
     // Returns an iterator over the usable frames specified in the memory map.
-    fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
+    pub fn usable_frames(&self) -> impl Iterator<Item = PhysFrame> {
         // get usable regions from memory map
         let regions = self.mem_map.iter();
         let usable_regions = regions
