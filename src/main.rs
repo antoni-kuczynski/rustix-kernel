@@ -5,9 +5,12 @@
  * Created by Oskar Przybylski
  * 22/09/2025
  */
-use core::{panic::PanicInfo};
-use bootloader::{entry_point, BootInfo};
 
+extern crate alloc;
+
+use core::{panic::PanicInfo};
+use alloc::{boxed::Box, vec};
+use bootloader::{entry_point, BootInfo};
 use crate::{drivers::vga::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
 
 mod drivers;
@@ -24,9 +27,17 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     interrupts::hardware::pic8259::init_pics();
     interrupts::enable();
 
-    let _offset_page_table = pages::init(&boot_info);
+    let mut _offset_page_table = pages::init(&boot_info);
 
-    let _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
+    let mut _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
+
+    memory::gallocator::init(&mut _offset_page_table,&mut _fa)
+        .expect("heap init failed");
+
+    let x = Box::new(5);
+    let v = vec![1,2,3];
+
+    vgaprintln!("{}, {:#?}",x,v);
 
     vgaprintln!("nie wyjebalo sie jupi");
 

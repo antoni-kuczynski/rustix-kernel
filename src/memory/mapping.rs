@@ -11,7 +11,7 @@ pub struct BootInfoFrameAllocator {
 
 impl BootInfoFrameAllocator{
     pub fn init(mem_map: &'static MemoryMap) -> Self{
-        BootInfoFrameAllocator { mem_map, next: 0 }
+        BootInfoFrameAllocator { mem_map, next: 0}
     }
 
     // Returns an iterator over the usable frames specified in the memory map.
