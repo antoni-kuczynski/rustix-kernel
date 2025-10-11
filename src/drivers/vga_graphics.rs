@@ -110,7 +110,7 @@ const VGA_12H_CRT_CONTROL_REGS: [u16; 18] = [
     0x0008, //Preset row scan register (index 0x08)
     0x4009, //Maximum scan line regisyer (index 0x09)
     0xEA10, //Vertical Retrace Start Register (index 0x10)
-    0x8C11, //Vertical Retrace End Register (index 0x11, is set first to unlock registers 0x00 to 0x07
+    0x0C11, //Vertical Retrace End Register (index 0x11, is set first to unlock registers 0x00 to 0x07
     0xDF12, //Vertical Display-Enable End Register (0x12)
     0x2813, //Offset Register (0x13)
     0x0014, //Underline Location Register (index 0x14)
@@ -120,11 +120,11 @@ const VGA_12H_CRT_CONTROL_REGS: [u16; 18] = [
 ];
 
 const VGA_12H_SEQUENCER_REGS: [u16; 5] = [
-    0x0100, //Sequencer Address Register
+    0x0300, //Sequencer Address Register
     0x0101, //Clocking mode register (index 0x01)
-    0x0F02, //Map mask register (index 0x02)
+    0x0802, //Map mask register (index 0x02)
     0x0003, //Character map select register (index 0x03)
-    0x0204  //Memory mode register (index 0x04)
+    0x0604  //Memory mode register (index 0x04)
 ];
 
 const VGA_12H_GRAPHICS_CONTROLLER_REGS: [u16; 9] = [
@@ -132,7 +132,7 @@ const VGA_12H_GRAPHICS_CONTROLLER_REGS: [u16; 9] = [
     0x0001, //Enable set/reset register (0x01)
     0x0002, //Color compare register (0x02)
     0x0003, //Data rotate register (0x03)
-    0x0004, //Read map select register (0x04)
+    0x0304, //Read map select register (0x04)
     0x0005, //Graphics mode register (0x05)
     0x0506, //Miscellaneous Register (index 0x06)
     0x0F07, //Color don't care register (0x07)
@@ -412,6 +412,19 @@ pub unsafe fn inb(port: u16) -> u8 {
     }
 }
 
+unsafe fn gc_write(index: u8, value: u8) {
+    unsafe {
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, index);
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX + 1, value); // GC_DATA = 0x3CF
+    }
+}
+unsafe fn sc_write(index: u8, value: u8) {
+    unsafe {
+        outb(VGA_SEQUENCER_INDEX, index);
+        outb(VGA_SEQUENCER_INDEX + 1, value); // SC_DATA = 0x3C5
+    }
+}
+
 fn abs(x: isize) -> isize {
     if x < 0 {
         return -x
@@ -543,9 +556,6 @@ unsafe fn load_4bit_color_palette_into_dac() {
     }
 }
 
-
-
-
 #[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct VgaVideoColor(pub u8);
@@ -575,6 +585,10 @@ impl VgaVideoColor {
 
     pub fn from_u8(value: u8) -> Self {
         Self(value)
+    }
+
+    pub fn as_u8(&self) -> u8 {
+        self.0
     }
 }
 
@@ -656,13 +670,13 @@ pub struct VgaVideoMode<const BUF_SIZE: usize> {
     pitch: usize, //how many bytes of VRAM you should skip to go one pixel down
     pixel_width: usize, //how many bytes of VRAM you should skip to go one pixel right
     mode_value: u8, //the mode value in hex
-    video_buffer: &'static mut [VgaVideoColor; BUF_SIZE]
+    video_buffer: &'static mut [u8; BUF_SIZE]
 }
 
 impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     pub fn put_pixel(&mut self, pos_x: usize, pos_y: usize, color: VgaVideoColor) {
         let location = self.video_width_px * pos_y + pos_x;
-        self.video_buffer[location] = color;
+        self.video_buffer[location] = color.as_u8();
     }
 
     /*
@@ -688,10 +702,38 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
      */
     //TODO: fixme
     pub fn put_pixel_12h(&mut self, pos_x: usize, pos_y: usize, color: VgaVideoColor) {
-        let location = self.pitch * pos_y + (pos_x >> 1);
-        self.video_buffer[location] = VgaVideoColor((color.0 << 4) | (self.video_buffer[location].0 >> 4));
-        // self.video_buffer[location] = color;
+        let offset = pos_y * 80 + (pos_x >> 3);
+        let mask = 0x80 >> (pos_x & 7);
+        let buf_ptr = self.video_buffer.as_mut_ptr();
+
+        unsafe {
+            gc_write(0x05, 0x01);   //set write mode 1
+            gc_write(0x03, 0x08);   //set the function operated on data in system latches to AND
+
+            ptr::read_volatile(buf_ptr.add(offset));    //loading the VGA latches by reading the destination byte in video buffer
+            ptr::write_volatile(buf_ptr.add(offset), !mask); //write the !mask to clear the target bit
+
+            // gc_write(0x05, 0x00);   //set the write mode back to 0
+            gc_write(0x00, color.as_u8() & 0x0F); //set the Set/Reset to the color's lower 4 bits
+            /*
+            Set/Reset register:
+            7   6   5   4   3   2   1   0
+            -   -   -   -   SR3 SR2 SR1 SR0
+            SRn - set/reset for map n
+            In write mode 0, the system writes the value of SRn to the nth memory map
+             */
+            gc_write(0x01, 0x0F);   //enable set/reset for all 4 planes
+            gc_write(0x08, mask);   //set the bit mask register to select the pixel within the byte
+            sc_write(0x02, 0x0F);   //enable all planes in sequencer
+
+            //write the color
+            //in this case the data value is ignored and the pixel is determined by
+            //Set/reset and Bit mask
+            ptr::write_volatile(buf_ptr.add(offset), 0xFF);
+            gc_write(0x03, 0x00);
+        }
     }
+
 
     pub fn draw_char_transparent<const BYTES_PER_CHAR: usize>(&mut self, x: usize, y: usize, c: char, font: &Font<BYTES_PER_CHAR>, foreground: VgaVideoColor) {
         assert!(x + font.width < self.video_width_px);
@@ -708,7 +750,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         for _h in 0..font.height {
             for w in (0..font.width).rev() {
                 if font.mem[source_char_byte] & (0x80 >> w) != 0 {  //check if a bit is 1 and we should draw
-                    self.video_buffer[dest] = foreground;
+                    self.video_buffer[dest] = foreground.as_u8();
                 }
                 dest += 1;
             }
@@ -725,8 +767,8 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     }
 
     pub fn draw_bitmap<const LENGTH_BYTES: usize>(&mut self, x: usize, y: usize, bitmap: Bitmap<LENGTH_BYTES>) {
-        assert!(x + bitmap.width < self.video_width_px);
-        assert!(y + bitmap.height < self.video_height_px);
+        assert!(x + bitmap.width <= self.video_width_px);
+        assert!(y + bitmap.height <= self.video_height_px);
 
         let mut j = 0;
         for l in 0..bitmap.height {
@@ -759,7 +801,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         while pos.0 != x1 || pos.1 != y1 {
             //fill the buffer with one step
             let index = pos.1 * width + pos.0;
-            self.video_buffer[index as usize ..(index + 1) as usize].fill(color);
+            self.video_buffer[index as usize ..(index + 1) as usize].fill(color.as_u8());
 
             let error_2 = error * 2;
 
@@ -778,7 +820,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: VgaVideoColor) {
         assert!(x + width < self.video_width_px);
         assert!(y + height < self.video_height_px);
-        let mut location: *mut VgaVideoColor = self.video_buffer.as_mut_ptr();
+        let mut location: *mut u8 = self.video_buffer.as_mut_ptr();
 
         //minimize pointer calculation optimizations
         //dont recalculate every pixel, rather every line
@@ -787,7 +829,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             for _j in y..y + height {
                 let mut current_pixel_ptr = location;
                 for _i in x..x + width {
-                    ptr::write_volatile(current_pixel_ptr, color);
+                    ptr::write_volatile(current_pixel_ptr, color.as_u8());
                     current_pixel_ptr = current_pixel_ptr.add(1);
                 }
                 location = location.add(self.pitch);
@@ -798,26 +840,69 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     pub fn draw_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: VgaVideoColor) {
         assert!(x + width < self.video_width_px);
         assert!(y + height < self.video_height_px);
+        let color_u8 = color.as_u8();
         //top line
         let start_top = y * self.pitch + x;
-        self.video_buffer[start_top..(start_top + width)].fill(color);
+        self.video_buffer[start_top..(start_top + width)].fill(color_u8);
 
         //bottom line
         let start_bottom = (y + height) * self.pitch + x;
-        self.video_buffer[start_bottom..(start_bottom + width)].fill(color);
+        self.video_buffer[start_bottom..(start_bottom + width)].fill(color_u8);
 
         //vertical lines
         for j in y..=y+height {
             let pixel_index = j * self.pitch + x;
-            self.video_buffer[pixel_index] = color;
-            self.video_buffer[pixel_index + width] = color;
+            self.video_buffer[pixel_index] = color_u8;
+            self.video_buffer[pixel_index + width] = color_u8;
         }
 
     }
 
-    pub fn clear_buffer(&mut self) {
+    pub fn clear_buffer_13h(&mut self) {
         for i in 0..BUF_SIZE {
-            self.video_buffer[i] = VgaVideoColor(0x00);
+            self.video_buffer[i] = 0x00;
+        }
+    }
+
+    pub fn clear_buffer_12h(&mut self) {
+        let buf_ptr = self.video_buffer.as_mut_ptr();
+
+        unsafe {
+            outw(VGA_SEQUENCER_INDEX, 0x0F02);  //Map Mask enable all planes
+            outw(VGA_GRAPHICS_CONTROLLER_INDEX, 0x0005);    //set the write mode to 0
+            outw(VGA_GRAPHICS_CONTROLLER_INDEX, 0xFF08);    //Bit Mask enable all bits
+
+            // for i in 0..640*480/8 {
+            //     outw(VGA_SEQUENCER_INDEX, 0x0102);
+            //     ptr::write_volatile(buf_ptr.add(i), 0xF);
+            //
+            //     outw(VGA_SEQUENCER_INDEX, 0x0202);
+            //     ptr::write_volatile(buf_ptr.add(i), 0x0);
+            //
+            //     outw(VGA_SEQUENCER_INDEX, 0x0402);
+            //     ptr::write_volatile(buf_ptr.add(i), 0x0);
+            //
+            //     outw(VGA_SEQUENCER_INDEX, 0x0802);
+            //     ptr::write_volatile(buf_ptr.add(i), 0x0);
+            // }
+
+            for y in 0..480 {
+                let line_offset = (y & 3) * 0x2000 + (y >> 2) * 80;
+                let addr = buf_ptr.add(line_offset);
+                for x in 0..80 {
+                    unsafe {
+                        outw(VGA_SEQUENCER_INDEX, 0x0102);
+                        ptr::write_volatile(addr.add(x), 0xFF);
+                        outw(VGA_SEQUENCER_INDEX, 0x0202);
+                        ptr::write_volatile(addr.add(x), 0x00);
+                        outw(VGA_SEQUENCER_INDEX, 0x0402);
+                        ptr::write_volatile(addr.add(x), 0x00);
+                        outw(VGA_SEQUENCER_INDEX, 0x0802);
+                        ptr::write_volatile(addr.add(x), 0x00);
+                    }
+                }
+            }
+
         }
     }
 
@@ -830,21 +915,21 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             pixel_width: 1,
             mode_value: 0x13,
             video_buffer: unsafe {
-                &mut *(0xA0000 as *mut [VgaVideoColor; 64000])
+                &mut *(0xA0000 as *mut [u8; 64000])
             }
         }
     }
 
-    pub fn new_vga_0x12_640x480_16color_mode() -> VgaVideoMode<38400> {
+    pub fn new_vga_0x12_640x480_16color_mode() -> VgaVideoMode<64000> {
         VgaVideoMode {
             video_width_px: 640,
             video_height_px: 480,
             color_depth_bits: 4,
-            pitch: 320,
-            pixel_width: 1, //todo
+            pitch: 80,
+            pixel_width: 0, //doesnt do anything in planar mode
             mode_value: 0x12,
             video_buffer: unsafe {
-                &mut *(0xA0000 as *mut [VgaVideoColor; 38400])
+                &mut *(0xA0000 as *mut [u8; 64000])
             }
         }
     }
@@ -872,7 +957,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             load_4bit_color_palette_into_dac();
             asm!("sti");
         }
-        self.clear_buffer();
+        self.clear_buffer_12h();
     }
 
     pub fn init_mode_0x13(&mut self) {
@@ -890,6 +975,6 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             load_8bit_color_pallet_into_dac();
             asm!("sti");
         }
-        self.clear_buffer();
+        self.clear_buffer_13h();
     }
 }
