@@ -481,9 +481,11 @@ pub fn set_reg_values(
 //  **LOADING THE COLOR PALLETS INTO DAC**
 
 unsafe fn dac_color_output(r: u8, g: u8, b: u8) {
-    outb(0x03C9, r);
-    outb(0x03C9, g);
-    outb(0x03C9, b);
+    unsafe {
+        outb(0x03C9, r);
+        outb(0x03C9, g);
+        outb(0x03C9, b);
+    }
 }
 
 #[inline(always)]
@@ -556,59 +558,6 @@ unsafe fn load_4bit_color_palette_into_dac() {
     }
 }
 
-#[derive(Clone, Copy)]
-#[repr(transparent)]
-pub struct VgaVideoColor(pub u8);
-
-impl VgaVideoColor {
-    pub const WHITE: Self = Self(0xFF);
-    pub const BLACK: Self = Self(0x00);
-    pub const RED: Self = Self(0b11100000);
-    pub const GREEN: Self = Self(0b00011100);
-    pub const BLUE: Self = Self(0b00000011);
-    pub const YELLOW: Self = Self(0b11111100); //mix of green and red
-    pub const CYAN: Self = Self(0b00011111); //mix of green and blue
-    pub const MAGENTA: Self = Self(0b11100011); //mix of red and blue
-
-
-    pub fn from_u24_rgb_to_u8(r: u8, g: u8, b: u8) -> Self {
-        //Returns "compressed" color from 24bit to 8bit
-        /*
-        7   6   5   4   3   2   1   0
-        R   R   R   G   G   G   B   B
-         */
-        let r_dac =  r >> 5 << 5; //3 bytes
-        let g_dac =  g >> 5 << 2; //3 bytes
-        let b_dac = b >> 6; //2 bytes
-        VgaVideoColor(r_dac | g_dac | b_dac)
-    }
-
-    pub fn from_u8(value: u8) -> Self {
-        Self(value)
-    }
-
-    pub fn as_u8(&self) -> u8 {
-        self.0
-    }
-}
-
-pub struct Bitmap<const LENGTH: usize> {
-    mem: [u8; LENGTH],
-    width: usize,
-    height: usize,
-}
-
-impl<const LENGTH: usize> Bitmap<LENGTH> {
-    pub fn new(width: usize, height: usize, data: [u8; LENGTH]) -> Self {
-        assert_eq!(LENGTH, width * height);
-        Bitmap {
-            mem: data,
-            width,
-            height,
-        }
-    }
-}
-
 pub struct Font<const MEM_LENGTH: usize> {
     mem: &'static [u8; MEM_LENGTH],
     lochar: usize,
@@ -674,9 +623,9 @@ pub struct VgaVideoMode<const BUF_SIZE: usize> {
 }
 
 impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
-    pub fn put_pixel(&mut self, pos_x: usize, pos_y: usize, color: VgaVideoColor) {
+    pub fn vga13h_put_pixel(&mut self, pos_x: usize, pos_y: usize, color: u8) {
         let location = self.video_width_px * pos_y + pos_x;
-        self.video_buffer[location] = color.as_u8();
+        self.video_buffer[location] = color;
     }
 
     /*
@@ -701,7 +650,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     the zero bytes are written to all four VGA planes simultaneously.
      */
     //TODO: fixme
-    pub fn put_pixel_12h(&mut self, pos_x: usize, pos_y: usize, color: VgaVideoColor) {
+    pub fn vga12h_put_pixel(&mut self, pos_x: usize, pos_y: usize, color: u8) {
         let offset = pos_y * 80 + (pos_x >> 3);
         let mask = 0x80 >> (pos_x & 7);
         let buf_ptr = self.video_buffer.as_mut_ptr();
@@ -714,7 +663,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             ptr::write_volatile(buf_ptr.add(offset), !mask); //write the !mask to clear the target bit
 
             // gc_write(0x05, 0x00);   //set the write mode back to 0
-            gc_write(0x00, color.as_u8() & 0x0F); //set the Set/Reset to the color's lower 4 bits
+            gc_write(0x00, color & 0x0F); //set the Set/Reset to the color's lower 4 bits
             /*
             Set/Reset register:
             7   6   5   4   3   2   1   0
@@ -735,7 +684,13 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     }
 
 
-    pub fn draw_char_transparent<const BYTES_PER_CHAR: usize>(&mut self, x: usize, y: usize, c: char, font: &Font<BYTES_PER_CHAR>, foreground: VgaVideoColor) {
+    pub fn _vga13h_draw_char_transparent<const BYTES_PER_CHAR: usize>(
+        &mut self,
+        x: usize, y: usize,
+        c: char,
+        font: &Font<BYTES_PER_CHAR>,
+        foreground: u8)
+    {
         assert!(x + font.width < self.video_width_px);
         assert!(y + font.height < self.video_height_px);
         let mut char_index = c as usize;
@@ -750,7 +705,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         for _h in 0..font.height {
             for w in (0..font.width).rev() {
                 if font.mem[source_char_byte] & (0x80 >> w) != 0 {  //check if a bit is 1 and we should draw
-                    self.video_buffer[dest] = foreground.as_u8();
+                    self.video_buffer[dest] = foreground;
                 }
                 dest += 1;
             }
@@ -759,30 +714,40 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn draw_string<const BYTES_PER_CHAR: usize>(&mut self, x: usize, y: usize, text: &str, font: &Font<BYTES_PER_CHAR>, foreground: VgaVideoColor) {
+    pub fn _vga13h_draw_string<const BYTES_PER_CHAR: usize>(
+        &mut self,
+        x: usize, y: usize,
+        text: &str,
+        font: &Font<BYTES_PER_CHAR>,
+        foreground: u8)
+    {
         //asserts are already in draw_char_transparent
         for (i, c) in text.chars().enumerate() {
-            self.draw_char_transparent(x + i * font.width, y, c, font, foreground);
+            self._vga13h_draw_char_transparent(x + i * font.width, y, c, font, foreground);
         }
     }
 
-    pub fn draw_bitmap<const LENGTH_BYTES: usize>(&mut self, x: usize, y: usize, bitmap: Bitmap<LENGTH_BYTES>) {
-        assert!(x + bitmap.width <= self.video_width_px);
-        assert!(y + bitmap.height <= self.video_height_px);
+    pub fn _vga13h_draw_bitmap<const LENGTH_BYTES: usize>
+        (&mut self,
+         x: usize, y: usize,
+         width: usize, height: usize, mem: &[u8; LENGTH_BYTES])
+    {
+        assert!(x + width <= self.video_width_px);
+        assert!(y + height <= self.video_height_px);
 
         let mut j = 0;
-        for l in 0..bitmap.height {
-            for i in 0..bitmap.width {
-                self.put_pixel(x + i, y + l, VgaVideoColor(bitmap.mem[j]));
+        for l in 0..height {
+            for i in 0..width {
+                self.vga13h_put_pixel(x + i, y + l, mem[j]);
                 j += 1;
             }
         }
     }
 
-    pub fn draw_line(&mut self,
-                     mut x0: usize, mut y0: usize,
-                     mut x1: usize, mut y1: usize,
-                     color: VgaVideoColor)
+    pub fn _vga13h_draw_line(&mut self,
+                             mut x0: usize, mut y0: usize,
+                             mut x1: usize, mut y1: usize,
+                             color: u8)
     {
 
         if x0 >= self.video_width_px ||
@@ -801,16 +766,16 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             let pos: (usize, usize) = if y0 < y1 {(y0, y1)} else {(y1, y0)};
             let mut pixel = pos.0 * self.pitch + x0;
             for _ in pos.0..=pos.1 {
-                self.video_buffer[pixel] = color.as_u8();
+                self.video_buffer[pixel] = color;
                 pixel += self.pitch;
             }
             return;
         }
 
         if y0 == y1 {
-            let mut pos: (usize, usize) = if x0 < x1 {(x0, x1)} else {(x1, x0)};
+            let pos: (usize, usize) = if x0 < x1 {(x0, x1)} else {(x1, x0)};
             let base = y0 * self.pitch;
-                self.video_buffer[base + pos.0..=base + pos.1].fill(color.as_u8());
+                self.video_buffer[base + pos.0..=base + pos.1].fill(color);
             return;
         }
 
@@ -836,7 +801,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         loop {
             //fill the buffer with one step
             let index = pos.1 * width + pos.0;
-            self.video_buffer[index as usize ..(index + 1) as usize].fill(color.as_u8());
+            self.video_buffer[index as usize ..(index + 1) as usize].fill(color);
 
             let error_2 = error * 2;
 
@@ -852,17 +817,17 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
 
             //manually draw the last pixel
             if pos.0 == x1_isize && pos.1 == y1_isize {
-                self.video_buffer[(pos.1 * width + pos.0) as usize] = color.as_u8();
+                self.video_buffer[(pos.1 * width + pos.0) as usize] = color;
                 break;
             }
         }
     }
 
-    pub fn fill_triangle(&mut self,
-                         mut x0: usize, mut y0: usize,
-                         mut x1: usize, mut y1: usize,
-                         mut x2: usize, mut y2: usize,
-                         color: VgaVideoColor)
+    pub fn _vga13h_fill_triangle(&mut self,
+                                 mut x0: usize, mut y0: usize,
+                                 mut x1: usize, mut y1: usize,
+                                 mut x2: usize, mut y2: usize,
+                                 color: u8)
     {
         if x0 > self.video_width_px || y0 > self.video_height_px ||
             x1 > self.video_width_px || y1 > self.video_height_px ||
@@ -872,7 +837,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
 
         //sort the vertices by Y
-        if (y0 > y2) {
+        if y0 > y2 {
             (x0, y0, x2, y2) = (x2, y2, x0, y0);
         }
 
@@ -896,9 +861,9 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
          */
 
         if y1 == y2 {   //if these coords are equal the triangle is bottom flat
-            self.fill_bottom_flat_triangle(x0, y0, x1, y1, x2, y2, color);
+            self.vga13h_fill_bottom_flat_triangle(x0, y0, x1, y1, x2, y2, color);
         } else if y0 == y1 {    //if these coords are equal the triangle is top flat
-            self.fill_top_flat_triangle(x0, y0, x1, y1, x2, y2, color);
+            self.vga13h_fill_top_flat_triangle(x0, y0, x1, y1, x2, y2, color);
         } else {    //every other triangle is made of the flat top and flat bottom triangles
             if y2 - y0 == 0 {
                 return;
@@ -921,16 +886,16 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
              */
 
             //draw both triangles
-            self.fill_bottom_flat_triangle(x0, y0, x1, y1, x_split, y_split, color);
-            self.fill_top_flat_triangle(x1, y1, x_split, y_split, x2, y2, color);
+            self.vga13h_fill_bottom_flat_triangle(x0, y0, x1, y1, x_split, y_split, color);
+            self.vga13h_fill_top_flat_triangle(x1, y1, x_split, y_split, x2, y2, color);
         }
     }
 
-    fn fill_bottom_flat_triangle(&mut self,
-                                     x0: usize, y0: usize,
-                                     x1: usize, y1: usize,
-                                     x2: usize, y2: usize,
-                                     color: VgaVideoColor)
+    fn vga13h_fill_bottom_flat_triangle(&mut self,
+                                        x0: usize, y0: usize,
+                                        x1: usize, y1: usize,
+                                        x2: usize, y2: usize,
+                                        color: u8)
     {
         /*
             P0(x0, y0)
@@ -974,7 +939,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             let start = (line_x1 as usize + 0x8000) >> 16;  //0x8000 - pixel rounding logic
             let end = (line_x2 as usize + 0x8000) >> 16;
             self.video_buffer[y * self.pitch + start ..= y * self.pitch + end]  //fill the straight line from start to end
-                .fill(color.as_u8());
+                .fill(color);
 
             //advance to the next line in the X axis
             //then advance to next line in the Y axis by incrementing y
@@ -983,11 +948,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    fn fill_top_flat_triangle(&mut self,
-                                  x0: usize, y0: usize,
-                                  x1: usize, y1: usize,
-                                  x2: usize, y2: usize,
-                                  color: VgaVideoColor)
+    fn vga13h_fill_top_flat_triangle(&mut self,
+                                     x0: usize, y0: usize,
+                                     x1: usize, y1: usize,
+                                     x2: usize, y2: usize,
+                                     color: u8)
     {
         /*
         P0(x0,y0)     P1(x1,y1)
@@ -1032,7 +997,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             let start = (line_x1 as usize + 0x8000) >> 16;  //0x8000 - pixel rounding logic
             let end = (line_x2 as usize + 0x8000) >> 16;
             self.video_buffer[y * self.pitch + start ..= y * self.pitch + end]
-                .fill(color.as_u8());   //fill the straight line from start to end
+                .fill(color);   //fill the straight line from start to end
 
             //advance to the next line in the X axis
             //then advance to next line in the Y axis by incrementing y
@@ -1041,20 +1006,20 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn draw_triangle(&mut self,
-                         x0: usize, y0: usize,
-                         x1: usize, y1: usize,
-                         x2: usize, y2: usize,
-                         color: VgaVideoColor)
+    pub fn _vga13h_draw_triangle(&mut self,
+                                 x0: usize, y0: usize,
+                                 x1: usize, y1: usize,
+                                 x2: usize, y2: usize,
+                                 color: u8)
     {
         //as simple as that (draw_line already optimized for drawing straight lines)
-        self.draw_line(x0,y0,x1,y1, color);
-        self.draw_line(x0,y0,x2,y2, color);
-        self.draw_line(x1,y1,x2,y2, color);
+        self._vga13h_draw_line(x0, y0, x1, y1, color);
+        self._vga13h_draw_line(x0, y0, x2, y2, color);
+        self._vga13h_draw_line(x1, y1, x2, y2, color);
     }
 
 
-    pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: VgaVideoColor) {
+    pub fn _vga13h_fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
         assert!(x + width < self.video_width_px);
         assert!(y + height < self.video_height_px);
         let mut location: *mut u8 = self.video_buffer.as_mut_ptr();
@@ -1066,7 +1031,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             for _j in y..y + height {
                 let mut current_pixel_ptr = location;
                 for _i in x..x + width {
-                    ptr::write_volatile(current_pixel_ptr, color.as_u8());
+                    ptr::write_volatile(current_pixel_ptr, color);
                     current_pixel_ptr = current_pixel_ptr.add(1);
                 }
                 location = location.add(self.pitch);
@@ -1074,34 +1039,33 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn draw_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: VgaVideoColor) {
+    pub fn _vga13h_draw_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
         assert!(x + width < self.video_width_px);
         assert!(y + height < self.video_height_px);
-        let color_u8 = color.as_u8();
         //top line
         let start_top = y * self.pitch + x;
-        self.video_buffer[start_top..(start_top + width)].fill(color_u8);
+        self.video_buffer[start_top..(start_top + width)].fill(color);
 
         //bottom line
         let start_bottom = (y + height) * self.pitch + x;
-        self.video_buffer[start_bottom..(start_bottom + width)].fill(color_u8);
+        self.video_buffer[start_bottom..(start_bottom + width)].fill(color);
 
         //vertical lines
         for j in y..=y+height {
             let pixel_index = j * self.pitch + x;
-            self.video_buffer[pixel_index] = color_u8;
-            self.video_buffer[pixel_index + width] = color_u8;
+            self.video_buffer[pixel_index] = color;
+            self.video_buffer[pixel_index + width] = color;
         }
 
     }
 
-    pub fn clear_buffer_13h(&mut self) {
+    pub fn _vga13h_clear_buffer(&mut self) {
         for i in 0..BUF_SIZE {
             self.video_buffer[i] = 0x00;
         }
     }
 
-    pub fn clear_buffer_12h(&mut self) {
+    pub fn vga12h_clear_buffer(&mut self) {
         let buf_ptr = self.video_buffer.as_mut_ptr();
 
         unsafe {
@@ -1127,16 +1091,14 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
                 let line_offset = (y & 3) * 0x2000 + (y >> 2) * 80;
                 let addr = buf_ptr.add(line_offset);
                 for x in 0..80 {
-                    unsafe {
-                        outw(VGA_SEQUENCER_INDEX, 0x0102);
-                        ptr::write_volatile(addr.add(x), 0xFF);
-                        outw(VGA_SEQUENCER_INDEX, 0x0202);
-                        ptr::write_volatile(addr.add(x), 0x00);
-                        outw(VGA_SEQUENCER_INDEX, 0x0402);
-                        ptr::write_volatile(addr.add(x), 0x00);
-                        outw(VGA_SEQUENCER_INDEX, 0x0802);
-                        ptr::write_volatile(addr.add(x), 0x00);
-                    }
+                    outw(VGA_SEQUENCER_INDEX, 0x0102);
+                    ptr::write_volatile(addr.add(x), 0xFF);
+                    outw(VGA_SEQUENCER_INDEX, 0x0202);
+                    ptr::write_volatile(addr.add(x), 0x00);
+                    outw(VGA_SEQUENCER_INDEX, 0x0402);
+                    ptr::write_volatile(addr.add(x), 0x00);
+                    outw(VGA_SEQUENCER_INDEX, 0x0802);
+                    ptr::write_volatile(addr.add(x), 0x00);
                 }
             }
 
@@ -1171,15 +1133,15 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn init_mode(&mut self) {
+    pub fn vga_init_mode(&mut self) {
         match self.mode_value {
-            0x13 => self.init_mode_0x13(),
-            0x12 => self.init_mode_0x12(),
+            0x13 => self.vga13h_init(),
+            0x12 => self.vga12h_init(),
             _ => {}
         }
     }
 
-    pub fn init_mode_0x12(&mut self) {
+    pub fn vga12h_init(&mut self) {
         unsafe {
             asm!("cli");
             set_reg_values(
@@ -1194,10 +1156,10 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             load_4bit_color_palette_into_dac();
             asm!("sti");
         }
-        self.clear_buffer_12h();
+        self.vga12h_clear_buffer();
     }
 
-    pub fn init_mode_0x13(&mut self) {
+    pub fn vga13h_init(&mut self) {
         unsafe {
             asm!("cli");
             set_reg_values(
@@ -1212,6 +1174,6 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             load_8bit_color_pallet_into_dac();
             asm!("sti");
         }
-        self.clear_buffer_13h();
+        self._vga13h_clear_buffer();
     }
 }
