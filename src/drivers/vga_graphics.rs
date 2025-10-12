@@ -779,26 +779,61 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn draw_line(&mut self, x0: isize, y0: isize, x1: isize, y1: isize, color: VgaVideoColor) {
-        assert!(x0 > 0 && x0 < self.video_width_px as isize);
-        assert!(y0 > 0 && y0 < self.video_height_px as isize);
-        assert!(x1 > 0 && x1 < self.video_width_px as isize);
-        assert!(y1 > 0 && y1 < self.video_height_px as isize);
+    pub fn draw_line(&mut self,
+                     mut x0: usize, mut y0: usize,
+                     mut x1: usize, mut y1: usize,
+                     color: VgaVideoColor)
+    {
+
+        if x0 >= self.video_width_px ||
+            y0 >= self.video_height_px ||
+            x1 >= self.video_width_px ||
+            y1 >= self.video_height_px
+        {
+            return;
+        }
+
+        if !(x0 < x1 && y0 < y1) {
+            (x0,y0,x1,y1) = (x1,y1,x0,y0);
+        }
+
+        if x0 == x1 {
+            let pos: (usize, usize) = if y0 < y1 {(y0, y1)} else {(y1, y0)};
+            let mut pixel = pos.0 * self.pitch + x0;
+            for _ in pos.0..=pos.1 {
+                self.video_buffer[pixel] = color.as_u8();
+                pixel += self.pitch;
+            }
+            return;
+        }
+
+        if y0 == y1 {
+            let mut pos: (usize, usize) = if x0 < x1 {(x0, x1)} else {(x1, x0)};
+            let base = y0 * self.pitch;
+                self.video_buffer[base + pos.0..=base + pos.1].fill(color.as_u8());
+            return;
+        }
+
         //TODO: use VGA write mode 3 for better performance
         //bresengam's line drawing algorithm
         //error = amount that drawn pixel deviates from the actual vector (true) line
         // As the drawing of the line progresses from one pixel to the next, the error can be used to tell when,
         // given the resolution of the display, a more accurate approximation of the line can be drawn by placing a given pixel
         // one unit of screen resolution away from its predecessor in either the horizontal or the vertical direction, or both.
+        let x0_isize: isize = x0 as isize;
+        let y0_isize: isize = y0 as isize;
+        let x1_isize: isize = x1 as isize;
+        let y1_isize: isize = y1 as isize;
         let width: isize = self.video_width_px as isize;
-        let mut pos: (isize, isize) = (x0, y0);
-        let dx: isize = abs(x1 - x0);   //distance between x0 and x1
-        let dy: isize = -abs(y1 - y0);
+        let mut pos: (isize, isize) = (x0_isize, y0_isize);
+        let dx: isize = abs(x1_isize - x0_isize);   //distance between x0 and x1
+        let dy: isize = -abs(y1_isize - y0_isize);
         let step_x: isize = if x0 < x1 {1} else {-1};  //direction the line is drawn
         let step_y: isize = if y0 < y1 {1} else {-1};
         let mut error = dx + dy;    //the accumulated error, used to determine
 
-        while pos.0 != x1 || pos.1 != y1 {
+
+        loop {
             //fill the buffer with one step
             let index = pos.1 * width + pos.0;
             self.video_buffer[index as usize ..(index + 1) as usize].fill(color.as_u8());
@@ -814,8 +849,210 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
                 error += dx;
                 pos.1 += step_y;
             }
+
+            //manually draw the last pixel
+            if pos.0 == x1_isize && pos.1 == y1_isize {
+                self.video_buffer[(pos.1 * width + pos.0) as usize] = color.as_u8();
+                break;
+            }
         }
     }
+
+    pub fn fill_triangle(&mut self,
+                         mut x0: usize, mut y0: usize,
+                         mut x1: usize, mut y1: usize,
+                         mut x2: usize, mut y2: usize,
+                         color: VgaVideoColor)
+    {
+        if x0 > self.video_width_px || y0 > self.video_height_px ||
+            x1 > self.video_width_px || y1 > self.video_height_px ||
+            x2 > self.video_width_px || y2 > self.video_height_px
+        {
+            return;
+        }
+
+        //sort the vertices by Y
+        if (y0 > y2) {
+            (x0, y0, x2, y2) = (x2, y2, x0, y0);
+        }
+
+        if y1 > y2 {
+            (x1, y1, x2, y2) = (x2, y2, x1, y1);
+        }
+
+        if y0 > y1 {
+            (x0, y0, x1, y1) = (x1, y1, x0, y0);
+        }
+
+        //now the triangle should look likt this:
+        /*
+            P0(x0, y0)
+                *
+               / \
+              /   \
+             /     \
+            *-------*
+         P1(x1, y1)   P2(x2, y2)
+         */
+
+        if y1 == y2 {   //if these coords are equal the triangle is bottom flat
+            self.fill_bottom_flat_triangle(x0, y0, x1, y1, x2, y2, color);
+        } else if y0 == y1 {    //if these coords are equal the triangle is top flat
+            self.fill_top_flat_triangle(x0, y0, x1, y1, x2, y2, color);
+        } else {    //every other triangle is made of the flat top and flat bottom triangles
+            if y2 - y0 == 0 {
+                return;
+            }
+
+            let dx = (x2 as isize - x0 as isize) * (y1 as isize - y0 as isize) / (y2 as isize - y0 as isize);
+            let x_split = (x0 as isize + dx) as usize;
+            let y_split = y1;
+
+            /*
+            //the Psplit point divides the P0,P2 line so that theres a flat line there y=const
+            P0 ●
+                \
+                 \
+            ..----*  ← Psplit(x_split, y1), line dividing the bottom and top triangle
+                   \
+                    \
+                     ● P2
+
+             */
+
+            //draw both triangles
+            self.fill_bottom_flat_triangle(x0, y0, x1, y1, x_split, y_split, color);
+            self.fill_top_flat_triangle(x1, y1, x_split, y_split, x2, y2, color);
+        }
+    }
+
+    fn fill_bottom_flat_triangle(&mut self,
+                                     x0: usize, y0: usize,
+                                     x1: usize, y1: usize,
+                                     x2: usize, y2: usize,
+                                     color: VgaVideoColor)
+    {
+        /*
+            P0(x0, y0)
+                *
+               / \
+              /   \
+             /     \
+            *-------*
+         P1(x1, y1)   P2(x2, y2)
+         */
+
+        //stupid isize cast
+        let (x0_i, x1_i, x2_i, y0_i, y1_i, y2_i) =
+            (x0 as isize, x1 as isize, x2 as isize, y0 as isize, y1 as isize, y2 as isize);
+
+        //Y distances calculation
+        let dy1: isize = y1_i - y0_i;
+        let dy2: isize = y2_i - y0_i;
+
+        //division by zero check
+        if dy1 == 0 || dy2 == 0 {
+            return;
+        }
+
+        //all the bit shifts are to not use the floating point numbers - improves pixel coords rounding a bit
+
+        //calculate the slope step values
+        let mut slope1:isize = ((x1_i - x0_i) << 16) / dy1;
+        let mut slope2: isize = ((x2_i - x0_i) << 16) / dy2;
+
+        //current x axis values
+        let mut line_x1: isize = x0_i << 16;
+        let mut line_x2: isize = x0_i << 16;
+
+        //slope sorting by x - assures that we always start at left and go to right
+        if slope2 < slope1 {
+            (slope1, slope2) = (slope2, slope1);
+        }
+
+        for y in y0..=y2 {
+            let start = (line_x1 as usize + 0x8000) >> 16;  //0x8000 - pixel rounding logic
+            let end = (line_x2 as usize + 0x8000) >> 16;
+            self.video_buffer[y * self.pitch + start ..= y * self.pitch + end]  //fill the straight line from start to end
+                .fill(color.as_u8());
+
+            //advance to the next line in the X axis
+            //then advance to next line in the Y axis by incrementing y
+            line_x1 += slope1;
+            line_x2 += slope2;
+        }
+    }
+
+    fn fill_top_flat_triangle(&mut self,
+                                  x0: usize, y0: usize,
+                                  x1: usize, y1: usize,
+                                  x2: usize, y2: usize,
+                                  color: VgaVideoColor)
+    {
+        /*
+        P0(x0,y0)     P1(x1,y1)
+           *-----------*
+             \       /
+              \     /
+               \   /
+                \ /
+                 *
+               P2(x2,y2)
+         */
+
+        //stupid isize cast
+        let (x0_i, x1_i, x2_i, y0_i, y1_i, y2_i) =
+            (x0 as isize, x1 as isize, x2 as isize, y0 as isize, y1 as isize, y2 as isize);
+
+        //Y distances calculation
+        let dy1: isize = y2_i - y0_i;
+        let dy2: isize = y2_i - y1_i;
+
+        //division by zero check
+        if dy1 == 0 || dy2 == 0 {
+            return;
+        }
+
+        //all the bit shifts are to not use the floating point numbers - improves pixel coords rounding a bit
+
+        //calculate the slope step values
+        let mut slope1: isize = ((x2_i - x0_i) << 16) / dy1;
+        let mut slope2: isize = ((x2_i - x1_i) << 16) / dy2;
+
+        //current x axis values
+        let mut line_x1: isize = x2_i << 16;
+        let mut line_x2: isize = x2_i << 16;
+
+        //slope sorting by x - assures that we always start at left and go to right
+        if slope2 > slope1 {
+            (slope1, slope2) = (slope2, slope1);
+        }
+
+        for y in (y0..=y2).rev() {
+            let start = (line_x1 as usize + 0x8000) >> 16;  //0x8000 - pixel rounding logic
+            let end = (line_x2 as usize + 0x8000) >> 16;
+            self.video_buffer[y * self.pitch + start ..= y * self.pitch + end]
+                .fill(color.as_u8());   //fill the straight line from start to end
+
+            //advance to the next line in the X axis
+            //then advance to next line in the Y axis by incrementing y
+            line_x1 -= slope1;
+            line_x2 -= slope2;
+        }
+    }
+
+    pub fn draw_triangle(&mut self,
+                         x0: usize, y0: usize,
+                         x1: usize, y1: usize,
+                         x2: usize, y2: usize,
+                         color: VgaVideoColor)
+    {
+        //as simple as that (draw_line already optimized for drawing straight lines)
+        self.draw_line(x0,y0,x1,y1, color);
+        self.draw_line(x0,y0,x2,y2, color);
+        self.draw_line(x1,y1,x2,y2, color);
+    }
+
 
     pub fn fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: VgaVideoColor) {
         assert!(x + width < self.video_width_px);
