@@ -1,4 +1,4 @@
-
+#![allow(dead_code)]
 /*
  *  Created bt Oskar Przybylski 
  *  24/09/2025
@@ -18,7 +18,7 @@
  */
 
 use lazy_static::lazy_static;
-use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet, ScancodeSet1};
+use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
