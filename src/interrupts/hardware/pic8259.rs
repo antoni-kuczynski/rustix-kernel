@@ -75,6 +75,22 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
 pub fn get_ticks() -> u64 {
     unsafe { TICKS }
 }
+static TICKS_PER_MS: isize = 55;
+
+pub fn sleep(ms: usize){
+    let mut ms_to_pass: isize = ms as isize;
+    let mut ticks = get_ticks();
+    loop{
+        let new_ticks = get_ticks();
+        if ticks != new_ticks{
+            ticks = new_ticks;
+            ms_to_pass-=TICKS_PER_MS;
+        }
+        if ms_to_pass <= 0{
+            return;
+        }
+    }
+}
 
 // keyboard interrupt handler (PS/2)
 lazy_static!{
