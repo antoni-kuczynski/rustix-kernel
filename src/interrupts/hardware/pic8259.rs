@@ -1,4 +1,4 @@
-
+#![allow(dead_code)]
 /*
  *  Created bt Oskar Przybylski 
  *  24/09/2025
@@ -18,7 +18,7 @@
  */
 
 use lazy_static::lazy_static;
-use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet, ScancodeSet1};
+use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
@@ -74,6 +74,22 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
 
 pub fn get_ticks() -> u64 {
     unsafe { TICKS }
+}
+static TICKS_PER_MS: isize = 55;
+
+pub fn sleep(ms: usize){
+    let mut ms_to_pass: isize = ms as isize;
+    let mut ticks = get_ticks();
+    loop{
+        let new_ticks = get_ticks();
+        if ticks != new_ticks{
+            ticks = new_ticks;
+            ms_to_pass-=TICKS_PER_MS;
+        }
+        if ms_to_pass <= 0{
+            return;
+        }
+    }
 }
 
 // keyboard interrupt handler (PS/2)
