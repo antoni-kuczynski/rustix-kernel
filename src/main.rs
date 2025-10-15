@@ -8,15 +8,23 @@
 
 extern crate alloc;
 
+use crate::graphics::graphics::UPoint;
 use core::{panic::PanicInfo};
 use alloc::{boxed::Box, vec};
 use bootloader::{entry_point, BootInfo};
-use crate::{drivers::vga::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
+use crate::{drivers::vga_text::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
+use crate::drivers::vga_graphics::VgaFont;
+use crate::graphics::bitmap::Bitmap;
+use crate::graphics::color::U8Color;
+use crate::graphics::graphics::Graphics;
+use crate::test_bitmap::{get_my_cat_bitmap};
 
 mod drivers;
 mod interrupts;
 mod memory;
 mod bootinfo;
+mod graphics;
+mod test_bitmap;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -34,12 +42,30 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    let x = Box::new(5);
-    let v = vec![1,2,3];
+    // let x = Box::new(5);
+    // let v = vec![1,2,3];
+    //
+    // vgaprintln!("{}, {:#?}",x,v);
+    //
+    // vgaprintln!("nie wyjebalo sie jupi");
 
-    vgaprintln!("{}, {:#?}",x,v);
+    let mut graphics = Graphics::new();
 
-    vgaprintln!("nie wyjebalo sie jupi");
+    // graphics.set_color(U8Color::MAGENTA);
+    // graphics.fill_elipse(point!(100,100),90,50);
+
+    graphics.set_color(U8Color::WHITE);
+    graphics.draw_str(point!(10,10), "abcdefghijklmnoprstuwxyz");
+    graphics.draw_str(point!(10,25), "ABCDEFGHIJKLMNOPRSTUWXYZ");
+    graphics.draw_str(point!(10,40), "1234567890!@#$%^&*()-=_+");
+    let bmp = Bitmap::new_u8_bitmap(4, 1, vec![0xFF, 0xFF, 0xFF, 0xFF]);
+    match bmp {
+        None => {}
+        Some(_) => {
+            graphics.draw_bitmap(point!(0,0), &bmp.unwrap());
+        }
+    }
+
 
     loop{
         x86_64::instructions::hlt();

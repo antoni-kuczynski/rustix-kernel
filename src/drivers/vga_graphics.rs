@@ -3,6 +3,7 @@
  * Created by Antek Kuczyński
  * 26/09/2025
  */
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::ptr;
 
@@ -170,7 +171,7 @@ const HICHAR_8PX: usize = 127;
 const BYTES_PER_CHAR_8PX: usize = 8;
 const FONT_HEIGHT_8PX_PX: usize = 8;
 const FONT_WIDTH_8PX_PX: usize = 8;
-const FONT_8PX: [u8; 768] = [
+const FONT_8PX: &[u8] = &[
     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     0x0C,0x1E,0x1E,0x0C,0x0C,0x00,0x0C,0x00,
     0x36,0x36,0x36,0x00,0x00,0x00,0x00,0x00,
@@ -274,7 +275,7 @@ const HICHAR_16PX: usize = 127;
 const BYTES_PER_CHAR_16PX: usize = 16;
 const FONT_HEIGHT_16PX_PX: usize = 16;
 const FONT_WIDTH_16PX_PX: usize = 8;
-const FONT_16PX: [u8; 1536] = [
+const FONT_16PX: &[u8] = &[
     0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
     0x0C,0x0C,0x1E,0x1E,0x1E,0x1E,0x0C,0x0C,0x0C,0x0C,0x00,0x00,0x0C,0x0C,0x00,0x00,
     0x36,0x36,0x36,0x36,0x36,0x36,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
@@ -558,8 +559,8 @@ unsafe fn load_4bit_color_palette_into_dac() {
     }
 }
 
-pub struct Font<const MEM_LENGTH: usize> {
-    mem: &'static [u8; MEM_LENGTH],
+pub struct VgaFont {
+    mem: &'static [u8],
     lochar: usize,
     hichar: usize,
     bytes_per_char: usize,
@@ -567,8 +568,28 @@ pub struct Font<const MEM_LENGTH: usize> {
     width: usize
 }
 
-impl<const MEM_LENGTH: usize> Font<MEM_LENGTH> {
-    pub const fn new(mem: &'static [u8; MEM_LENGTH], lochar: usize, hichar: usize, width_bytes: usize, height: usize, width: usize) -> Self {
+impl VgaFont {
+    pub const FONT_8PX: VgaFont = VgaFont::new(
+        &FONT_8PX,
+        LOCHAR_8PX,
+        HICHAR_8PX,
+        BYTES_PER_CHAR_8PX,
+        FONT_HEIGHT_8PX_PX,
+        FONT_WIDTH_8PX_PX
+    );
+
+    pub const FONT_16PX: VgaFont =
+        VgaFont::new(
+        &FONT_16PX,
+        LOCHAR_16PX,
+        HICHAR_16PX,
+        BYTES_PER_CHAR_16PX,
+        FONT_HEIGHT_16PX_PX,
+        FONT_WIDTH_16PX_PX
+    );
+
+
+    pub const fn new(mem: &'static [u8], lochar: usize, hichar: usize, width_bytes: usize, height: usize, width: usize) -> Self {
         Self {
             mem,
             lochar,
@@ -580,42 +601,10 @@ impl<const MEM_LENGTH: usize> Font<MEM_LENGTH> {
     }
 }
 
-const FONT_8PX_OBJ: Font<768> =
-    Font::new(
-        &FONT_8PX,
-        LOCHAR_8PX,
-        HICHAR_8PX,
-        BYTES_PER_CHAR_8PX,
-        FONT_HEIGHT_8PX_PX,
-        FONT_WIDTH_8PX_PX
-    );
-
-const FONT_16PX_OBJ: Font<1536> =
-    Font::new(
-        &FONT_16PX,
-        LOCHAR_16PX,
-        HICHAR_16PX,
-        BYTES_PER_CHAR_16PX,
-        FONT_HEIGHT_16PX_PX,
-        FONT_WIDTH_16PX_PX
-    );
-
-//helper struct with methods to get all the fonts
-pub struct Fonts();
-
-impl Fonts {
-    pub fn font_8x8_px() -> Font<768> {
-        FONT_8PX_OBJ
-    }
-    pub fn font_8x16_px() -> Font<1536> {
-        FONT_16PX_OBJ
-    }
-}
-
 pub struct VgaVideoMode<const BUF_SIZE: usize> {
-    video_width_px: usize, //res width
-    video_height_px: usize, //res height
-    color_depth_bits: usize, //color depth
+    pub video_width_px: usize, //res width
+    pub video_height_px: usize, //res height
+    pub color_depth_bits: usize, //color depth
     pitch: usize, //how many bytes of VRAM you should skip to go one pixel down
     pixel_width: usize, //how many bytes of VRAM you should skip to go one pixel right
     mode_value: u8, //the mode value in hex
@@ -684,11 +673,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     }
 
 
-    pub fn _vga13h_draw_char_transparent<const BYTES_PER_CHAR: usize>(
+    pub fn _vga13h_draw_char_transparent(
         &mut self,
         x: usize, y: usize,
         c: char,
-        font: &Font<BYTES_PER_CHAR>,
+        font: &VgaFont,
         foreground: u8)
     {
         assert!(x + font.width < self.video_width_px);
@@ -714,11 +703,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn _vga13h_draw_string<const BYTES_PER_CHAR: usize>(
+    pub fn _vga13h_draw_string(
         &mut self,
         x: usize, y: usize,
         text: &str,
-        font: &Font<BYTES_PER_CHAR>,
+        font: &VgaFont,
         foreground: u8)
     {
         //asserts are already in draw_char_transparent
@@ -727,10 +716,9 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn _vga13h_draw_bitmap<const LENGTH_BYTES: usize>
-        (&mut self,
+    pub fn _vga13h_draw_bitmap(&mut self,
          x: usize, y: usize,
-         width: usize, height: usize, mem: &[u8; LENGTH_BYTES])
+         width: usize, height: usize, mem: &Vec<u8>)
     {
         assert!(x + width <= self.video_width_px);
         assert!(y + height <= self.video_height_px);
@@ -1059,7 +1047,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     }
 
     pub fn _vga13h_fill_elipse(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
-        let (xi,yi,wi,hi) = (x as isize, y as isize, width as isize, height as isize);
+        let (xi,wi,hi) = (x as isize, width as isize, height as isize);
 
         let wi_squared = wi * wi;
         let hi_squared = hi * hi;
@@ -1074,16 +1062,10 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         //decision parameter for region 1
         let mut d_region = hi_squared + ((xi * xi) >> 2) - (wi_squared * hi);
         while dx < dy {
-            self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)..=
-                (yp as usize + y) * self.pitch + (xp as usize + x)].fill(color);
-
-            self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)..=
-                (y - yp as usize) * self.pitch + (xp as usize + x)].fill(color);
-
-            // self.video_buffer[(yp as usize + y) * self.pitch + (xp as usize + x)] = color;
-            // self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)] = color;
-            // self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)] = color;
-            // self.video_buffer[(y - yp as usize) * self.pitch + (xp as usize + x)] = color;
+            for i in x - xp as usize..=x + xp as usize {
+                self.video_buffer[(yp as usize + y) * self.pitch + i] = color;
+                self.video_buffer[(y - yp as usize) * self.pitch + i] = color;
+            }
 
             if d_region < 0 {
                 xp += 1;
@@ -1105,16 +1087,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         d_region = hi_squared * ((xp + 1/2) * (xp + 1/2))
             + wi_squared * ((yp - 1) * (yp - 1)) - (wi_squared * hi_squared);
         while yp >= 0 {
-            // self.video_buffer[(yp as usize + y) * self.pitch + (xp as usize + x)] = color;
-            // self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)] = color;
-            // self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)] = color;
-            // self.video_buffer[(y - yp as usize) * self.pitch + (xp as usize + x)] = color;
+            for i in x - xp as usize..=x + xp as usize {
+                self.video_buffer[(yp as usize + y) * self.pitch + i] = color;
+                self.video_buffer[(y - yp as usize) * self.pitch + i] = color;
 
-            self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)..=
-                (yp as usize + y) * self.pitch + (xp as usize + x)].fill(color);
-
-            self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)..=
-                (y - yp as usize) * self.pitch + (xp as usize + x)].fill(color);
+            }
 
             if d_region > 0 {
                 yp -= 1;
@@ -1130,13 +1107,12 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
                 d_region -= dy;
                 d_region += xi * xi;
             }
-
         }
 
     }
 
     pub fn _vga13h_draw_elipse(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
-        let (xi,yi,wi,hi) = (x as isize, y as isize, width as isize, height as isize);
+        let (xi,wi,hi) = (x as isize, width as isize, height as isize);
 
         let wi_squared = wi * wi;
         let hi_squared = hi * hi;

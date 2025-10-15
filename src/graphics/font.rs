@@ -1,12 +1,12 @@
-use crate::drivers::vga_graphics::{Font, Fonts};
 use lazy_static::lazy_static;
+use crate::drivers::vga_graphics::VgaFont;
 /*
  * Created by Antek Kuczyński
  * 12/10/2025
  */
 
-struct BitmapFont<const MEM_LENGTH: usize> {
-    mem: &'static [u8; MEM_LENGTH],
+pub struct BitmapFont {
+    mem: &'static [u8],
     lochar: usize,
     hichar: usize,
     bytes_per_char: usize,
@@ -14,8 +14,8 @@ struct BitmapFont<const MEM_LENGTH: usize> {
     width: usize
 }
 
-impl<const MEM_LENGTH: usize> BitmapFont<MEM_LENGTH> {
-    pub const fn new(mem: &'static [u8; MEM_LENGTH], lochar: usize, hichar: usize, width_bytes: usize, height: usize, width: usize) -> Self {
+impl BitmapFont {
+    pub const fn new(mem: &'static [u8], lochar: usize, hichar: usize, width_bytes: usize, height: usize, width: usize) -> Self {
         Self {
             mem,
             lochar,
@@ -29,6 +29,6 @@ impl<const MEM_LENGTH: usize> BitmapFont<MEM_LENGTH> {
 
 //static font instances
 lazy_static! {
-    pub static ref  VGA_FONT_8PX: Font<768> = Fonts::font_8x8_px();
-    pub static ref  VGA_FONT_16PX: Font<1536> = Fonts::font_8x16_px();
+    pub static ref  VGA_FONT_8PX: VgaFont = VgaFont::FONT_8PX;
+    pub static ref  VGA_FONT_16PX: VgaFont = VgaFont::FONT_16PX;
 }

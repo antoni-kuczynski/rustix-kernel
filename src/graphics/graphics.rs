@@ -1,5 +1,5 @@
 #[allow(dead_code)]
-use crate::drivers::vga_graphics::{Font, VgaVideoMode};
+use crate::drivers::vga_graphics::{VgaFont, VgaVideoMode};
 use crate::graphics::bitmap::Bitmap;
 use crate::graphics::color::U8Color;
 /*
@@ -31,6 +31,7 @@ pub struct Triangle {
 
 pub struct Graphics {
     color: U8Color,
+    font: VgaFont,
     device: VgaVideoMode<64000>
 }
 
@@ -38,10 +39,19 @@ impl Graphics {
     pub fn new() -> Self {
         let mut temp = Graphics {
             color: U8Color::BLACK,
+            font: VgaFont::FONT_8PX,
             device: VgaVideoMode::<64000>::new_vga_0x13_320x200_256color_mode()
         };
         temp.device.vga13h_init();
         temp
+    }
+
+    pub fn get_video_width(&self) -> usize {
+        self.device.video_width_px
+    }
+
+    pub fn get_video_height(&self) -> usize {
+        self.device.video_height_px
     }
 
     pub fn clear(&mut self) {
@@ -51,6 +61,11 @@ impl Graphics {
     pub fn set_color(&mut self, color: U8Color) {
         self.color = color;
     }
+
+    pub fn set_font(&mut self, font: VgaFont) {
+        self.font = font;
+    }
+
     pub fn fill_rect(&mut self, rect: Rectangle) {
         let p0 = rect.p0;
         self.device._vga13h_fill_rect(
@@ -101,9 +116,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_bitmap<const LENGTH_BYTES: usize>
-    (&mut self, p: UPoint, bitmap: Bitmap<LENGTH_BYTES>)
-    {
+    pub fn draw_bitmap(&mut self, p: UPoint, bitmap: &Bitmap) {
         self.device._vga13h_draw_bitmap(
             p.x, p.y,
             bitmap.width, bitmap.height,
@@ -111,22 +124,20 @@ impl Graphics {
         );
     }
 
-    pub fn draw_char<const BYTES_PER_CHAR: usize>
-    (&mut self, p: UPoint, char: char, font: Font<BYTES_PER_CHAR>) {
+    pub fn draw_char(&mut self, p: UPoint, char: char) {
         self.device._vga13h_draw_char_transparent(
             p.x,p.y,
             char,
-            &font,
+            &self.font,
             self.color.as_u8()
         )
     }
 
-    pub fn draw_str<const BYTES_PER_CHAR: usize>
-    (&mut self, p: UPoint, str: &str, font: Font<BYTES_PER_CHAR>) {
+    pub fn draw_str(&mut self, p: UPoint, str: &str) {
         self.device._vga13h_draw_string(
             p.x,p.y,
             str,
-            &font,
+            &self.font,
             self.color.as_u8()
         )
     }
