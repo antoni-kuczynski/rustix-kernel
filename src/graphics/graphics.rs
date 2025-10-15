@@ -130,6 +130,22 @@ impl Graphics {
             self.color.as_u8()
         )
     }
+
+    pub fn fill_elipse(&mut self, p: UPoint, width: usize, height: usize) {
+        self.device._vga13h_fill_elipse(
+            p.x, p.y,
+            width, height,
+            self.color.as_u8()
+        );
+    }
+
+    pub fn draw_elipse(&mut self, p: UPoint, width: usize, height: usize) {
+        self.device._vga13h_draw_elipse(
+            p.x, p.y,
+            width, height,
+            self.color.as_u8()
+        );
+    }
 }
 
 #[macro_export]

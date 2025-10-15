@@ -1056,7 +1056,146 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             self.video_buffer[pixel_index] = color;
             self.video_buffer[pixel_index + width] = color;
         }
+    }
 
+    pub fn _vga13h_fill_elipse(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
+        let (xi,yi,wi,hi) = (x as isize, y as isize, width as isize, height as isize);
+
+        let wi_squared = wi * wi;
+        let hi_squared = hi * hi;
+
+        let mut xp: isize = 0;
+        let mut yp: isize = hi;
+        let mut dx: isize = xp * (hi_squared << 1);
+        let mut dy: isize = yp * (wi_squared << 1);
+
+        //-=-=-=Region 1-=-=-=-=
+
+        //decision parameter for region 1
+        let mut d_region = hi_squared + ((xi * xi) >> 2) - (wi_squared * hi);
+        while dx < dy {
+            self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)..=
+                (yp as usize + y) * self.pitch + (xp as usize + x)].fill(color);
+
+            self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)..=
+                (y - yp as usize) * self.pitch + (xp as usize + x)].fill(color);
+
+            // self.video_buffer[(yp as usize + y) * self.pitch + (xp as usize + x)] = color;
+            // self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)] = color;
+            // self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)] = color;
+            // self.video_buffer[(y - yp as usize) * self.pitch + (xp as usize + x)] = color;
+
+            if d_region < 0 {
+                xp += 1;
+                dx += hi_squared << 1;
+                d_region += dx;
+                d_region += hi_squared;
+            } else {
+                xp += 1;
+                yp -= 1;
+                dx += hi_squared << 1;
+                dy -= wi_squared << 1;
+                d_region += dx;
+                d_region -= dy;
+                d_region += hi_squared;
+            }
+        }
+
+        //-=-=-=-=Region 2=-=-=-=-=
+        d_region = hi_squared * ((xp + 1/2) * (xp + 1/2))
+            + wi_squared * ((yp - 1) * (yp - 1)) - (wi_squared * hi_squared);
+        while yp >= 0 {
+            // self.video_buffer[(yp as usize + y) * self.pitch + (xp as usize + x)] = color;
+            // self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)] = color;
+            // self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)] = color;
+            // self.video_buffer[(y - yp as usize) * self.pitch + (xp as usize + x)] = color;
+
+            self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)..=
+                (yp as usize + y) * self.pitch + (xp as usize + x)].fill(color);
+
+            self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)..=
+                (y - yp as usize) * self.pitch + (xp as usize + x)].fill(color);
+
+            if d_region > 0 {
+                yp -= 1;
+                dy -= wi_squared << 1;
+                d_region += wi_squared;
+                d_region -= dy;
+            } else {
+                yp -= 1;
+                xp += 1;
+                dx += hi_squared << 1;
+                dy -= wi_squared << 1;
+                d_region += dx;
+                d_region -= dy;
+                d_region += xi * xi;
+            }
+
+        }
+
+    }
+
+    pub fn _vga13h_draw_elipse(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
+        let (xi,yi,wi,hi) = (x as isize, y as isize, width as isize, height as isize);
+
+        let wi_squared = wi * wi;
+        let hi_squared = hi * hi;
+
+        let mut xp: isize = 0;
+        let mut yp: isize = hi;
+        let mut dx: isize = xp * (hi_squared << 1);
+        let mut dy: isize = yp * (wi_squared << 1);
+
+        //-=-=-=Region 1-=-=-=-=
+
+        //decision parameter for region 1
+        let mut d_region = hi_squared + ((xi * xi) >> 2) - (wi_squared * hi);
+        while dx < dy {
+            self.video_buffer[(yp as usize + y) * self.pitch + (xp as usize + x)] = color;
+            self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)] = color;
+            self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)] = color;
+            self.video_buffer[(y - yp as usize) * self.pitch + (xp as usize + x)] = color;
+
+            if d_region < 0 {
+                xp += 1;
+                dx += hi_squared << 1;
+                d_region += dx;
+                d_region += hi_squared;
+            } else {
+                xp += 1;
+                yp -= 1;
+                dx += hi_squared << 1;
+                dy -= wi_squared << 1;
+                d_region += dx;
+                d_region -= dy;
+                d_region += hi_squared;
+            }
+        }
+
+        //-=-=-=-=Region 2=-=-=-=-=
+        d_region = hi_squared * ((xp + 1/2) * (xp + 1/2))
+            + wi_squared * ((yp - 1) * (yp - 1)) - (wi_squared * hi_squared);
+        while yp >= 0 {
+            self.video_buffer[(yp as usize + y) * self.pitch + (xp as usize + x)] = color;
+            self.video_buffer[(yp as usize + y) * self.pitch + (x - xp as usize)] = color;
+            self.video_buffer[(y - yp as usize) * self.pitch + (x - xp as usize)] = color;
+            self.video_buffer[(y - yp as usize) * self.pitch + (xp as usize + x)] = color;
+
+            if d_region > 0 {
+                yp -= 1;
+                dy -= wi_squared << 1;
+                d_region += wi_squared;
+                d_region -= dy;
+            } else {
+                yp -= 1;
+                xp += 1;
+                dx += hi_squared << 1;
+                dy -= wi_squared << 1;
+                d_region += dx;
+                d_region -= dy;
+                d_region += xi * xi;
+            }
+        }
     }
 
     pub fn _vga13h_clear_buffer(&mut self) {
