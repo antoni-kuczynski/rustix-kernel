@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 use alloc::vec;
 use alloc::vec::Vec;
 use crate::graphics::bitmap::Bitmap;

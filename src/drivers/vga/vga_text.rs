@@ -1,8 +1,12 @@
 #![allow(dead_code)]
-use core::fmt::Arguments;
 
+use core::arch::asm;
+use core::fmt::Arguments;
+use core::ops::Add;
+use core::ptr;
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, set_12h_mode_regs};
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -34,6 +38,10 @@ use lazy_static::lazy_static;
  * 0x6      Brown       0xe             Yellow
  * 0x7      LightGray   0xf             White
  */
+
+//  **VGA REGISTER VALUES**
+//  *MODE 0x03 TEXT MODE 80x25chars 16 colors*
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)] // u4 would be sufficient but rust does not have such type
@@ -121,14 +129,16 @@ struct VgaBuffer{
     chars:  [[ScreenChar; VGA_BUFFER_WIDTH] ; VGA_BUFFER_HEIGHT],
 }
 
-pub struct VgaWriter {
+pub struct VgaTextMode {
     column_position: usize,         // keeps track of current position in the row
     row_position: usize,            // keeps track of current row
     color_code: ColorCode,          // specifies currently used colors
     buffer: &'static mut VgaBuffer, // 'static is valid for VGA text buffer
+    buf_start_p: usize, //buffer start address - used for clear_buf
+    buf_end_p: usize    //buffer end address
 }
 
-impl VgaWriter {
+impl VgaTextMode {
 
     fn new() -> Self{
         Self {
@@ -136,6 +146,8 @@ impl VgaWriter {
             row_position: 0,
             color_code: ColorCode::new(Color::White,Color::Black),
             buffer: unsafe { &mut *(0xb8000 as *mut VgaBuffer) },
+            buf_start_p: 0xB8000,
+            buf_end_p: 0xBBFFF
         }
     }
 
@@ -228,10 +240,29 @@ impl VgaWriter {
                color_code: self.color_code
            });
    }
+
+    fn _vga_clear_mode_03h_buffer(&mut self) {
+        unsafe {
+            let pixel_p: *mut u8 = self.buf_start_p as *mut u8;
+            let buf_size = self.buf_end_p - self.buf_start_p;
+            for i in 0..buf_size {
+                ptr::write_volatile(pixel_p.add(i), 0x00);
+            }
+        }
+    }
+
+    pub fn init_vga_text_mode_03h(&mut self) {
+        unsafe {
+            asm!("cli");
+            set_03h_mode_regs();
+            asm!("sti");
+        }
+        self._vga_clear_mode_03h_buffer();
+    }
 }
 
 
-impl core::fmt::Write for VgaWriter{
+impl core::fmt::Write for VgaTextMode {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.write(s);
         Ok(())
@@ -241,12 +272,12 @@ impl core::fmt::Write for VgaWriter{
 // static instance of VgaWriter
 // to access use vga::VGAWRITER.lock()
 lazy_static! {
-    pub static ref VGAWRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
+    pub static ref VGAWRITER: Mutex<VgaTextMode> = Mutex::new(VgaTextMode::new());
 }
 
 #[macro_export]
 macro_rules! vgaprint {
-    ($($arg:tt)*) => ($crate::drivers::vga_text::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::drivers::vga::vga_text::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
@@ -254,6 +285,7 @@ macro_rules! vgaprintln {
     () => ($crate::vgaprint!("\n"));
     ($($arg:tt)*) => ($crate::vgaprint!("{}\n", format_args!($($arg)*)));
 }
+
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {

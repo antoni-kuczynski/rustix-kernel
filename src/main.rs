@@ -8,16 +8,18 @@
 
 extern crate alloc;
 
-use crate::graphics::graphics::UPoint;
-use core::{panic::PanicInfo};
-use alloc::{boxed::Box, vec};
-use bootloader::{entry_point, BootInfo};
-use crate::{drivers::vga_text::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
-use crate::drivers::vga_graphics::VgaFont;
+use crate::drivers::vga::vga_text::{Color, VgaTextMode, VGAWRITER};
 use crate::graphics::bitmap::Bitmap;
 use crate::graphics::color::U8Color;
 use crate::graphics::graphics::Graphics;
-use crate::test_bitmap::{get_my_cat_bitmap};
+use crate::graphics::graphics::UPoint;
+use crate::memory::mapping::BootInfoFrameAllocator;
+use crate::memory::pages;
+use alloc::vec;
+use bootloader::{entry_point, BootInfo};
+use core::panic::PanicInfo;
+use crate::interrupts::hardware::pic8259::sleep;
+use crate::test_bitmap::get_drawn_house_bitmap;
 
 mod drivers;
 mod interrupts;
@@ -49,23 +51,28 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     //
     // vgaprintln!("nie wyjebalo sie jupi");
 
-    let mut graphics = Graphics::new();
+    // let mut graphics = Graphics::new();
 
     // graphics.set_color(U8Color::MAGENTA);
     // graphics.fill_elipse(point!(100,100),90,50);
+    
+    // graphics.set_color(U8Color::WHITE);
+    // graphics.draw_str(point!(10,10), "abcdefghijklmnoprstuwxyz");
+    // graphics.draw_str(point!(10,25), "ABCDEFGHIJKLMNOPRSTUWXYZ");
+    // graphics.draw_str(point!(10,40), "1234567890!@#$%^&*()-=_+");
+    // // let bmp = Bitmap::new_u8_bitmap(4, 1, vec![0xFF, 0xFF, 0xFF, 0xFF]);
+    // let bmp = get_drawn_house_bitmap();
+    // match bmp {
+    //     None => {}
+    //     Some(_) => {
+    //         graphics.draw_bitmap(point!(0,0), &bmp.unwrap());
+    //     }
+    // }
+    //
+    // sleep(2000);
 
-    graphics.set_color(U8Color::WHITE);
-    graphics.draw_str(point!(10,10), "abcdefghijklmnoprstuwxyz");
-    graphics.draw_str(point!(10,25), "ABCDEFGHIJKLMNOPRSTUWXYZ");
-    graphics.draw_str(point!(10,40), "1234567890!@#$%^&*()-=_+");
-    let bmp = Bitmap::new_u8_bitmap(4, 1, vec![0xFF, 0xFF, 0xFF, 0xFF]);
-    match bmp {
-        None => {}
-        Some(_) => {
-            graphics.draw_bitmap(point!(0,0), &bmp.unwrap());
-        }
-    }
-
+    VGAWRITER.lock().init_vga_text_mode_03h();
+    vgaprintln!("test lol");
 
     loop{
         x86_64::instructions::hlt();

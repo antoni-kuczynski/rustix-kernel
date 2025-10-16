@@ -1,5 +1,6 @@
+#[allow(dead_code)]
 use lazy_static::lazy_static;
-use crate::drivers::vga_graphics::VgaFont;
+use crate::drivers::vga::vga_graphics::VgaFont;
 /*
  * Created by Antek Kuczyński
  * 12/10/2025

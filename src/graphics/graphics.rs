@@ -1,5 +1,5 @@
+use crate::drivers::vga::vga_graphics::{VgaFont, VgaVideoMode};
 #[allow(dead_code)]
-use crate::drivers::vga_graphics::{VgaFont, VgaVideoMode};
 use crate::graphics::bitmap::Bitmap;
 use crate::graphics::color::U8Color;
 /*

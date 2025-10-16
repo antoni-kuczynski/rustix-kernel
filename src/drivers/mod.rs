@@ -1,3 +1,1 @@
-
-pub mod vga_text;
-pub mod vga_graphics;
+pub mod vga;

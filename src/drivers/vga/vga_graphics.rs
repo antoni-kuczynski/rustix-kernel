@@ -6,164 +6,165 @@
 use alloc::vec::Vec;
 use core::arch::asm;
 use core::ptr;
+use crate::drivers::vga::registers::vga_io::*;
 
-//  **VGA PORTS**
-//  *CRT CONTROLLER*
-const VGA_CRT_CONTROL_INDEX: u16 = 0x03D4;
-//------------------------------------------
-//  *ATTRIBUTE CONTROLLER*
-const VGA_AC_INDEX: u16 = 0x3C0;
-const VGA_AC_WRITE: u16 = 0x3C0;
-const VGA_INSTAT_READ: u16 = 0x3DA;
-//---------------------------------------
-//  *SEQUENCER*
-const VGA_SEQUENCER_INDEX: u16 = 0x03C4;
-//-----------------------------------------
-//  *MISC OUTPUT REGISTER*
-const VGA_MISC_OUTPUT_INDEX: u16 = 0x03C2;
-//-------------------------------------------
-//  *GRAPHICS CONTROLLER*
-const VGA_GRAPHICS_CONTROLLER_INDEX: u16 = 0x03CE;
-//---------------------------------------------------
+// //  **VGA PORTS**
+// //  *CRT CONTROLLER*
+// const VGA_CRT_CONTROL_INDEX: u16 = 0x03D4;
+// //------------------------------------------
+// //  *ATTRIBUTE CONTROLLER*
+// const VGA_AC_INDEX: u16 = 0x3C0;
+// const VGA_AC_WRITE: u16 = 0x3C0;
+// const VGA_INSTAT_READ: u16 = 0x3DA;
+// //---------------------------------------
+// //  *SEQUENCER*
+// const VGA_SEQUENCER_INDEX: u16 = 0x03C4;
+// //-----------------------------------------
+// //  *MISC OUTPUT REGISTER*
+// const VGA_MISC_OUTPUT_INDEX: u16 = 0x03C2;
+// //-------------------------------------------
+// //  *GRAPHICS CONTROLLER*
+// const VGA_GRAPHICS_CONTROLLER_INDEX: u16 = 0x03CE;
+// //---------------------------------------------------
 //  **VIDEO BUFFER VARIABLES**
 const VIDEO_WIDTH: usize = 320;
 const VIDEO_HEIGHT: usize = 200;
 const BUFFER_LENGTH_BYTES: usize = VIDEO_WIDTH * VIDEO_HEIGHT;
 //-------------------------------------------------------------
-//  **VGA REGISTER VALUES**
-//  *MODE 0x13 320x200px 256 colors (8bit)*
-const VGA_13H_MISC_OUTPUT_REG: u8 = 0x63;
-const VGA_13H_CRT_CONTROL_REGS: [u16; 18] = [
-    0x5F00, //Horizontal total register (index 0x00)
-    0x4F01, //Horizontal Display-Enable End Register (index 0x01)
-    0x5002, //Start Horizontal Blanking Register (index 0x02)
-    0x8203, //End Horizontal Blanking Register (index 0x03)
-    0x5404, //Start Horizontal Retrace Pulse Register (index 0x04)
-    0x8005, //End Horizontal Retrace Register (index 0x05)
-    0xBF06, //Vertical Total Register (index 0x06)
-    0x1F07, //Overflow Register (0x07)
-    0x0008, //Preset row scan register (index 0x08)
-    0x4109, //Maximum scan line regisyer (index 0x09)
-    0x9C10, //Vertical Retrace Start Register (index 0x10)
-    0x0E11, //Vertical Retrace End Register (index 0x11, is set first to unlock registers 0x00 to 0x07
-    0x8F12, //Vertical Display-Enable End Register (0x12)
-    0x2813, //Offset Register (0x13)
-    0x4014, //Underline Location Register (index 0x14)
-    0x9615, //Start Vertical Blanking Register (0x15)
-    0xB916, //End Vertical Blanking Register (0x16)
-    0xA317  //CRT Mode Control Register (0x17)
-];
-
-const VGA_13H_SEQUENCER_REGS: [u16; 5] = [
-    0x0100, //Sequencer Address Register
-    0x0101, //Clocking mode register (index 0x01)
-    0x0F02, //Map mask register (index 0x02)
-    0x0003, //Character map select register (index 0x03)
-    0x0E04  //Memory mode register (index 0x04)
-];
-
-const VGA_13H_GRAPHICS_CONTROLLER_REGS: [u16; 9] = [
-    0x0000, //Set/reset register (0x00)
-    0x0001, //Enable set/reset register (0x01)
-    0x0002, //Color compare register (0x02)
-    0x0003, //Data rotate register (0x03)
-    0x0004, //Read map select register (0x04)
-    0x4005, //Graphics mode register (0x05)
-    0x0506, //Miscellaneous Register (index 0x06)
-    0x0F07, //Color don't care register (0x07)
-    0xFF08  //Bit mask register (0x08)
-];
-
-const VGA_13H_ATTRIBUTE_CONTROLLER_REGS: [u8; 21] = [
-    0x00,
-    0x01,
-    0x02,
-    0x03,
-    0x04,
-    0x05,
-    0x06,
-    0x07,
-    0x08,
-    0x09,
-    0x0A,
-    0x0B,
-    0x0C,
-    0x0D,
-    0x0E,
-    0x0F,
-    0x41,
-    0x00,
-    0x0F,
-    0x00,
-    0x00,
-];
-//  *MODE 0x12 640x480px 16 colors (4bit)*
-const VGA_12H_MISC_OUTPUT_REG: u8 = 0xE3;
-const VGA_12H_CRT_CONTROL_REGS: [u16; 18] = [
-    0x5F00, //Horizontal total register (index 0x00)
-    0x4F01, //Horizontal Display-Enable End Register (index 0x01)
-    0x5002, //Start Horizontal Blanking Register (index 0x02)
-    0x8203, //End Horizontal Blanking Register (index 0x03)
-    0x5404, //Start Horizontal Retrace Pulse Register (index 0x04)
-    0x8005, //End Horizontal Retrace Register (index 0x05)
-    0x0B06, //Vertical Total Register (index 0x06)
-    0x3E07, //Overflow Register (0x07)
-    0x0008, //Preset row scan register (index 0x08)
-    0x4009, //Maximum scan line regisyer (index 0x09)
-    0xEA10, //Vertical Retrace Start Register (index 0x10)
-    0x0C11, //Vertical Retrace End Register (index 0x11, is set first to unlock registers 0x00 to 0x07
-    0xDF12, //Vertical Display-Enable End Register (0x12)
-    0x2813, //Offset Register (0x13)
-    0x0014, //Underline Location Register (index 0x14)
-    0xE715, //Start Vertical Blanking Register (0x15)
-    0x0416, //End Vertical Blanking Register (0x16)
-    0xE317  //CRT Mode Control Register (0x17)
-];
-
-const VGA_12H_SEQUENCER_REGS: [u16; 5] = [
-    0x0300, //Sequencer Address Register
-    0x0101, //Clocking mode register (index 0x01)
-    0x0802, //Map mask register (index 0x02)
-    0x0003, //Character map select register (index 0x03)
-    0x0604  //Memory mode register (index 0x04)
-];
-
-const VGA_12H_GRAPHICS_CONTROLLER_REGS: [u16; 9] = [
-    0x0000, //Set/reset register (0x00)
-    0x0001, //Enable set/reset register (0x01)
-    0x0002, //Color compare register (0x02)
-    0x0003, //Data rotate register (0x03)
-    0x0304, //Read map select register (0x04)
-    0x0005, //Graphics mode register (0x05)
-    0x0506, //Miscellaneous Register (index 0x06)
-    0x0F07, //Color don't care register (0x07)
-    0xFF08  //Bit mask register (0x08)
-];
-
-const VGA_12H_ATTRIBUTE_CONTROLLER_REGS: [u8; 21] = [
-    0x00,
-    0x01,
-    0x02,
-    0x03,
-    0x04,
-    0x05,
-    0x14,
-    0x07,
-    0x38,
-    0x39,
-    0x3A,
-    0x3B,
-    0x3C,
-    0x3D,
-    0x3E,
-    0x3F,
-    0x01,
-    0x00,
-    0x0F,
-    0x00,
-    0x00,
-];
-//--------------------------------------------------------
+// //  **VGA REGISTER VALUES**
+// //  *MODE 0x13 320x200px 256 colors (8bit)*
+// const VGA_13H_MISC_OUTPUT_REG: u8 = 0x63;
+// const VGA_13H_CRT_CONTROL_REGS: [u16; 18] = [
+//     0x5F00, //Horizontal total register (index 0x00)
+//     0x4F01, //Horizontal Display-Enable End Register (index 0x01)
+//     0x5002, //Start Horizontal Blanking Register (index 0x02)
+//     0x8203, //End Horizontal Blanking Register (index 0x03)
+//     0x5404, //Start Horizontal Retrace Pulse Register (index 0x04)
+//     0x8005, //End Horizontal Retrace Register (index 0x05)
+//     0xBF06, //Vertical Total Register (index 0x06)
+//     0x1F07, //Overflow Register (0x07)
+//     0x0008, //Preset row scan register (index 0x08)
+//     0x4109, //Maximum scan line regisyer (index 0x09)
+//     0x9C10, //Vertical Retrace Start Register (index 0x10)
+//     0x0E11, //Vertical Retrace End Register (index 0x11, is set first to unlock registers 0x00 to 0x07
+//     0x8F12, //Vertical Display-Enable End Register (0x12)
+//     0x2813, //Offset Register (0x13)
+//     0x4014, //Underline Location Register (index 0x14)
+//     0x9615, //Start Vertical Blanking Register (0x15)
+//     0xB916, //End Vertical Blanking Register (0x16)
+//     0xA317  //CRT Mode Control Register (0x17)
+// ];
+//
+// const VGA_13H_SEQUENCER_REGS: [u16; 5] = [
+//     0x0100, //Sequencer Address Register
+//     0x0101, //Clocking mode register (index 0x01)
+//     0x0F02, //Map mask register (index 0x02)
+//     0x0003, //Character map select register (index 0x03)
+//     0x0E04  //Memory mode register (index 0x04)
+// ];
+//
+// const VGA_13H_GRAPHICS_CONTROLLER_REGS: [u16; 9] = [
+//     0x0000, //Set/reset register (0x00)
+//     0x0001, //Enable set/reset register (0x01)
+//     0x0002, //Color compare register (0x02)
+//     0x0003, //Data rotate register (0x03)
+//     0x0004, //Read map select register (0x04)
+//     0x4005, //Graphics mode register (0x05)
+//     0x0506, //Miscellaneous Register (index 0x06)
+//     0x0F07, //Color don't care register (0x07)
+//     0xFF08  //Bit mask register (0x08)
+// ];
+//
+// const VGA_13H_ATTRIBUTE_CONTROLLER_REGS: [u8; 21] = [
+//     0x00,
+//     0x01,
+//     0x02,
+//     0x03,
+//     0x04,
+//     0x05,
+//     0x06,
+//     0x07,
+//     0x08,
+//     0x09,
+//     0x0A,
+//     0x0B,
+//     0x0C,
+//     0x0D,
+//     0x0E,
+//     0x0F,
+//     0x41,
+//     0x00,
+//     0x0F,
+//     0x00,
+//     0x00,
+// ];
+// //  *MODE 0x12 640x480px 16 colors (4bit)*
+// const VGA_12H_MISC_OUTPUT_REG: u8 = 0xE3;
+// const VGA_12H_CRT_CONTROL_REGS: [u16; 18] = [
+//     0x5F00, //Horizontal total register (index 0x00)
+//     0x4F01, //Horizontal Display-Enable End Register (index 0x01)
+//     0x5002, //Start Horizontal Blanking Register (index 0x02)
+//     0x8203, //End Horizontal Blanking Register (index 0x03)
+//     0x5404, //Start Horizontal Retrace Pulse Register (index 0x04)
+//     0x8005, //End Horizontal Retrace Register (index 0x05)
+//     0x0B06, //Vertical Total Register (index 0x06)
+//     0x3E07, //Overflow Register (0x07)
+//     0x0008, //Preset row scan register (index 0x08)
+//     0x4009, //Maximum scan line regisyer (index 0x09)
+//     0xEA10, //Vertical Retrace Start Register (index 0x10)
+//     0x0C11, //Vertical Retrace End Register (index 0x11, is set first to unlock registers 0x00 to 0x07
+//     0xDF12, //Vertical Display-Enable End Register (0x12)
+//     0x2813, //Offset Register (0x13)
+//     0x0014, //Underline Location Register (index 0x14)
+//     0xE715, //Start Vertical Blanking Register (0x15)
+//     0x0416, //End Vertical Blanking Register (0x16)
+//     0xE317  //CRT Mode Control Register (0x17)
+// ];
+//
+// const VGA_12H_SEQUENCER_REGS: [u16; 5] = [
+//     0x0300, //Sequencer Address Register
+//     0x0101, //Clocking mode register (index 0x01)
+//     0x0802, //Map mask register (index 0x02)
+//     0x0003, //Character map select register (index 0x03)
+//     0x0604  //Memory mode register (index 0x04)
+// ];
+//
+// const VGA_12H_GRAPHICS_CONTROLLER_REGS: [u16; 9] = [
+//     0x0000, //Set/reset register (0x00)
+//     0x0001, //Enable set/reset register (0x01)
+//     0x0002, //Color compare register (0x02)
+//     0x0003, //Data rotate register (0x03)
+//     0x0304, //Read map select register (0x04)
+//     0x0005, //Graphics mode register (0x05)
+//     0x0506, //Miscellaneous Register (index 0x06)
+//     0x0F07, //Color don't care register (0x07)
+//     0xFF08  //Bit mask register (0x08)
+// ];
+//
+// const VGA_12H_ATTRIBUTE_CONTROLLER_REGS: [u8; 21] = [
+//     0x00,
+//     0x01,
+//     0x02,
+//     0x03,
+//     0x04,
+//     0x05,
+//     0x14,
+//     0x07,
+//     0x38,
+//     0x39,
+//     0x3A,
+//     0x3B,
+//     0x3C,
+//     0x3D,
+//     0x3E,
+//     0x3F,
+//     0x01,
+//     0x00,
+//     0x0F,
+//     0x00,
+//     0x00,
+// ];
+// //--------------------------------------------------------
 //  **FONTS**
 //  *8px FONT*
 const LOCHAR_8PX: usize = 32;
@@ -374,57 +375,57 @@ const FONT_16PX: &[u8] = &[
     0x00,0x00,0x08,0x08,0x1C,0x1C,0x36,0x36,0x63,0x63,0x63,0x63,0x7F,0x7F,0x00,0x00
 ];
 //--------------------------------------------------
-//  **UTIL FUNCTIONS**
-#[inline(always)]
-pub unsafe fn outw(port: u16, value: u16) {
-    unsafe {
-        asm!(
-            "out dx, ax",
-            in("dx") port,
-            in("ax") value,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
+// //  **UTIL FUNCTIONS**
+// #[inline(always)]
+// pub unsafe fn outw(port: u16, value: u16) {
+//     unsafe {
+//         asm!(
+//             "out dx, ax",
+//             in("dx") port,
+//             in("ax") value,
+//             options(nomem, nostack, preserves_flags)
+//         );
+//     }
+// }
+//
+// #[inline(always)]
+// pub unsafe fn outb(port: u16, value: u8) {
+//     unsafe {
+//         asm!(
+//             "out dx, al",
+//             in ("dx") port,
+//             in("al") value,
+//             options(nomem, nostack, preserves_flags)
+//         );
+//     }
+// }
+//
+// #[inline(always)]
+// pub unsafe fn inb(port: u16) -> u8 {
+//     unsafe {
+//         let value: u8;
+//         asm!(
+//             "in al, dx",
+//             in("dx") port,
+//             out("al") value,
+//             options(nomem, nostack, preserves_flags)
+//         );
+//         value
+//     }
+// }
 
-#[inline(always)]
-pub unsafe fn outb(port: u16, value: u8) {
-    unsafe {
-        asm!(
-            "out dx, al",
-            in ("dx") port,
-            in("al") value,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
-
-#[inline(always)]
-pub unsafe fn inb(port: u16) -> u8 {
-    unsafe {
-        let value: u8;
-        asm!(
-            "in al, dx",
-            in("dx") port,
-            out("al") value,
-            options(nomem, nostack, preserves_flags)
-        );
-        value
-    }
-}
-
-unsafe fn gc_write(index: u8, value: u8) {
-    unsafe {
-        outb(VGA_GRAPHICS_CONTROLLER_INDEX, index);
-        outb(VGA_GRAPHICS_CONTROLLER_INDEX + 1, value); // GC_DATA = 0x3CF
-    }
-}
-unsafe fn sc_write(index: u8, value: u8) {
-    unsafe {
-        outb(VGA_SEQUENCER_INDEX, index);
-        outb(VGA_SEQUENCER_INDEX + 1, value); // SC_DATA = 0x3C5
-    }
-}
+// unsafe fn gc_write(index: u8, value: u8) {
+//     unsafe {
+//         outb(VGA_GRAPHICS_CONTROLLER_INDEX, index);
+//         outb(VGA_GRAPHICS_CONTROLLER_INDEX + 1, value); // GC_DATA = 0x3CF
+//     }
+// }
+// unsafe fn sc_write(index: u8, value: u8) {
+//     unsafe {
+//         outb(VGA_SEQUENCER_INDEX, index);
+//         outb(VGA_SEQUENCER_INDEX + 1, value); // SC_DATA = 0x3C5
+//     }
+// }
 
 fn abs(x: isize) -> isize {
     if x < 0 {
@@ -432,132 +433,132 @@ fn abs(x: isize) -> isize {
     }
     x
 }
-//-------------------------------------
-//  **REGISTRY SETTING**
-pub fn set_reg_values(
-    vga_misc_output_reg: u8,
-    vga_crt_control_regs: [u16; 18],
-    vga_sequencer_regs: [u16; 5],
-    graphics_controller_regs: [u16; 9],
-    attribute_controller_regs: [u8; 21]
-) {
-    unsafe {
-        asm!("cli");
-
-        //Miscellaneous Output Register
-        outb(VGA_MISC_OUTPUT_INDEX, vga_misc_output_reg);
-
-        //CRT Control registers
-        outw(VGA_CRT_CONTROL_INDEX, vga_crt_control_regs[11]); //first write register 0x11 to unlock regs 0x00 to 0x07
-        for (index, reg) in vga_crt_control_regs.iter().enumerate() {
-            if index == 11 {
-                continue;   //we've already written to that register so skip it
-            }
-            outw(VGA_CRT_CONTROL_INDEX, *reg);
-        }
-
-        //Sequencer registers (0x03C4):
-        for reg in vga_sequencer_regs.iter() {
-            outw(VGA_SEQUENCER_INDEX, *reg);
-        }
-
-        //Graphics controller registers (0xCE):
-        for reg in graphics_controller_regs.iter() {
-            outw(VGA_GRAPHICS_CONTROLLER_INDEX, *reg);
-        }
-
-        //Attribute controller registers:
-        for (i, &val) in attribute_controller_regs.iter().enumerate() {
-            inb(VGA_INSTAT_READ);   //reset flip-flop
-            outb(VGA_AC_INDEX, i as u8);    //select register
-            outb(VGA_AC_WRITE, val);        //write value
-        }
-
-        //Lock 16-color palette and unblank display
-        inb(VGA_INSTAT_READ);
-        outb(VGA_AC_INDEX, 0x20);
-    }
-}
-//----------------------------------------------
+// //-------------------------------------
+// //  **REGISTRY SETTING**
+// pub fn set_reg_values(
+//     vga_misc_output_reg: u8,
+//     vga_crt_control_regs: [u16; 18],
+//     vga_sequencer_regs: [u16; 5],
+//     graphics_controller_regs: [u16; 9],
+//     attribute_controller_regs: [u8; 21]
+// ) {
+//     unsafe {
+//         asm!("cli");
+//
+//         //Miscellaneous Output Register
+//         outb(VGA_MISC_OUTPUT_INDEX, vga_misc_output_reg);
+//
+//         //CRT Control registers
+//         outw(VGA_CRT_CONTROL_INDEX, vga_crt_control_regs[11]); //first write register 0x11 to unlock regs 0x00 to 0x07
+//         for (index, reg) in vga_crt_control_regs.iter().enumerate() {
+//             if index == 11 {
+//                 continue;   //we've already written to that register so skip it
+//             }
+//             outw(VGA_CRT_CONTROL_INDEX, *reg);
+//         }
+//
+//         //Sequencer registers (0x03C4):
+//         for reg in vga_sequencer_regs.iter() {
+//             outw(VGA_SEQUENCER_INDEX, *reg);
+//         }
+//
+//         //Graphics controller registers (0xCE):
+//         for reg in graphics_controller_regs.iter() {
+//             outw(VGA_GRAPHICS_CONTROLLER_INDEX, *reg);
+//         }
+//
+//         //Attribute controller registers:
+//         for (i, &val) in attribute_controller_regs.iter().enumerate() {
+//             inb(VGA_INSTAT_READ);   //reset flip-flop
+//             outb(VGA_AC_INDEX, i as u8);    //select register
+//             outb(VGA_AC_WRITE, val);        //write value
+//         }
+//
+//         //Lock 16-color palette and unblank display
+//         inb(VGA_INSTAT_READ);
+//         outb(VGA_AC_INDEX, 0x20);
+//     }
+// }
+// //----------------------------------------------
 //  **LOADING THE COLOR PALLETS INTO DAC**
 
-unsafe fn dac_color_output(r: u8, g: u8, b: u8) {
-    unsafe {
-        outb(0x03C9, r);
-        outb(0x03C9, g);
-        outb(0x03C9, b);
-    }
-}
+// unsafe fn dac_color_output(r: u8, g: u8, b: u8) {
+//     unsafe {
+//         outb(0x03C9, r);
+//         outb(0x03C9, g);
+//         outb(0x03C9, b);
+//     }
+// }
 
-#[inline(always)]
-fn to_dac(val: u8) -> u8 {
-    (val >> 2) & 0x3F
-}
+// #[inline(always)]
+// fn to_dac(val: u8) -> u8 {
+//     (val >> 2) & 0x3F
+// }
 
-unsafe fn load_8bit_color_pallet_into_dac() {
-    unsafe {
-        //Unmask DAC palette
-        outb(0x03C6, 0xFF);
-
-        //Set the color start index to 0
-        outb(0x03C8, 0x00);
-
-
-        for r in 0..8 {        //3 bits for red
-            for g in 0..8 {    //3 bits for green
-                for b in 0..4 { //2 bits for blue
-                    //Scale to 0..63 (DAC range)
-                    let r6 = (r * 63 / 7) as u8;
-                    let g6 = (g * 63 / 7) as u8;
-                    let b6 = (b * 63 / 3) as u8;
-
-                    dac_color_output(r6, g6, b6);
-                    // outb(0x03C9, r6);
-                    // outb(0x03C9, g6);
-                    // outb(0x03C9, b6);
-                }
-            }
-        }
-    }
-}
-
-unsafe fn load_4bit_color_palette_into_dac() {
-    //Standard 16 VGA colors
-    let palette: [(u8, u8, u8); 16] = [
-        (0,   0,   0),     //Black  0x0
-        (0,   0, 168),     //Blue   0x1
-        (0, 168,   0),     //Green  0x2
-        (0, 168, 168),     //Cyan   0x3
-        (168, 0,   0),     //Red    0x4
-        (168, 0, 168),     //Magenta    0x5
-        (168, 84,  0),     //Brown  0x6
-        (168,168,168),     //Light Gray 0x7
-        (84, 84,  84),     //Dark Gray  0x8
-        (84, 84, 252),     //Light Blue 0x9
-        (84, 252, 84),     //Light Green    0xA
-        (84, 252,252),     //Light Cyan 0xB
-        (252, 84, 84),     //Light Red  0xC
-        (252, 84,252),     //Light Magenta  0xD
-        (252,168, 84),     //Yellow 0xE
-        (252,252,252),     //White  0xF
-    ];
-
-    unsafe {
-        //Unmask DAC palette
-        outb(0x03C6, 0xFF);
-
-        //Start writing at color index 0
-        outb(0x03C8, 0x00);
-
-        for &(r, g, b) in &palette {
-            dac_color_output(
-                to_dac(r),
-                to_dac(g),
-                to_dac(b)
-            );
-        }
-    }
-}
+// unsafe fn load_8bit_color_pallet_into_dac() {
+//     unsafe {
+//         //Unmask DAC palette
+//         outb(0x03C6, 0xFF);
+//
+//         //Set the color start index to 0
+//         outb(0x03C8, 0x00);
+//
+//
+//         for r in 0..8 {        //3 bits for red
+//             for g in 0..8 {    //3 bits for green
+//                 for b in 0..4 { //2 bits for blue
+//                     //Scale to 0..63 (DAC range)
+//                     let r6 = (r * 63 / 7) as u8;
+//                     let g6 = (g * 63 / 7) as u8;
+//                     let b6 = (b * 63 / 3) as u8;
+//
+//                     dac_color_output(r6, g6, b6);
+//                     // outb(0x03C9, r6);
+//                     // outb(0x03C9, g6);
+//                     // outb(0x03C9, b6);
+//                 }
+//             }
+//         }
+//     }
+// }
+//
+// unsafe fn load_4bit_color_palette_into_dac() {
+//     //Standard 16 VGA colors
+//     let palette: [(u8, u8, u8); 16] = [
+//         (0,   0,   0),     //Black  0x0
+//         (0,   0, 168),     //Blue   0x1
+//         (0, 168,   0),     //Green  0x2
+//         (0, 168, 168),     //Cyan   0x3
+//         (168, 0,   0),     //Red    0x4
+//         (168, 0, 168),     //Magenta    0x5
+//         (168, 84,  0),     //Brown  0x6
+//         (168,168,168),     //Light Gray 0x7
+//         (84, 84,  84),     //Dark Gray  0x8
+//         (84, 84, 252),     //Light Blue 0x9
+//         (84, 252, 84),     //Light Green    0xA
+//         (84, 252,252),     //Light Cyan 0xB
+//         (252, 84, 84),     //Light Red  0xC
+//         (252, 84,252),     //Light Magenta  0xD
+//         (252,168, 84),     //Yellow 0xE
+//         (252,252,252),     //White  0xF
+//     ];
+//
+//     unsafe {
+//         //Unmask DAC palette
+//         outb(0x03C6, 0xFF);
+//
+//         //Start writing at color index 0
+//         outb(0x03C8, 0x00);
+//
+//         for &(r, g, b) in &palette {
+//             dac_color_output(
+//                 to_dac(r),
+//                 to_dac(g),
+//                 to_dac(b)
+//             );
+//         }
+//     }
+// }
 
 pub struct VgaFont {
     mem: &'static [u8],
@@ -645,14 +646,14 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         let buf_ptr = self.video_buffer.as_mut_ptr();
 
         unsafe {
-            gc_write(0x05, 0x01);   //set write mode 1
-            gc_write(0x03, 0x08);   //set the function operated on data in system latches to AND
+            graphics_controller_write(0x05, 0x01);   //set write mode 1
+            graphics_controller_write(0x03, 0x08);   //set the function operated on data in system latches to AND
 
             ptr::read_volatile(buf_ptr.add(offset));    //loading the VGA latches by reading the destination byte in video buffer
             ptr::write_volatile(buf_ptr.add(offset), !mask); //write the !mask to clear the target bit
 
             // gc_write(0x05, 0x00);   //set the write mode back to 0
-            gc_write(0x00, color & 0x0F); //set the Set/Reset to the color's lower 4 bits
+            graphics_controller_write(0x00, color & 0x0F); //set the Set/Reset to the color's lower 4 bits
             /*
             Set/Reset register:
             7   6   5   4   3   2   1   0
@@ -660,15 +661,15 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             SRn - set/reset for map n
             In write mode 0, the system writes the value of SRn to the nth memory map
              */
-            gc_write(0x01, 0x0F);   //enable set/reset for all 4 planes
-            gc_write(0x08, mask);   //set the bit mask register to select the pixel within the byte
-            sc_write(0x02, 0x0F);   //enable all planes in sequencer
+            graphics_controller_write(0x01, 0x0F);   //enable set/reset for all 4 planes
+            graphics_controller_write(0x08, mask);   //set the bit mask register to select the pixel within the byte
+            sequcencer_write(0x02, 0x0F);   //enable all planes in sequencer
 
             //write the color
             //in this case the data value is ignored and the pixel is determined by
             //Set/reset and Bit mask
             ptr::write_volatile(buf_ptr.add(offset), 0xFF);
-            gc_write(0x03, 0x00);
+            graphics_controller_write(0x03, 0x00);
         }
     }
 
@@ -1184,9 +1185,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         let buf_ptr = self.video_buffer.as_mut_ptr();
 
         unsafe {
-            outw(VGA_SEQUENCER_INDEX, 0x0F02);  //Map Mask enable all planes
-            outw(VGA_GRAPHICS_CONTROLLER_INDEX, 0x0005);    //set the write mode to 0
-            outw(VGA_GRAPHICS_CONTROLLER_INDEX, 0xFF08);    //Bit Mask enable all bits
+            sequcencer_write(0x02,0x0F);    //Map Mask enable all planes
+            graphics_controller_write(0x00,0x05);   //set the write mode to 0
+            graphics_controller_write(0x08,0xFF);   //Bit Mask enable all bits
+            // outw(VGA_GRAPHICS_CONTROLLER_INDEX, 0x0005);
+            // outw(VGA_GRAPHICS_CONTROLLER_INDEX, 0xFF08);
 
             // for i in 0..640*480/8 {
             //     outw(VGA_SEQUENCER_INDEX, 0x0102);
@@ -1206,13 +1209,13 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
                 let line_offset = (y & 3) * 0x2000 + (y >> 2) * 80;
                 let addr = buf_ptr.add(line_offset);
                 for x in 0..80 {
-                    outw(VGA_SEQUENCER_INDEX, 0x0102);
+                    sequcencer_write(0x02, 0x01);
                     ptr::write_volatile(addr.add(x), 0xFF);
-                    outw(VGA_SEQUENCER_INDEX, 0x0202);
+                    sequcencer_write(0x02,0x02);
                     ptr::write_volatile(addr.add(x), 0x00);
-                    outw(VGA_SEQUENCER_INDEX, 0x0402);
+                    sequcencer_write(0x02,0x04);
                     ptr::write_volatile(addr.add(x), 0x00);
-                    outw(VGA_SEQUENCER_INDEX, 0x0802);
+                    sequcencer_write(0x02,0x08);
                     ptr::write_volatile(addr.add(x), 0x00);
                 }
             }
@@ -1259,13 +1262,8 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     pub fn vga12h_init(&mut self) {
         unsafe {
             asm!("cli");
-            set_reg_values(
-                VGA_12H_MISC_OUTPUT_REG,
-                VGA_12H_CRT_CONTROL_REGS,
-                VGA_12H_SEQUENCER_REGS,
-                VGA_12H_GRAPHICS_CONTROLLER_REGS,
-                VGA_12H_ATTRIBUTE_CONTROLLER_REGS
-            );
+
+            set_12h_mode_regs();
 
             //Setting the color pallete
             load_4bit_color_palette_into_dac();
@@ -1277,13 +1275,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     pub fn vga13h_init(&mut self) {
         unsafe {
             asm!("cli");
-            set_reg_values(
-                VGA_13H_MISC_OUTPUT_REG,
-                VGA_13H_CRT_CONTROL_REGS,
-                VGA_13H_SEQUENCER_REGS,
-                VGA_13H_GRAPHICS_CONTROLLER_REGS,
-                VGA_13H_ATTRIBUTE_CONTROLLER_REGS
-            );
+            set_13h_mode_regs();
 
             //Setting the color pallete
             load_8bit_color_pallet_into_dac();
