@@ -7,19 +7,17 @@
  */
 
 extern crate alloc;
-
-use crate::drivers::vga::vga_text::{Color, VgaTextMode, VGAWRITER};
-use crate::graphics::bitmap::Bitmap;
-use crate::graphics::color::U8Color;
-use crate::graphics::graphics::Graphics;
 use crate::graphics::graphics::UPoint;
+use crate::graphics::graphics::Rectangle;
+use crate::drivers::vga::vga_text::{Color, VgaTextMode, VGAWRITER};
+use crate::graphics::graphics::Graphics;
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
-use alloc::vec;
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
+use crate::drivers::vga::CURRENT_VGA_MODE;
+use crate::graphics::color::U8Color;
 use crate::interrupts::hardware::pic8259::sleep;
-use crate::test_bitmap::get_drawn_house_bitmap;
 
 mod drivers;
 mod interrupts;
@@ -43,6 +41,8 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
+
+    CURRENT_VGA_MODE.lock().switch_to(0x03);
 
     // let x = Box::new(5);
     // let v = vec![1,2,3];
@@ -71,8 +71,22 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     //
     // sleep(2000);
 
-    VGAWRITER.lock().init_vga_text_mode_03h();
-    vgaprintln!("test lol");
+    // let mut graphics = Graphics::new();
+    // graphics.set_color(U8Color::YELLOW);
+    // graphics.fill_rect(rect!(10,10,50,50));
+    // VGAWRITER.lock().init_vga_text_mode_03h();
+    // VGAWRITER.lock().init_vga_text_mode_03h();
+    // vgaprintln!(" !\"#$%&'()*+,-./0123456789:;<=>?");
+    // vgaprintln!("@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_");
+    // vgaprintln!("`abcdefghijklm nopqrstuvwxyz{{|}}~");
+    // vgaprintln!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+
+    // sleep(3000);
+    // unsafe { //panic tester
+    //     let a = 0x2137 as *const u32;
+    //     let b = *a;
+    // }
 
     loop{
         x86_64::instructions::hlt();
@@ -81,6 +95,7 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
+    VGAWRITER.lock().init_vga_text_mode_03h();  //on panic switch to text mode
     VGAWRITER.lock().change_foreground_color(Color::LightRed);
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);

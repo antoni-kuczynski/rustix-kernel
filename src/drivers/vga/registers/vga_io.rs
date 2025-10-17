@@ -1,6 +1,7 @@
 use core::arch::asm;
 use crate::drivers::vga::registers::*;
-use crate::drivers::vga::registers::regs::*;
+use crate::drivers::vga::registers::vga_regs::*;
+use crate::drivers::vga::vga_fonts::VgaFont;
 
 //  *REG WRITE FUNCTIONS*
 pub unsafe fn graphics_controller_write(index: u8, value: u8) {
@@ -37,6 +38,13 @@ pub unsafe fn misc_output_write(value: u8) {
     }
 }
 
+pub unsafe fn set_plane(plane: u8) {
+    let write_plane: u8 = 0b01 << plane;
+    unsafe {
+        graphics_controller_write(0x04, plane); //set read mode plane
+        sequcencer_write(0x02, write_plane);    //set write mode plane
+    }
+}
 //-------------------------------------
 //  **REGISTRY SETTING**
 pub fn set_13h_mode_regs() {
@@ -71,7 +79,7 @@ pub fn set_03h_mode_regs() {
 
 fn set_reg_values(
     vga_misc_output_reg: u8,
-    vga_crt_control_regs: [u16; 18],
+    vga_crt_control_regs: [u16; 25],
     vga_sequencer_regs: [u16; 5],
     graphics_controller_regs: [u16; 9],
     attribute_controller_regs: [u8; 21]
@@ -83,9 +91,9 @@ fn set_reg_values(
         outb(VGA_MISC_OUTPUT_INDEX, vga_misc_output_reg);
 
         //CRT Control registers
-        outw(VGA_CRT_CONTROL_INDEX, vga_crt_control_regs[11]); //first write register 0x11 to unlock regs 0x00 to 0x07
+        outw(VGA_CRT_CONTROL_INDEX, vga_crt_control_regs[0x11]); //first write register 0x11 to unlock regs 0x00 to 0x07
         for (index, reg) in vga_crt_control_regs.iter().enumerate() {
-            if index == 11 {
+            if index == 0x11 {
                 continue;   //we've already written to that register so skip it
             }
             outw(VGA_CRT_CONTROL_INDEX, *reg);
@@ -183,12 +191,90 @@ pub unsafe fn load_4bit_color_palette_into_dac() {
         //Start writing at color index 0
         outb(0x03C8, 0x00);
 
-        for &(r, g, b) in &palette {
-            dac_color_output(
-                to_dac(r),
-                to_dac(g),
-                to_dac(b)
-            );
+        for _ in 0..16 { //TODO: remember about this shit if anything color-related is broken on mode 12h
+            for &(r, g, b) in &palette {
+                dac_color_output(
+                    to_dac(r),
+                    to_dac(g),
+                    to_dac(b)
+                );
+            }
         }
+    }
+}
+//-----------------------------------------------------------------
+//  *WRITE FONTS FOR ALPHANUMERIC MODES*
+unsafe fn vmemwr(dst_off: usize, src: *const u8, count: usize, fb_start: usize) {
+    let dst = (fb_start + dst_off) as *mut u8;
+    unsafe { core::ptr::copy_nonoverlapping(src, dst, count); }
+}
+
+#[inline(always)]
+fn reverse_bits(mut b: u8) -> u8 {
+    b = (b & 0xF0) >> 4 | (b & 0x0F) << 4;
+    b = (b & 0xCC) >> 2 | (b & 0x33) << 2;
+    b = (b & 0xAA) >> 1 | (b & 0x55) << 1;
+    b
+}
+
+pub unsafe fn write_fonts(font: &VgaFont) {
+    unsafe {
+        //select character map in first 8KB of map 2
+        outw(VGA_SEQUENCER_INDEX, 0x0003);
+
+        //save registers
+        outb(VGA_SEQUENCER_INDEX, 0x02);
+        let map_mask_seq_0x02 = inb(VGA_SEQUENCER_DATA);
+
+        outb(VGA_SEQUENCER_INDEX, 0x04);
+        let memory_mode_seq_0x04 = inb(VGA_SEQUENCER_DATA);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x04);
+        let read_map_select_gc_0x04 = inb(VGA_GRAPHICS_CONTROLLER_DATA);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x05);
+        let graphics_mode_gc_0x05 = inb(VGA_GRAPHICS_CONTROLLER_DATA);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x06);
+        let misc_gc_0x06 = inb(VGA_GRAPHICS_CONTROLLER_DATA);
+
+        //disable odd/even addressing
+        outb(VGA_SEQUENCER_INDEX, 0x04);
+        outb(VGA_SEQUENCER_DATA, memory_mode_seq_0x04 | 0x04);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x05);
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, graphics_mode_gc_0x05 & 0b01101011);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x06);
+        outb(VGA_GRAPHICS_CONTROLLER_DATA, misc_gc_0x06 & !0x02);
+
+        //write font to plane 2
+        set_plane(2);
+
+        let fb_start = 0xB8000;
+        //write asci symbols
+        for i in 0..95 {
+            for row in 0..font.height {
+                let byte = *font.mem.get_unchecked(i * font.height + row);
+                let flipped = reverse_bits(byte);
+                vmemwr(1024 + i * 32 + row, &flipped, 1, fb_start);
+            }
+        }
+
+        // Restore registers
+        outb(VGA_SEQUENCER_INDEX, 0x02);
+        outb(VGA_SEQUENCER_DATA, map_mask_seq_0x02);
+
+        outb(VGA_SEQUENCER_INDEX, 0x04);
+        outb(VGA_SEQUENCER_DATA, memory_mode_seq_0x04);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x04);
+        outb(VGA_GRAPHICS_CONTROLLER_DATA, read_map_select_gc_0x04);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x05);
+        outb(VGA_GRAPHICS_CONTROLLER_DATA, graphics_mode_gc_0x05);
+
+        outb(VGA_GRAPHICS_CONTROLLER_INDEX, 0x06);
+        outb(VGA_GRAPHICS_CONTROLLER_DATA, misc_gc_0x06);
     }
 }
