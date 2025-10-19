@@ -3,6 +3,7 @@
  * Created by Antek Kuczyński
  * 26/09/2025
  */
+use alloc::vec;
 use alloc::vec::Vec;
 use core::arch::asm;
 use core::ptr;
@@ -17,10 +18,17 @@ pub struct VgaVideoMode<const BUF_SIZE: usize> {
     pitch: usize, //how many bytes of VRAM you should skip to go one pixel down
     pixel_width: usize, //how many bytes of VRAM you should skip to go one pixel right
     mode_value: u8, //the mode value in hex
-    video_buffer: &'static mut [u8; BUF_SIZE]
+    video_buffer: &'static mut [u8; BUF_SIZE],
+    back_buffer: Vec<u8>
 }
 
 impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
+
+    pub fn vga13h_update(&mut self) {
+        self.back_buffer.resize(BUF_SIZE, 0);
+        self.video_buffer.copy_from_slice(&*self.back_buffer);
+    }
+
     pub fn vga13h_put_pixel(&mut self, pos_x: usize, pos_y: usize, color: u8) {
         let location = self.video_width_px * pos_y + pos_x;
         self.video_buffer[location] = color;
@@ -419,7 +427,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     pub fn _vga13h_fill_rect(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
         assert!(x + width < self.video_width_px);
         assert!(y + height < self.video_height_px);
-        let mut location: *mut u8 = self.video_buffer.as_mut_ptr();
+        let mut location: *mut u8 = self.back_buffer.as_mut_ptr();
 
         //minimize pointer calculation optimizations
         //dont recalculate every pixel, rather every line
@@ -456,7 +464,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
     }
 
     pub fn _vga13h_fill_elipse(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
-        let (xi,wi,hi) = (x as isize, width as isize, height as isize);
+        let (xi, yi,wi,hi) = (x as isize, y as isize, width as isize, height as isize);
 
         let wi_squared = wi * wi;
         let hi_squared = hi * hi;
@@ -469,11 +477,13 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         //-=-=-=Region 1-=-=-=-=
 
         //decision parameter for region 1
-        let mut d_region = hi_squared + ((xi * xi) >> 2) - (wi_squared * hi);
+        let mut d_region = hi_squared + (wi_squared * hi) - (wi_squared / 4);
         while dx < dy {
             for i in x - xp as usize..=x + xp as usize {
-                self.video_buffer[(yp as usize + y) * self.pitch + i] = color;
-                self.video_buffer[(y - yp as usize) * self.pitch + i] = color;
+                // let coords1 = y - yp;
+
+                self.back_buffer[(yp as usize + y) * self.pitch + i] = color;
+                self.back_buffer[(y - yp as usize) * self.pitch + i] = color;
             }
 
             if d_region < 0 {
@@ -493,12 +503,12 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
 
         //-=-=-=-=Region 2=-=-=-=-=
-        d_region = hi_squared * ((xp + 1/2) * (xp + 1/2))
-            + wi_squared * ((yp - 1) * (yp - 1)) - (wi_squared * hi_squared);
+        d_region = hi_squared * (xp + 1).pow(2)
+            + wi_squared * (yp - 1).pow(2) - (wi_squared * hi_squared);
         while yp >= 0 {
             for i in x - xp as usize..=x + xp as usize {
-                self.video_buffer[(yp as usize + y) * self.pitch + i] = color;
-                self.video_buffer[(y - yp as usize) * self.pitch + i] = color;
+                self.back_buffer[(yp as usize + y) * self.pitch + i] = color;
+                self.back_buffer[(y - yp as usize) * self.pitch + i] = color;
 
             }
 
@@ -514,7 +524,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
                 dy -= wi_squared << 1;
                 d_region += dx;
                 d_region -= dy;
-                d_region += xi * xi;
+                // d_region += xi * xi;
             }
         }
 
@@ -583,7 +593,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn _vga13h_clear_buffer(&mut self) {
+    pub fn _vga13h_clear_back_buffer(&mut self) {
+        self.back_buffer.fill(0x00);
+    }
+
+    pub fn _vga13h_clear_front_buffer(&mut self) {
         for i in 0..BUF_SIZE {
             self.video_buffer[i] = 0x00;
         }
@@ -641,7 +655,8 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             mode_value: 0x13,
             video_buffer: unsafe {
                 &mut *(0xA0000 as *mut [u8; 64000])
-            }
+            },
+            back_buffer: vec![0x00; 64000]
         }
     }
 
@@ -655,7 +670,8 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             mode_value: 0x12,
             video_buffer: unsafe {
                 &mut *(0xA0000 as *mut [u8; 64000])
-            }
+            },
+            back_buffer: vec![0x00; 64000]
         }
     }
 
@@ -696,7 +712,8 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             load_8bit_color_pallet_into_dac();
             asm!("sti");
         }
-        self._vga13h_clear_buffer();
+        self._vga13h_clear_front_buffer();
+        self._vga13h_clear_back_buffer();
         CURRENT_VGA_MODE.lock().switch_to(0x13);
     }
 }
