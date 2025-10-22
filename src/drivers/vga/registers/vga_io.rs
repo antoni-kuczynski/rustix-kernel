@@ -1,4 +1,5 @@
 use core::arch::asm;
+use crate::asm::*;
 use crate::drivers::vga::registers::*;
 use crate::drivers::vga::registers::vga_regs::*;
 use crate::drivers::vga::vga_fonts::VgaFont;

@@ -111,7 +111,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         for _h in 0..font.height {
             for w in (0..font.width).rev() {
                 if font.mem[source_char_byte] & (0x80 >> w) != 0 {  //check if a bit is 1 and we should draw
-                    self.video_buffer[dest] = foreground;
+                    self.back_buffer[dest] = foreground;
                 }
                 dest += 1;
             }
@@ -140,12 +140,14 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         assert!(x + width <= self.video_width_px);
         assert!(y + height <= self.video_height_px);
 
-        let mut j = 0;
-        for l in 0..height {
+        let mut mem_ptr = 0;
+        let mut pixel_ptr = y * self.pitch + x;
+        for j in 0..height {
             for i in 0..width {
-                self.vga13h_put_pixel(x + i, y + l, mem[j]);
-                j += 1;
+               self.back_buffer[pixel_ptr + i] = mem[mem_ptr];
+               mem_ptr += 1;
             }
+            pixel_ptr += self.pitch;
         }
     }
 

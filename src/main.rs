@@ -7,6 +7,9 @@
  */
 
 extern crate alloc;
+
+use alloc::format;
+use alloc::string::{String, ToString};
 use crate::graphics::graphics::UPoint;
 use crate::graphics::graphics::Rectangle;
 use crate::drivers::vga::vga_text::{Color, VgaTextMode, VGAWRITER};
@@ -17,7 +20,8 @@ use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::graphics::color::U8Color;
-use crate::interrupts::hardware::pic8259::sleep;
+use crate::interrupts::hardware::pic8259::{get_current_time_millis, get_ticks, sleep};
+use crate::test_bitmap::{get_drawn_house_bitmap, get_my_cat_bitmap};
 
 mod drivers;
 mod interrupts;
@@ -25,6 +29,7 @@ mod memory;
 mod bootinfo;
 mod graphics;
 mod test_bitmap;
+mod asm;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -90,18 +95,29 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
     // Velocities for each square
     let mut velocities = [
-        (5, 5),
-        (-4, 3),
-        (3, -4),
-        (-5, -3),
-        (4, -5),
+        (1, 0),
+        (-1, 0),
+        (1, -0),
+        (-1, -0),
+        (1, -0),
     ];
 
 
 
     let colors = [U8Color::GREEN, U8Color::BLUE, U8Color::MAGENTA, U8Color::RED, U8Color::YELLOW];
 
+    let mut previous_time = get_current_time_millis();
     loop {
+        let current_time = get_current_time_millis();
+        let delta_time = current_time - previous_time + 1;
+
+        let fps = 1_000_000 / delta_time;
+        let fps_str: String = format!("FPS: {}", fps);
+        let d_time_str = format!("D_TIME: {}", delta_time);
+        // g.set_color(U8Color::MAGENTA);
+        // g.fill_rect(rect!(0,0,319,199));
+        // g.draw_bitmap(point!(0,0), &get_my_cat_bitmap().unwrap());
+
         for i in 0..coords.len() {
             let (dx, dy) = velocities[i];
             let mut x = coords[i].x as isize;
@@ -124,11 +140,16 @@ fn _start(boot_info: &'static BootInfo) -> ! {
             // Update position
             coords[i].x = (x + velocities[i].0) as usize;
             coords[i].y = (y + velocities[i].1) as usize;
+            // coords[i].y = (y + velocities[i].1) as usize;
         }
+
+        g.draw_str(point!(10,10), fps_str.as_str());
+        g.draw_str(point!(10,20), d_time_str.as_str());
 
         g.update();
         g.clear();
-        sleep(16);
+        previous_time = current_time;
+        // sleep(16);
     }
 
 
