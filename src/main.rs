@@ -7,6 +7,9 @@
  */
 
 extern crate alloc;
+
+use alloc::format;
+use alloc::string::{String, ToString};
 use crate::graphics::graphics::UPoint;
 use crate::graphics::graphics::Rectangle;
 use crate::drivers::vga::vga_text::{Color, VgaTextMode, VGAWRITER};
@@ -17,7 +20,8 @@ use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::graphics::color::U8Color;
-use crate::interrupts::hardware::pic8259::sleep;
+use crate::interrupts::hardware::pic8259::{get_current_time_millis, get_ticks, sleep};
+use crate::test_bitmap::{get_drawn_house_bitmap, get_my_cat_bitmap};
 
 mod drivers;
 mod interrupts;
@@ -25,6 +29,7 @@ mod memory;
 mod bootinfo;
 mod graphics;
 mod test_bitmap;
+mod asm;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -44,49 +49,110 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
     CURRENT_VGA_MODE.lock().switch_to(0x03);
 
-    // let x = Box::new(5);
-    // let v = vec![1,2,3];
+    // let mut g: Graphics = Graphics::new();
+    // let mut coords1: UPoint = point!(50,50);
     //
-    // vgaprintln!("{}, {:#?}",x,v);
+    // let mut dx: isize = 5;
+    // let mut dy: isize = 5;
+    // let radius: isize = 20;
     //
-    // vgaprintln!("nie wyjebalo sie jupi");
-
-    // let mut graphics = Graphics::new();
-
-    // graphics.set_color(U8Color::MAGENTA);
-    // graphics.fill_elipse(point!(100,100),90,50);
-    
-    // graphics.set_color(U8Color::WHITE);
-    // graphics.draw_str(point!(10,10), "abcdefghijklmnoprstuwxyz");
-    // graphics.draw_str(point!(10,25), "ABCDEFGHIJKLMNOPRSTUWXYZ");
-    // graphics.draw_str(point!(10,40), "1234567890!@#$%^&*()-=_+");
-    // // let bmp = Bitmap::new_u8_bitmap(4, 1, vec![0xFF, 0xFF, 0xFF, 0xFF]);
-    // let bmp = get_drawn_house_bitmap();
-    // match bmp {
-    //     None => {}
-    //     Some(_) => {
-    //         graphics.draw_bitmap(point!(0,0), &bmp.unwrap());
+    // g.set_color(U8Color::MAGENTA);
+    // loop {
+    //     // draw the rectangle
+    //     g.fill_rect(rect!(coords1.x, coords1.y, 20, 20));
+    //     // g.fill_elipse(&point!(coords1.x, coords1.y), (radius * 2) as usize, (radius * 2) as usize);
+    //
+    //     // bounce horizontally
+    //     if coords1.x as isize + dx + radius >= g.get_video_width() as isize || coords1.x as isize + dx < 0 {
+    //         dx = -dx;
     //     }
-    // }
     //
-    // sleep(2000);
-
-    // let mut graphics = Graphics::new();
-    // graphics.set_color(U8Color::YELLOW);
-    // graphics.fill_rect(rect!(10,10,50,50));
-    // VGAWRITER.lock().init_vga_text_mode_03h();
-    // VGAWRITER.lock().init_vga_text_mode_03h();
-    // vgaprintln!(" !\"#$%&'()*+,-./0123456789:;<=>?");
-    // vgaprintln!("@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_");
-    // vgaprintln!("`abcdefghijklm nopqrstuvwxyz{{|}}~");
-    // vgaprintln!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-
-
-    // sleep(3000);
-    // unsafe { //panic tester
-    //     let a = 0x2137 as *const u32;
-    //     let b = *a;
+    //     // bounce vertically
+    //     if coords1.y as isize + dy + radius >= g.get_video_height() as isize|| coords1.y as isize + dy < 0 {
+    //         dy = -dy;
+    //     }
+    //
+    //     // update position
+    //     coords1.x = (coords1.x as isize + dx) as usize;
+    //     coords1.y = (coords1.y as isize + dy) as usize;
+    //
+    //     g.update();
+    //     g.clear();
+    //     sleep(16);
     // }
+
+    let mut g: Graphics = Graphics::new();
+    let radius: isize = 20;
+
+    // Initial positions
+    let mut coords = [
+        point!(50, 50),
+        point!(100, 80),
+        point!(150, 120),
+        point!(200, 160),
+        point!(250, 179),
+    ];
+
+    // Velocities for each square
+    let mut velocities = [
+        (1, 0),
+        (-1, 0),
+        (1, -0),
+        (-1, -0),
+        (1, -0),
+    ];
+
+
+
+    let colors = [U8Color::GREEN, U8Color::BLUE, U8Color::MAGENTA, U8Color::RED, U8Color::YELLOW];
+
+    let mut previous_time = get_current_time_millis();
+    loop {
+        let current_time = get_current_time_millis();
+        let delta_time = current_time - previous_time + 1;
+
+        let fps = 1_000_000 / delta_time;
+        let fps_str: String = format!("FPS: {}", fps);
+        let d_time_str = format!("D_TIME: {}", delta_time);
+        // g.set_color(U8Color::MAGENTA);
+        // g.fill_rect(rect!(0,0,319,199));
+        // g.draw_bitmap(point!(0,0), &get_my_cat_bitmap().unwrap());
+
+        for i in 0..coords.len() {
+            let (dx, dy) = velocities[i];
+            let mut x = coords[i].x as isize;
+            let mut y = coords[i].y as isize;
+
+            g.set_color(colors[i]);
+            // Draw square
+            g.fill_rect(rect!(x as usize, y as usize, 20, 20));
+
+            // Bounce horizontally
+            if x + dx + radius >= g.get_video_width() as isize || x + dx < 0 {
+                velocities[i].0 = -dx;
+            }
+
+            // Bounce vertically
+            if y + dy + radius >= g.get_video_height() as isize || y + dy < 0 {
+                velocities[i].1 = -dy;
+            }
+
+            // Update position
+            coords[i].x = (x + velocities[i].0) as usize;
+            coords[i].y = (y + velocities[i].1) as usize;
+            // coords[i].y = (y + velocities[i].1) as usize;
+        }
+
+        g.draw_str(point!(10,10), fps_str.as_str());
+        g.draw_str(point!(10,20), d_time_str.as_str());
+
+        g.update();
+        g.clear();
+        previous_time = current_time;
+        // sleep(16);
+    }
+
+
 
     loop{
         x86_64::instructions::hlt();

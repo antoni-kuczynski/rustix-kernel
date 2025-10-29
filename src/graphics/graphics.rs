@@ -56,7 +56,7 @@ impl Graphics {
     }
 
     pub fn clear(&mut self) {
-        self.device._vga13h_clear_buffer();
+        self.device._vga13h_clear_back_buffer();
     }
 
     pub fn set_color(&mut self, color: U8Color) {
@@ -109,7 +109,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_line(&mut self, p0: UPoint, p1: UPoint) {
+    pub fn draw_line(&mut self, p0: &UPoint, p1: &UPoint) {
         self.device._vga13h_draw_line(
             p0.x, p0.y,
             p1.x, p1.y,
@@ -143,7 +143,7 @@ impl Graphics {
         )
     }
 
-    pub fn fill_elipse(&mut self, p: UPoint, width: usize, height: usize) {
+    pub fn fill_elipse(&mut self, p: &UPoint, width: usize, height: usize) {
         self.device._vga13h_fill_elipse(
             p.x, p.y,
             width, height,
@@ -157,6 +157,10 @@ impl Graphics {
             width, height,
             self.color.as_u8()
         );
+    }
+
+    pub fn update(&mut self) {
+        self.device.vga13h_update();
     }
 }
 

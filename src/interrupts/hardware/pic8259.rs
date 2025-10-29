@@ -16,13 +16,14 @@
  *
  *   (ascii art source https://os.phil-opp.com/hardware-interrupts/#the-8259-pic)
  */
-
+use core::arch::asm;
 use lazy_static::lazy_static;
 use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
+use crate::asm::*;
 use crate::{drivers::vga::vga_text::{Color, VGAWRITER}, vgaprint, vgaprintln};
 
 // indexes of pic interrupts handlers in IDT
@@ -50,6 +51,9 @@ pub fn init_pics(){
     VGAWRITER.lock().change_foreground_color(Color::Green);
     vgaprintln!(" OK!");
     VGAWRITER.lock().change_foreground_color(Color::White);
+    unsafe {
+        set_pit_count(100);
+    }
 }
 
 #[derive(Debug,Clone,Copy)]
@@ -72,10 +76,23 @@ pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptSta
     end_of_interrupt(PicInterruptIndex::Timer.as_u8());
 }
 
+pub unsafe fn set_pit_count(count: u16) {
+    //0x43 - channel acces mode
+    //0x40 - pit count
+    asm! {"cli"};
+    outw(0x40, count & 0xFF);
+    outw(0x40, (count & 0xFF00) >> 8);
+    asm! {"sti"};
+}
+
 pub fn get_ticks() -> u64 {
     unsafe { TICKS }
 }
-static TICKS_PER_MS: isize = 55;
+static TICKS_PER_MS: isize = 100;
+
+pub fn get_current_time_millis() -> u64 {
+    TICKS_PER_MS as u64 * get_ticks()
+}
 
 pub fn sleep(ms: usize){
     let mut ms_to_pass: isize = ms as isize;
