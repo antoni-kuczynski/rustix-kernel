@@ -46,6 +46,15 @@ pub unsafe fn set_plane(plane: u8) {
         sequcencer_write(0x02, write_plane);    //set write mode plane
     }
 }
+
+pub unsafe fn set_write_planes(planes: u8) {
+    let write_plane: u8 = planes & 0b00001111;
+    //0b0000001
+    unsafe {
+        sequcencer_write(0x02, write_plane);    //set write mode plane
+    }
+}
+
 //-------------------------------------
 //  **REGISTRY SETTING**
 pub fn set_13h_mode_regs() {
@@ -55,6 +64,16 @@ pub fn set_13h_mode_regs() {
         VGA_13H_SEQUENCER_REGS,
         VGA_13H_GRAPHICS_CONTROLLER_REGS,
         VGA_13H_ATTRIBUTE_CONTROLLER_REGS
+    );
+}
+
+pub fn set_320_200_mode_X_mode_regs() {
+    set_reg_values(
+        VGA_320_200_X_MISC_OUTPUT_REG,
+        VGA_320_200_X_CRT_CONTROL_REGS,
+        VGA_320_200_X_SEQUENCER_REGS,
+        VGA_320_200_X_GRAPHICS_CONTROLLER_REGS,
+        VGA_320_200_X_ATTRIBUTE_CONTROLLER_REGS
     );
 }
 

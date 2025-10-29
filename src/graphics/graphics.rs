@@ -23,12 +23,6 @@ pub struct Rectangle {
     pub height: usize
 }
 
-pub struct Triangle {
-    pub p0: UPoint,
-    pub p1: UPoint,
-    pub p2: UPoint
-}
-
 
 pub struct Graphics {
     color: U8Color,
@@ -56,7 +50,7 @@ impl Graphics {
     }
 
     pub fn clear(&mut self) {
-        self.device._vga13h_clear_back_buffer();
+        self.device._vga13h_clear_back_buffer(self.color.as_u8());
     }
 
     pub fn set_color(&mut self, color: U8Color) {
@@ -67,8 +61,8 @@ impl Graphics {
         self.font = font;
     }
 
-    pub fn fill_rect(&mut self, rect: Rectangle) {
-        let p0 = rect.p0;
+    pub fn fill_rect(&mut self, rect: &Rectangle) {
+        let p0 = &rect.p0;
         self.device._vga13h_fill_rect(
             p0.x, p0.y,
             rect.width, rect.height,
@@ -76,8 +70,8 @@ impl Graphics {
         );
     }
 
-    pub fn draw_rect(&mut self, rect: Rectangle) {
-        let p0 = rect.p0;
+    pub fn draw_rect(&mut self, rect: &Rectangle) {
+        let p0 = &rect.p0;
         self.device._vga13h_draw_rect(
             p0.x, p0.y,
             rect.width, rect.height,
@@ -85,10 +79,7 @@ impl Graphics {
         );
     }
 
-    pub fn fill_triangle(&mut self, tr: Triangle) {
-        let p0 = tr.p0;
-        let p1 = tr.p1;
-        let p2 = tr.p2;
+    pub fn fill_triangle(&mut self, p0: &UPoint, p1: &UPoint, p2: &UPoint) {
         self.device._vga13h_fill_triangle(
             p0.x, p0.y,
             p1.x, p1.y,
@@ -97,10 +88,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_triangle(&mut self, tr: Triangle) {
-        let p0 = tr.p0;
-        let p1 = tr.p1;
-        let p2 = tr.p2;
+    pub fn draw_triangle(&mut self, p0: &UPoint, p1: &UPoint, p2: &UPoint) {
         self.device._vga13h_draw_triangle(
             p0.x, p0.y,
             p1.x, p1.y,
@@ -117,7 +105,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_bitmap(&mut self, p: UPoint, bitmap: &Bitmap) {
+    pub fn draw_bitmap(&mut self, p: &UPoint, bitmap: &Bitmap) {
         self.device._vga13h_draw_bitmap(
             p.x, p.y,
             bitmap.width, bitmap.height,
@@ -125,8 +113,8 @@ impl Graphics {
         );
     }
 
-    pub fn draw_char(&mut self, p: UPoint, char: char) {
-        self.device._vga13h_draw_char_transparent(
+    pub fn draw_char(&mut self, p: &UPoint, char: char) {
+        self.device.__vga13h_draw_char_transparent_unchecked(
             p.x,p.y,
             char,
             &self.font,
@@ -134,7 +122,7 @@ impl Graphics {
         )
     }
 
-    pub fn draw_str(&mut self, p: UPoint, str: &str) {
+    pub fn draw_str(&mut self, p: &UPoint, str: &str) {
         self.device._vga13h_draw_string(
             p.x,p.y,
             str,
@@ -151,7 +139,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_elipse(&mut self, p: UPoint, width: usize, height: usize) {
+    pub fn draw_elipse(&mut self, p: &UPoint, width: usize, height: usize) {
         self.device._vga13h_draw_elipse(
             p.x, p.y,
             width, height,
@@ -181,17 +169,6 @@ macro_rules! rect {
             p0: point!($x, $y),
             width: $w,
             height: $h
-        }
-    };
-}
-
-#[macro_export]
-macro_rules! triangle {
-    ($x0:expr , $y0:expr, $x1:expr, $y1:expr, $x2:expr, $y2:expr) => {
-        Triangle {
-            p0: point!($x0, $y0),
-            p1: point!($x1, $y1),
-            p2: point!($x2, $y2),
         }
     };
 }

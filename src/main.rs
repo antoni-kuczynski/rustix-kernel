@@ -114,9 +114,9 @@ fn _start(boot_info: &'static BootInfo) -> ! {
         let fps = 1_000_000 / delta_time;
         let fps_str: String = format!("FPS: {}", fps);
         let d_time_str = format!("D_TIME: {}", delta_time);
-        // g.set_color(U8Color::MAGENTA);
+        g.set_color(U8Color::MAGENTA);
         // g.fill_rect(rect!(0,0,319,199));
-        // g.draw_bitmap(point!(0,0), &get_my_cat_bitmap().unwrap());
+        // g.draw_bitmap(&point!(0,0), &get_my_cat_bitmap().unwrap());
 
         for i in 0..coords.len() {
             let (dx, dy) = velocities[i];
@@ -125,7 +125,11 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
             g.set_color(colors[i]);
             // Draw square
-            g.fill_rect(rect!(x as usize, y as usize, 20, 20));
+            // g.draw_rect(rect!(x as usize, y as usize, 20, 20));
+            let x_u = x as usize;
+            let y_u = y as usize;
+            // g.draw_triangle(point!(x_u, y_u), point!(x_u+20, y_u+10), point!(x_u+10, y_u+20));
+            g.draw_elipse(&point!(x_u + 10, y_u), 10, 10);
 
             // Bounce horizontally
             if x + dx + radius >= g.get_video_width() as isize || x + dx < 0 {
@@ -143,16 +147,21 @@ fn _start(boot_info: &'static BootInfo) -> ! {
             // coords[i].y = (y + velocities[i].1) as usize;
         }
 
-        g.draw_str(point!(10,10), fps_str.as_str());
-        g.draw_str(point!(10,20), d_time_str.as_str());
+        g.draw_str(&point!(10,10), fps_str.as_str());
+        g.draw_str(&point!(10,20), d_time_str.as_str());
 
         g.update();
+        g.set_color(U8Color::CYAN);
         g.clear();
         previous_time = current_time;
         // sleep(16);
     }
 
-
+//     let mut video = VgaVideoMode::<64000>::new_vga_mode_X_320x200_256color();
+// video.vga_320_200_mode_X_init();
+// video.vga_320_200_X_clear_front_buffer();
+//     // video.vga_320_200_X_fill_rect(10,10,50,50,0xFF);
+//     video.vga_320_200_X_put_pixel(100,100,U8Color::MAGENTA.0);
 
     loop{
         x86_64::instructions::hlt();
