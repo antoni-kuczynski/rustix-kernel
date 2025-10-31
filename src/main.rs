@@ -8,18 +8,16 @@
 
 extern crate alloc;
 
-use alloc::format;
-use alloc::string::{String, ToString};
 use crate::graphics::graphics::PointUnsigned;
 use crate::graphics::graphics::Rectangle;
-use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::graphics::graphics::Graphics;
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 use crate::drivers::vga::CURRENT_VGA_MODE;
-use crate::graphics::vga_demo::vga_demo;
+use crate::graphics::vga_demo::{vga_demo};
 
 mod drivers;
 mod interrupts;
@@ -46,6 +44,7 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
     CURRENT_VGA_MODE.lock().switch_to(0x03);
 
+    // test_offscreen_primitives();
     let g: Graphics = Graphics::new();
     vga_demo(g);
 

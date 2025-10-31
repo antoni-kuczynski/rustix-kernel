@@ -119,3 +119,49 @@ pub fn vga_demo(mut g: Graphics) {
         g.clear();
     }
 }
+
+pub fn test_offscreen_primitives() {
+    let mut g = Graphics::new();
+    let w = g.get_video_width();
+    let h = g.get_video_height();
+
+    // Completely off-screen to the left / top
+    g.fill_rect(&rect!(usize::MAX - 10, usize::MAX - 10, 20, 20));
+    g.draw_rect(&rect!(usize::MAX - 10, usize::MAX - 10, 20, 20));
+    g.fill_triangle(&point!(usize::MAX - 5, 0), &point!(usize::MAX - 1, 0), &point!(usize::MAX - 3, 5));
+    g.draw_triangle(&point!(usize::MAX - 5, 0), &point!(usize::MAX - 1, 0), &point!(usize::MAX - 3, 5));
+    g.fill_elipse(&point!(usize::MAX - 10, usize::MAX - 10), 15, 15);
+    g.draw_elipse(&point!(usize::MAX - 10, usize::MAX - 10), 15, 15);
+    g.draw_line(&point!(usize::MAX - 10, 0), &point!(usize::MAX - 5, 5));
+    g.draw_bitmap(&point!(usize::MAX - 10, usize::MAX - 10), &get_my_cat_bitmap().unwrap());
+    g.draw_char(&point!(usize::MAX - 10, usize::MAX - 10), 'X');
+    g.draw_str(&point!(usize::MAX - 10, usize::MAX - 10), "Offscreen");
+
+    // Completely off-screen to the right / bottom
+    g.fill_rect(&rect!(w + 10, h + 10, 20, 20));
+    g.draw_rect(&rect!(w + 10, h + 10, 20, 20));
+    g.fill_triangle(&point!(w + 5, h + 5), &point!(w + 10, h + 10), &point!(w + 15, h + 5));
+    g.draw_triangle(&point!(w + 5, h + 5), &point!(w + 10, h + 10), &point!(w + 15, h + 5));
+    g.fill_elipse(&point!(w + 20, h + 20), 10, 10);
+    g.draw_elipse(&point!(w + 20, h + 20), 10, 10);
+    g.draw_line(&point!(w + 1, h + 1), &point!(w + 5, h + 5));
+    g.draw_bitmap(&point!(w + 10, h + 10), &get_my_cat_bitmap().unwrap());
+    g.draw_char(&point!(w + 10, h + 10), 'Y');
+    g.draw_str(&point!(w + 10, h + 10), "Too far");
+
+    // Partially off-screen (should be clipped, not panic)
+    g.fill_rect(&rect!(w - 5, h - 5, 20, 20));
+    g.draw_rect(&rect!(w - 5, h - 5, 20, 20));
+    g.fill_triangle(&point!(w - 2, h - 2), &point!(w + 5, h - 2), &point!(w, h + 5));
+    g.draw_triangle(&point!(w - 2, h - 2), &point!(w + 5, h - 2), &point!(w, h + 5));
+    g.fill_elipse(&point!(w - 1, h - 1), 15, 15);
+    g.draw_elipse(&point!(w - 1, h - 1), 15, 15);
+    g.draw_line(&point!(w - 1, h - 1), &point!(w + 10, h + 10));
+    g.draw_bitmap(&point!(w - 5, h - 5), &get_my_cat_bitmap().unwrap());
+    g.draw_char(&point!(w - 1, h - 1), 'Z');
+    g.draw_str(&point!(w - 1, h - 1), "Edge");
+
+    g.set_color(ColorU8::GREEN);
+    g.draw_str(&point!(10, 10), "Passed!!!");
+    g.update();
+}
