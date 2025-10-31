@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use crate::{drivers::vga::vga_text::{Color, VGAWRITER}, interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX, hardware::pic8259::{keyboard_interrupt_handler, timer_interrupt_handler, PicInterruptIndex}}, vgaprint, vgaprintln};
+use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX, hardware::pic8259::{keyboard_interrupt_handler, timer_interrupt_handler, PicInterruptIndex}}, vgaprint, vgaprintln};
 
 pub mod exceptions;
 pub mod gdt;
@@ -38,9 +38,9 @@ pub fn init_idt() {
 
     IDT.load();
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
 }
 
 
@@ -49,7 +49,7 @@ pub fn enable(){
 
     x86_64::instructions::interrupts::enable();
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
 }

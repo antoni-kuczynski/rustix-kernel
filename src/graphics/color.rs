@@ -6,9 +6,9 @@
 
 #[derive(Clone, Copy)]
 #[repr(transparent)]
-pub struct U8Color(pub u8);
+pub struct ColorU8(pub u8);
 
-impl U8Color {
+impl ColorU8 {
     pub const WHITE: Self = Self(0xFF);
     pub const BLACK: Self = Self(0x00);
     pub const RED: Self = Self(0b11100000);
@@ -25,10 +25,10 @@ impl U8Color {
         7   6   5   4   3   2   1   0
         R   R   R   G   G   G   B   B
          */
-        let r_dac =  r >> 5 << 5; //3 bytes
+        let r_dac =  r & 0b11100000; //3 bytes
         let g_dac =  g >> 5 << 2; //3 bytes
         let b_dac = b >> 6; //2 bytes
-        U8Color(r_dac | g_dac | b_dac)
+        ColorU8(r_dac | g_dac | b_dac)
     }
 
     pub fn from_u8(value: u8) -> Self {

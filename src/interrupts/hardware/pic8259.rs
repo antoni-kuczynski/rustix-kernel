@@ -24,7 +24,7 @@ use spin::{mutex::Mutex};
 use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
 
 use crate::asm::*;
-use crate::{drivers::vga::vga_text::{Color, VGAWRITER}, vgaprint, vgaprintln};
+use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, vgaprint, vgaprintln};
 
 // indexes of pic interrupts handlers in IDT
 // Primary
@@ -48,9 +48,9 @@ pub fn init_pics(){
 
     unsafe { PICS.lock().initialize(); }
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
     unsafe {
         set_pit_count(100);
     }

@@ -26,7 +26,7 @@
 use lazy_static::lazy_static;
 use x86_64::{instructions::tables::load_tss, registers::segmentation::{Segment, CS}, structures::{gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector}, tss::TaskStateSegment}, VirtAddr};
 
-use crate::{drivers::vga::vga_text::{Color, VGAWRITER}, vgaprint, vgaprintln};
+use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, vgaprint, vgaprintln};
 
 pub const DOUBLE_FAULT_IST_INDEX : u16 = 0;
 
@@ -40,9 +40,9 @@ pub fn init_gdt() {
         load_tss(GDT.1.tss_selector);     // set tss selector
     }
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
 }
 
 struct Selectors {

@@ -1,31 +1,31 @@
 use crate::drivers::vga::vga_graphics::{VgaVideoMode};
 #[allow(dead_code)]
 use crate::graphics::bitmap::Bitmap;
-use crate::graphics::color::U8Color;
+use crate::graphics::color::ColorU8;
 use crate::drivers::vga::vga_fonts::*;
 /*
  * Created by Antek Kuczyński
  * 12/10/2025
  */
 
-pub struct UPoint {
+pub struct PointUnsigned {
     pub(crate) x: usize,
     pub(crate) y: usize
 }
 
-impl UPoint {
+impl PointUnsigned {
 
 }
 
 pub struct Rectangle {
-    pub p0: UPoint,
+    pub p0: PointUnsigned,
     pub width: usize,
     pub height: usize
 }
 
 
 pub struct Graphics {
-    color: U8Color,
+    color: ColorU8,
     font: VgaFont,
     device: VgaVideoMode<64000>
 }
@@ -33,7 +33,7 @@ pub struct Graphics {
 impl Graphics {
     pub fn new() -> Self {
         let mut temp = Graphics {
-            color: U8Color::BLACK,
+            color: ColorU8::BLACK,
             font: VgaFont::FONT_8PX,
             device: VgaVideoMode::<64000>::new_vga_0x13_320x200_256color_mode()
         };
@@ -53,7 +53,7 @@ impl Graphics {
         self.device._vga13h_clear_back_buffer(self.color.as_u8());
     }
 
-    pub fn set_color(&mut self, color: U8Color) {
+    pub fn set_color(&mut self, color: ColorU8) {
         self.color = color;
     }
 
@@ -79,7 +79,7 @@ impl Graphics {
         );
     }
 
-    pub fn fill_triangle(&mut self, p0: &UPoint, p1: &UPoint, p2: &UPoint) {
+    pub fn fill_triangle(&mut self, p0: &PointUnsigned, p1: &PointUnsigned, p2: &PointUnsigned) {
         self.device._vga13h_fill_triangle(
             p0.x, p0.y,
             p1.x, p1.y,
@@ -88,7 +88,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_triangle(&mut self, p0: &UPoint, p1: &UPoint, p2: &UPoint) {
+    pub fn draw_triangle(&mut self, p0: &PointUnsigned, p1: &PointUnsigned, p2: &PointUnsigned) {
         self.device._vga13h_draw_triangle(
             p0.x, p0.y,
             p1.x, p1.y,
@@ -97,7 +97,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_line(&mut self, p0: &UPoint, p1: &UPoint) {
+    pub fn draw_line(&mut self, p0: &PointUnsigned, p1: &PointUnsigned) {
         self.device._vga13h_draw_line(
             p0.x, p0.y,
             p1.x, p1.y,
@@ -105,7 +105,7 @@ impl Graphics {
         );
     }
 
-    pub fn draw_bitmap(&mut self, p: &UPoint, bitmap: &Bitmap) {
+    pub fn draw_bitmap(&mut self, p: &PointUnsigned, bitmap: &Bitmap) {
         self.device._vga13h_draw_bitmap(
             p.x, p.y,
             bitmap.width, bitmap.height,
@@ -113,8 +113,8 @@ impl Graphics {
         );
     }
 
-    pub fn draw_char(&mut self, p: &UPoint, char: char) {
-        self.device.__vga13h_draw_char_transparent_unchecked(
+    pub fn draw_char(&mut self, p: &PointUnsigned, char: char) {
+        self.device._vga13h_draw_char_transparent(
             p.x,p.y,
             char,
             &self.font,
@@ -122,7 +122,7 @@ impl Graphics {
         )
     }
 
-    pub fn draw_str(&mut self, p: &UPoint, str: &str) {
+    pub fn draw_str(&mut self, p: &PointUnsigned, str: &str) {
         self.device._vga13h_draw_string(
             p.x,p.y,
             str,
@@ -131,16 +131,16 @@ impl Graphics {
         )
     }
 
-    pub fn fill_elipse(&mut self, p: &UPoint, width: usize, height: usize) {
-        self.device._vga13h_fill_elipse(
+    pub fn fill_elipse(&mut self, p: &PointUnsigned, width: usize, height: usize) {
+        self.device._vga13h_fill_ellipse(
             p.x, p.y,
             width, height,
             self.color.as_u8()
         );
     }
 
-    pub fn draw_elipse(&mut self, p: &UPoint, width: usize, height: usize) {
-        self.device._vga13h_draw_elipse(
+    pub fn draw_elipse(&mut self, p: &PointUnsigned, width: usize, height: usize) {
+        self.device._vga13h_draw_ellipse(
             p.x, p.y,
             width, height,
             self.color.as_u8()
@@ -155,7 +155,7 @@ impl Graphics {
 #[macro_export]
 macro_rules! point {
     ($x:expr , $y:expr) => {
-        UPoint {
+        PointUnsigned {
             x: $x,
             y: $y
         }
