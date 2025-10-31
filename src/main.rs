@@ -118,6 +118,9 @@ fn _start(boot_info: &'static BootInfo) -> ! {
         // g.fill_rect(rect!(0,0,319,199));
         // g.draw_bitmap(&point!(0,0), &get_my_cat_bitmap().unwrap());
 
+        // g.fill_elipse(&point!(280, 180), 40, 40);
+
+
         for i in 0..coords.len() {
             let (dx, dy) = velocities[i];
             let mut x = coords[i].x as isize;
@@ -129,7 +132,7 @@ fn _start(boot_info: &'static BootInfo) -> ! {
             let x_u = x as usize;
             let y_u = y as usize;
             // g.draw_triangle(point!(x_u, y_u), point!(x_u+20, y_u+10), point!(x_u+10, y_u+20));
-            g.draw_elipse(&point!(x_u + 10, y_u), 10, 10);
+            g.fill_elipse(&point!(x_u + 10, y_u), 10, 10);
 
             // Bounce horizontally
             if x + dx + radius >= g.get_video_width() as isize || x + dx < 0 {

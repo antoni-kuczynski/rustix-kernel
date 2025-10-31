@@ -505,70 +505,80 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
     }
 
-    pub fn _vga13h_fill_elipse(&mut self, x: usize, y: usize, width: usize, height: usize, color: u8) {
-        let (xi, yi,wi,hi) = (x as isize, y as isize, width as isize, height as isize);
+    #[inline(always)]
+    fn draw_hline_safe(&mut self, y: isize, x1: isize, x2: isize, color: u8) {
+        if y < 0 || y >= self.video_height_px as isize {
+            return;
+        }
 
-        let wi_squared = wi * wi;
-        let hi_squared = hi * hi;
-        let hi_times_two = hi_squared << 1;
-        let wi_times_two = wi_squared << 1;
+        let start = x1.max(0);
+        let end = x2.min(self.video_width_px as isize - 1);
+        if start > end {
+            return;
+        }
 
-        let mut xp: isize = 0;
-        let mut yp: isize = hi;
-        let mut dx: isize = xp * hi_times_two;
-        let mut dy: isize = yp * wi_times_two;
+        let offset = (y as usize) * self.pitch;
+        let buf = &mut self.back_buffer_heap[offset..offset + self.video_width_px];
+        for x in start as usize..=end as usize {
+            buf[x] = color;
+        }
+    }
 
-        //-=-=-=Region 1-=-=-=-=
+    pub fn _vga13h_fill_elipse(
+        &mut self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        color: u8,
+    ) {
+        let (xi, yi, wi, hi) = (x as isize, y as isize, width as isize, height as isize);
 
-        //decision parameter for region 1
-        let mut d_region = hi_squared - (wi_squared * hi) + (wi_squared / 4);
+        let wi2 = wi * wi;
+        let hi2 = hi * hi;
+        let hi2_2 = hi2 << 1;
+        let wi2_2 = wi2 << 1;
+
+        let mut xp = 0;
+        let mut yp = hi;
+        let mut dx = xp * hi2_2;
+        let mut dy = yp * wi2_2;
+
+        // region 1
+        let mut d = hi2 - (wi2 * hi) + (wi2 / 4);
         while dx < dy {
-            for i in x - xp as usize..=x + xp as usize {
-                // let coords1 = y - yp;
+            self.draw_hline_safe(yi + yp, xi - xp, xi + xp, color);
+            self.draw_hline_safe(yi - yp, xi - xp, xi + xp, color);
 
-                self.back_buffer_heap[(yp as usize + y) * self.pitch + i] = color;
-                self.back_buffer_heap[(y - yp as usize) * self.pitch + i] = color;
-            }
-
-            if d_region < 0 {
+            if d < 0 {
                 xp += 1;
-                dx += hi_times_two;
-                d_region += dx;
-                d_region += hi_squared;
+                dx += hi2_2;
+                d += dx + hi2;
             } else {
                 xp += 1;
                 yp -= 1;
-                dx += hi_times_two;
-                dy -= wi_times_two;
-                d_region += dx;
-                d_region -= dy;
-                d_region += hi_squared;
+                dx += hi2_2;
+                dy -= wi2_2;
+                d += dx - dy + hi2;
             }
         }
 
-        //-=-=-=-=Region 2=-=-=-=-=
-        d_region = hi_squared * (xp + 1).pow(2)
-            + wi_squared * (yp - 1).pow(2) - (wi_squared * hi_squared);
+        // region 2
+        d = hi2 * (xp + 1).pow(2) + wi2 * (yp - 1).pow(2) - (wi2 * hi2);
         while yp >= 0 {
-            for i in x - xp as usize..=x + xp as usize {
-                self.back_buffer_heap[(yp as usize + y) * self.pitch + i] = color;
-                self.back_buffer_heap[(y - yp as usize) * self.pitch + i] = color;
+            self.draw_hline_safe(yi + yp, xi - xp, xi + xp, color);
+            self.draw_hline_safe(yi - yp, xi - xp, xi + xp, color);
 
-            }
-
-            if d_region > 0 {
+            if d > 0 {
                 yp -= 1;
-                dy -= wi_times_two;
-                d_region += wi_squared;
-                d_region -= dy;
+                dy -= wi2_2;
+                d += wi2 - dy;
             } else {
                 yp -= 1;
                 xp += 1;
-                dx += hi_times_two;
-                dy -= wi_times_two;
-                d_region += dx;
-                d_region -= dy;
-                // d_region += xi * xi;
+                dx += hi2_2;
+                dy -= wi2_2;
+                d += dx - dy + wi2;
             }
         }
     }
