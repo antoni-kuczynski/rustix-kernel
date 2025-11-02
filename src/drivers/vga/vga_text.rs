@@ -1,8 +1,14 @@
 #![allow(dead_code)]
-use core::fmt::Arguments;
 
+use core::arch::asm;
+use core::fmt::Arguments;
+use core::ops::Add;
+use core::ptr;
 use spin::Mutex;
 use lazy_static::lazy_static;
+use crate::drivers::vga::CURRENT_VGA_MODE;
+use crate::drivers::vga::vga_fonts::*;
+use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, set_12h_mode_regs, write_fonts};
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -35,9 +41,13 @@ use lazy_static::lazy_static;
  * 0x7      LightGray   0xf             White
  */
 
+//  **VGA REGISTER VALUES**
+//  *MODE 0x03 TEXT MODE 80x25chars 16 colors*
+
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)] // u4 would be sufficient but rust does not have such type
-pub enum Color{
+pub enum ColorTextMode {
     Black = 0,
     Blue = 1,
     Green = 2,
@@ -59,22 +69,22 @@ pub enum Color{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)] // to make sure ColorCode is size of u8 
                      // and nothing more
-struct ColorCode(u8);
-impl ColorCode{
+struct ColorCodeTextMode(u8);
+impl ColorCodeTextMode {
     // handy abstraction for making colors without
     // dealing with manual bytes making
-    fn new(foreground: Color, background: Color) -> Self{
+    fn new(foreground: ColorTextMode, background: ColorTextMode) -> Self{
         Self((background as u8) << 4 | (foreground as u8) )
     }
 
     // returns background color of ColorCode
-    fn foreground(&self) -> Color {
+    fn foreground(&self) -> ColorTextMode {
         let fg = self.0 & 0x0f; // lower 4 bits
         self.try_from_u8(fg)
     }
 
     // returns background color of ColorCode
-    fn background(&self) -> Color {
+    fn background(&self) -> ColorTextMode {
         let bg = (self.0 >> 4) & 0x0f; // upper 4 bits
         self.try_from_u8(bg)
     }
@@ -82,24 +92,24 @@ impl ColorCode{
     // matches u8 to Color
     // if v does not match any Color
     // returns white
-    fn try_from_u8(&self, v : u8) -> Color {
+    fn try_from_u8(&self, v : u8) -> ColorTextMode {
         match v {
-            0  => Color::Black,
-            1  => Color::Blue,
-            2  => Color::Green,
-            3  => Color::Cyan,
-            4  => Color::Red,
-            5  => Color::Magenta,
-            6  => Color::Brown,
-            7  => Color::LightGray,
-            8  => Color::DarkGray,
-            9  => Color::LightBlue,
-            10 => Color::LightGreen,
-            11 => Color::LightCyan,
-            12 => Color::LightRed,
-            13 => Color::Pink,
-            14 => Color::Yellow,
-            _  => Color::White,
+            0  => ColorTextMode::Black,
+            1  => ColorTextMode::Blue,
+            2  => ColorTextMode::Green,
+            3  => ColorTextMode::Cyan,
+            4  => ColorTextMode::Red,
+            5  => ColorTextMode::Magenta,
+            6  => ColorTextMode::Brown,
+            7  => ColorTextMode::LightGray,
+            8  => ColorTextMode::DarkGray,
+            9  => ColorTextMode::LightBlue,
+            10 => ColorTextMode::LightGreen,
+            11 => ColorTextMode::LightCyan,
+            12 => ColorTextMode::LightRed,
+            13 => ColorTextMode::Pink,
+            14 => ColorTextMode::Yellow,
+            _  => ColorTextMode::White,
         }
     }
 }
@@ -109,7 +119,7 @@ impl ColorCode{
 #[repr(C)] // to make sure field orderig does not change
 struct ScreenChar {
     ascii_char_code: u8,
-    color_code:  ColorCode,
+    color_code: ColorCodeTextMode,
 }
 
 const VGA_BUFFER_HEIGHT : usize = 25;
@@ -121,21 +131,25 @@ struct VgaBuffer{
     chars:  [[ScreenChar; VGA_BUFFER_WIDTH] ; VGA_BUFFER_HEIGHT],
 }
 
-pub struct VgaWriter {
+pub struct VgaTextMode {
     column_position: usize,         // keeps track of current position in the row
     row_position: usize,            // keeps track of current row
-    color_code: ColorCode,          // specifies currently used colors
+    color_code: ColorCodeTextMode,          // specifies currently used colors
     buffer: &'static mut VgaBuffer, // 'static is valid for VGA text buffer
+    buf_start_p: usize, //buffer start address - used for clear_buf
+    buf_end_p: usize    //buffer end address
 }
 
-impl VgaWriter {
+impl VgaTextMode {
 
     fn new() -> Self{
         Self {
             column_position: 0,
             row_position: 0,
-            color_code: ColorCode::new(Color::White,Color::Black),
+            color_code: ColorCodeTextMode::new(ColorTextMode::White, ColorTextMode::Black),
             buffer: unsafe { &mut *(0xb8000 as *mut VgaBuffer) },
+            buf_start_p: 0xB8000,
+            buf_end_p: 0xBBFFF
         }
     }
 
@@ -159,24 +173,24 @@ impl VgaWriter {
     }
 
     // changes foreground color 
-    pub fn change_foreground_color(&mut self, fc: Color){
-        self.color_code = ColorCode::new(
+    pub fn change_foreground_color(&mut self, fc: ColorTextMode){
+        self.color_code = ColorCodeTextMode::new(
             fc,
             self.color_code.background()
         );
     }
 
     // changes background color 
-    pub fn change_background_color(&mut self, bc: Color){
-        self.color_code = ColorCode::new(
+    pub fn change_background_color(&mut self, bc: ColorTextMode){
+        self.color_code = ColorCodeTextMode::new(
             self.color_code.foreground(),
             bc
         );
     }
 
     // changes color 
-    pub fn change_color(&mut self, fc: Color, bc: Color){
-        self.color_code = ColorCode::new(
+    pub fn change_color(&mut self, fc: ColorTextMode, bc: ColorTextMode){
+        self.color_code = ColorCodeTextMode::new(
             fc,
             bc
         );
@@ -228,10 +242,41 @@ impl VgaWriter {
                color_code: self.color_code
            });
    }
+
+    fn _vga_clear_mode_03h_buffer(&mut self) {
+        unsafe {
+            let pixel_p: *mut u8 = self.buf_start_p as *mut u8;
+            let buf_size = self.buf_end_p - self.buf_start_p;
+            for i in 0..buf_size {
+                ptr::write_volatile(pixel_p.add(i), 0x00);
+            }
+        }
+    }
+
+    pub fn init_vga_text_mode_03h(&mut self) {
+        if CURRENT_VGA_MODE.lock().get() == Some(0x03) {
+            return;
+        }
+
+        unsafe {
+            asm!("cli");
+            set_03h_mode_regs();
+            asm!("sti");
+        }
+        self._vga_clear_mode_03h_buffer();
+        unsafe {
+            write_fonts(&VgaFont::FONT_8PX);
+            load_4bit_color_palette_into_dac();
+        }
+        self.column_position = 0;
+        self.row_position = 0;
+        self.color_code = ColorCodeTextMode::new(ColorTextMode::White, ColorTextMode::Black);
+        CURRENT_VGA_MODE.lock().switch_to(0x03);
+    }
 }
 
 
-impl core::fmt::Write for VgaWriter{
+impl core::fmt::Write for VgaTextMode {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
         self.write(s);
         Ok(())
@@ -241,12 +286,12 @@ impl core::fmt::Write for VgaWriter{
 // static instance of VgaWriter
 // to access use vga::VGAWRITER.lock()
 lazy_static! {
-    pub static ref VGAWRITER: Mutex<VgaWriter> = Mutex::new(VgaWriter::new());
+    pub static ref VGAWRITER: Mutex<VgaTextMode> = Mutex::new(VgaTextMode::new());
 }
 
 #[macro_export]
 macro_rules! vgaprint {
-    ($($arg:tt)*) => ($crate::drivers::vga::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ($crate::drivers::vga::vga_text::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
@@ -254,6 +299,7 @@ macro_rules! vgaprintln {
     () => ($crate::vgaprint!("\n"));
     ($($arg:tt)*) => ($crate::vgaprint!("{}\n", format_args!($($arg)*)));
 }
+
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
