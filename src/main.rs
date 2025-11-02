@@ -9,9 +9,9 @@
 extern crate alloc;
 
 use core::{panic::PanicInfo};
-use alloc::{boxed::Box, vec};
 use bootloader::{entry_point, BootInfo};
 use crate::{drivers::vga::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
+use crate::drivers::acpi;
 
 mod drivers;
 mod interrupts;
@@ -34,12 +34,9 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    let x = Box::new(5);
-    let v = vec![1,2,3];
+    acpi::acpi_tables::initialize_acpi_tables(&boot_info);
 
-    vgaprintln!("{}, {:#?}",x,v);
 
-    vgaprintln!("nie wyjebalo sie jupi");
 
     loop{
         x86_64::instructions::hlt();
