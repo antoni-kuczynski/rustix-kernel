@@ -8,23 +8,15 @@
 
 extern crate alloc;
 
-use crate::graphics::graphics::PointUnsigned;
-use crate::graphics::graphics::Rectangle;
-use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::graphics::graphics::Graphics;
-use crate::memory::mapping::BootInfoFrameAllocator;
-use crate::memory::pages;
+use core::{panic::PanicInfo};
 use bootloader::{entry_point, BootInfo};
-use core::panic::PanicInfo;
-use crate::drivers::vga::CURRENT_VGA_MODE;
-use crate::graphics::vga_demo::{vga_demo};
+use crate::{drivers::vga::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
+use crate::drivers::acpi;
 
 mod drivers;
 mod interrupts;
 mod memory;
 mod bootinfo;
-mod graphics;
-mod asm;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -42,21 +34,18 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    CURRENT_VGA_MODE.lock().switch_to(0x03);
+    acpi::acpi_tables::initialize_acpi_tables(&boot_info);
 
-    // test_offscreen_primitives();
-    let g: Graphics = Graphics::new();
-    vga_demo(g);
 
-    loop {
+
+    loop{
         x86_64::instructions::hlt();
     }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    VGAWRITER.lock().init_vga_text_mode_03h();  //on panic switch to text mode
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+    VGAWRITER.lock().change_foreground_color(Color::LightRed);
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);
     vgaprintln!("=!==============================!=");
