@@ -8,7 +8,7 @@ use core::ptr;
 use core::ptr::slice_from_raw_parts;
 use bootloader::BootInfo;
 use crate::{vgaprint, vgaprintln};
-use crate::drivers::vga::{Color, VGAWRITER};
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 
 // ============================================================
 //               **INITIALIZING THE TABLES**
@@ -20,15 +20,15 @@ pub fn initialize_acpi_tables(boot_info: &BootInfo) {
     let mut rsdp = RSDP::new_from_rsd_ptr(rsdp_address);
 
     if !rsdp.validate_checksum() {
-        VGAWRITER.lock().change_foreground_color(Color::Red);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
         vgaprintln!(" FAIL!");
-        VGAWRITER.lock().change_foreground_color(Color::White);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
         return;
     }
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
 
 
     //detecting ACPI version
@@ -51,17 +51,17 @@ fn initialize_acpi_v1(ptr: u64, physical_mem_offset: u64) {
         rsdp.rsdt_address as u64 + physical_mem_offset
     );
     if !rsdt.header.validate_checksum() {
-        VGAWRITER.lock().change_foreground_color(Color::Red);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
         vgaprintln!(" FAIL!");
-        VGAWRITER.lock().change_foreground_color(Color::White);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
         return;
     }
 
 
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
 
     rsdt.print();
 }
@@ -70,9 +70,9 @@ fn initialize_acpi_v2_and_newer(ptr: u64, physical_mem_offset: u64) {
     vgaprint!("Initlializing ACPI 2.0 tables...");
     let mut xsdp = XSDP::new_from_rsd_ptr(ptr);
     if !xsdp.validate_extended_checksum() {
-        VGAWRITER.lock().change_foreground_color(Color::Red);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
         vgaprintln!(" FAIL!");
-        VGAWRITER.lock().change_foreground_color(Color::White);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
         return;
     }
 
@@ -80,15 +80,15 @@ fn initialize_acpi_v2_and_newer(ptr: u64, physical_mem_offset: u64) {
         xsdp.xsdt_address + physical_mem_offset
     );
     if !xsdt.header.validate_checksum() {
-        VGAWRITER.lock().change_foreground_color(Color::Red);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
         vgaprintln!(" FAIL!");
-        VGAWRITER.lock().change_foreground_color(Color::White);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
         return;
     }
 
-    VGAWRITER.lock().change_foreground_color(Color::Green);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
     vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(Color::White);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
 
     // xsdp.print();
     xsdt.print();
@@ -111,17 +111,17 @@ fn get_rsdp_address(physical_memory_offset: u64) -> u64 {
             let vaddr = (addr + physical_memory_offset) as *const u8;
             let slice = core::slice::from_raw_parts(vaddr, 8);
             if slice == RSD_EXPECTED_SIGNATURE {
-                VGAWRITER.lock().change_foreground_color(Color::Green);
+                VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
                 vgaprintln!(" OK!");
-                VGAWRITER.lock().change_foreground_color(Color::White);
+                VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
                 return addr + physical_memory_offset;
             }
             addr += 16;
         }
 
-        VGAWRITER.lock().change_foreground_color(Color::Red);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
         vgaprintln!(" FAILED!");
-        VGAWRITER.lock().change_foreground_color(Color::White);
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
         BIOS_START
     }
 }

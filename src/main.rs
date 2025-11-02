@@ -10,13 +10,16 @@ extern crate alloc;
 
 use core::{panic::PanicInfo};
 use bootloader::{entry_point, BootInfo};
-use crate::{drivers::vga::{Color, VGAWRITER}, memory::{mapping::BootInfoFrameAllocator, pages} };
 use crate::drivers::acpi;
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
+use crate::memory::mapping::BootInfoFrameAllocator;
+use crate::memory::pages;
 
 mod drivers;
 mod interrupts;
 mod memory;
 mod bootinfo;
+pub mod asm;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -45,7 +48,7 @@ fn _start(boot_info: &'static BootInfo) -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    VGAWRITER.lock().change_foreground_color(Color::LightRed);
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);
     vgaprintln!("=!==============================!=");
