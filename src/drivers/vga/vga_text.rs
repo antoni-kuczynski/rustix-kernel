@@ -69,7 +69,7 @@ pub enum ColorTextMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)] // to make sure ColorCode is size of u8 
                      // and nothing more
-struct ColorCodeTextMode(u8);
+pub struct ColorCodeTextMode(u8);
 impl ColorCodeTextMode {
     // handy abstraction for making colors without
     // dealing with manual bytes making
@@ -78,7 +78,7 @@ impl ColorCodeTextMode {
     }
 
     // returns background color of ColorCode
-    fn foreground(&self) -> ColorTextMode {
+    pub fn foreground(&self) -> ColorTextMode { //(pub for macros)
         let fg = self.0 & 0x0f; // lower 4 bits
         self.try_from_u8(fg)
     }
@@ -134,7 +134,7 @@ struct VgaBuffer{
 pub struct VgaTextMode {
     column_position: usize,         // keeps track of current position in the row
     row_position: usize,            // keeps track of current row
-    color_code: ColorCodeTextMode,          // specifies currently used colors
+    pub color_code: ColorCodeTextMode,          // specifies currently used colors (pub for macros)
     buffer: &'static mut VgaBuffer, // 'static is valid for VGA text buffer
     buf_start_p: usize, //buffer start address - used for clear_buf
     buf_end_p: usize    //buffer end address
@@ -300,6 +300,25 @@ macro_rules! vgaprintln {
     ($($arg:tt)*) => ($crate::vgaprint!("{}\n", format_args!($($arg)*)));
 }
 
+#[macro_export]
+macro_rules! print_ok_msg {
+    () => {
+        let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
+        vgaprintln!(" OK!");
+        VGAWRITER.lock().change_foreground_color(prev_fg_color);
+    }
+}
+
+#[macro_export]
+macro_rules! print_fail_msg {
+    () => {
+        let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
+        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
+        vgaprintln!(" FAIL!");
+        VGAWRITER.lock().change_foreground_color(prev_fg_color);
+    }
+}
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
