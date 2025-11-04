@@ -37,9 +37,8 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    acpi::acpi_tables::initialize_acpi_tables(&boot_info);
-
-
+    let _acpi_tables = acpi::acpi_tables::initialize_acpi_tables(&boot_info);
+    acpi::acpi::init(_acpi_tables);
 
     loop{
         x86_64::instructions::hlt();
