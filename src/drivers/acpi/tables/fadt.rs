@@ -6,10 +6,10 @@ use alloc::string::String;
 use core::ptr::slice_from_raw_parts;
 use crate::asm::{inw, outb};
 use crate::drivers::acpi::acpi_sdt::ACPISDTHeader;
-use crate::drivers::acpi::acpi_tables::{RSDT, XSDT};
+use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable, RSDT, XSDT};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::interrupts::hardware::pic8259::{get_current_time_millis};
-use crate::{vgaprint, vgaprintln};
+use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
 // ============================================================
 //               **FADT FIND**
 // ============================================================
@@ -119,6 +119,27 @@ pub struct FADT {
     pub x_gpe1_block: GenericAddressStructure,
 }
 
+pub enum PrefferedPowerManagementProfile {
+    Unspecified,
+    Desktop,
+    Mobile,
+    Workstation,
+    EnterpriseServer,
+    SOHOServer,
+    AppliancePC,
+    PerformanceServer,
+    Reserved
+}
+
+impl AcpiSdtTable for FADT {
+    fn get_signature(&self) -> ACPISignature {
+        ACPISignature::FADT
+    }
+
+    fn get_sdt_header(&self) -> ACPISDTHeader {
+        self.h
+    }
+}
 
 impl FADT {
     pub fn new_from_ptr(ptr: u64) -> &'static FADT {
@@ -134,6 +155,24 @@ impl FADT {
         }
     }
 
+    pub fn get_dsdt_pointer(&self, mem_logical_offset: u64) -> u64 {
+        self.dsdt as u64 + mem_logical_offset
+    }
+
+    pub fn get_preffered_power_management_profile(&self) -> PrefferedPowerManagementProfile {
+        match self.preferred_power_management_profile {
+            0 => PrefferedPowerManagementProfile::Unspecified,
+            1 => PrefferedPowerManagementProfile::Desktop,
+            2 => PrefferedPowerManagementProfile::Mobile,
+            3 => PrefferedPowerManagementProfile::Workstation,
+            4 => PrefferedPowerManagementProfile::EnterpriseServer,
+            5 => PrefferedPowerManagementProfile::SOHOServer,
+            6 => PrefferedPowerManagementProfile::AppliancePC,
+            _ => PrefferedPowerManagementProfile::Reserved
+        }
+    }
+
+
     pub fn print(&self) {
         let a = self.smi_command_port;
         let b = self.pm1a_control_block;
@@ -143,34 +182,5 @@ impl FADT {
             vgaprintln!("FADT pm1a control block:");
             vgaprintln!("{}", inw(b as u16));
         }
-    }
-
-    pub fn enable_acpi(&self) {
-        vgaprint!("Enabling ACPI...");
-        unsafe {
-            outb(self.smi_command_port as u16, self.acpi_enable);
-        }
-
-        //check if ACPI is actually enabled
-        unsafe {
-            let mut prev_time = get_current_time_millis();
-            let mut current_time;
-            let mut d_time = 0; //wait for 3 seconds (linux approach)
-            while (inw(self.pm1a_control_block as u16) & 1 == 0) &&  d_time < 3_000 {
-                current_time = get_current_time_millis();
-                d_time += current_time - prev_time;
-                prev_time = current_time;
-            }
-
-            if inw(self.pm1a_control_block as u16) & 1 == 0 {
-                VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
-                vgaprintln!(" FAIL!");
-                VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
-                return;
-            }
-        }
-        VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
-        vgaprintln!(" OK!");
-        VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
     }
 }
