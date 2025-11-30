@@ -1,4 +1,4 @@
 pub mod acpi;
 pub mod acpi_tables;
-mod acpi_sdt;
-mod tables;
+pub mod acpi_sdt;
+pub mod tables;

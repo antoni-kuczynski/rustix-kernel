@@ -2,6 +2,7 @@
  * Created by Antoni Kuczyński
  * 03/11/2025
  */
+use crate::drivers::acpi::acpi_tables::ACPISignature;
 
 // ============================================================
 //
@@ -11,7 +12,7 @@
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct ACPISDTHeader {
-    pub signature: [u8; 4],
+    pub signature: ACPISignature,
     pub length: u32,
     pub revision: u8,
     pub checksum: u8,

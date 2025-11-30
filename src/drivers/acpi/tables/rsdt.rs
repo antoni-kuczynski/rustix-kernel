@@ -6,8 +6,6 @@ use alloc::string::String;
 use core::ptr::slice_from_raw_parts;
 use crate::drivers::acpi::acpi_sdt::ACPISDTHeader;
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
-use crate::drivers::acpi::tables::fadt::FADT;
-use crate::drivers::acpi::tables::find_acpi_sdt_table;
 use crate::vgaprintln;
 
 // ============================================================
@@ -64,7 +62,7 @@ impl RSDT {
         let creator_revision = header.creator_revision;
 
         vgaprintln!("RSDT:");
-        vgaprintln!("  Signature: {:?}", String::from_utf8_lossy(&signature));
+        vgaprintln!("  Signature: {:?}", signature);
         vgaprintln!("  Length:    {}", length);
         vgaprintln!("  Revision:  {}", revision);
         vgaprintln!("  Checksum:  {}", checksum);
@@ -85,8 +83,8 @@ impl RSDT {
 
 #[repr(C, packed)]
 pub struct XSDT {
-    pub(crate) header: ACPISDTHeader,
-    pub(crate) other_sdt_pointers: [u64]
+    pub header: ACPISDTHeader,
+    pub other_sdt_pointers: [u64]
 }
 
 impl XSDT {
@@ -103,6 +101,12 @@ impl XSDT {
         }
     }
 
+    pub fn get_mapping_length(&self) -> usize {
+        let header: ACPISDTHeader = self.header;
+        let length = self.header.length;
+        (length as usize - size_of_val(&header)) >> 3
+    }
+
     pub fn print(&self) {
         let header: ACPISDTHeader = self.header;
         let signature = header.signature;
@@ -116,7 +120,7 @@ impl XSDT {
         let creator_revision = header.creator_revision;
 
         vgaprintln!("XSDT:");
-        vgaprintln!("  Signature: {:?}", String::from_utf8_lossy(&signature));
+        vgaprintln!("  Signature: {:?}", signature);
         vgaprintln!("  Length:    {}", length);
         vgaprintln!("  Revision:  {}", revision);
         vgaprintln!("  Checksum:  {}", checksum);

@@ -2,41 +2,11 @@
  * Created by Antoni Kuczyński
  * 03/11/2025
  */
-use alloc::string::String;
 use core::ptr::slice_from_raw_parts;
-use crate::asm::{inw, outb};
+use crate::asm::{inw};
 use crate::drivers::acpi::acpi_sdt::ACPISDTHeader;
-use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable, RSDT, XSDT};
-use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::interrupts::hardware::pic8259::{get_current_time_millis};
-use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
-// ============================================================
-//               **FADT FIND**
-// ============================================================
-
-#[allow(non_snake_case)]
-pub fn find_FADT_address_from_rsdt(rsdt: &RSDT, mem_offset: u64) -> Option<u64> {
-    let length = (rsdt.header.length as usize - size_of_val(&rsdt.header)) >> 2;
-    for i in 0..length {
-        let header = ACPISDTHeader::new_from_ptr_u64(rsdt.other_sdt_pointers[i] as u64 + mem_offset);
-        if &header.signature == b"FACP" {
-            return Some(rsdt.other_sdt_pointers[i] as u64 + mem_offset);
-        }
-    }
-    None
-}
-
-#[allow(non_snake_case)]
-pub fn find_FADT_address_from_xsdt(xsdt: &XSDT, mem_offset: u64) -> Option<u64> {
-    let length = (xsdt.header.length as usize - size_of_val(&xsdt.header)) >> 3;
-    for i in 0..length {
-        let header = ACPISDTHeader::new_from_ptr_u64(xsdt.other_sdt_pointers[i] + mem_offset);
-        if String::from_utf8_lossy(&header.signature) == "FACP" {
-            return Some(xsdt.other_sdt_pointers[i] + mem_offset);
-        }
-    }
-    None
-}
+use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
+use crate::{vgaprintln};
 // ============================================================
 //               **FADT STRUCT**
 // ============================================================

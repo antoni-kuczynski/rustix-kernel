@@ -1,12 +1,16 @@
 use alloc::boxed::Box;
 use alloc::string::String;
 use crate::drivers::acpi::tables::AcpiRevision;
-use crate::vgaprintln;
+use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
 
 /*
  * Created by Antoni Kuczyński
  * 05/11/2025
  */
+const BIOS_START: u64 = 0x000E0000;
+const BIOS_END: u64   = 0x000FFFFF;
+const RSD_EXPECTED_SIGNATURE: &[u8] = b"RSD PTR ";
+
 
 // ============================================================
 //               **XSDP & RSDP**
@@ -14,7 +18,7 @@ use crate::vgaprintln;
 //  XSDP is used on ACPI version 2.0+
 // ============================================================
 #[repr(C, packed)]
-pub struct RSDP {
+struct RSDP {
     pub signature: [u8; 8],
     pub checksum: u8,
     pub oem_id: [u8; 6],
@@ -23,6 +27,7 @@ pub struct RSDP {
 }
 
 #[repr(C, packed)]
+#[derive(Copy, Clone)]
 pub struct XSDP {
     pub rsdp: &'static RSDP,
     //XSDP fields - ACPI 2.0+
@@ -50,14 +55,6 @@ impl RSDP {
         }
     }
 
-    pub fn get_acpi_revision(&self) -> AcpiRevision {
-        match self.revision {
-            1 => AcpiRevision::Acpi10,
-            2 => AcpiRevision::Acpi20,
-            _ => AcpiRevision::Unknown
-        }
-    }
-
     pub fn print(&self) {
         let signature = self.signature;
         let checksum = self.checksum;
@@ -82,6 +79,8 @@ impl XSDP {
         }
     }
 
+
+
     pub fn new_rsdp_from_ptr(ptr: u64) -> Box<XSDP> {
         Box::new(XSDP {
             rsdp: RSDP::new_from_rsd_ptr(ptr),
@@ -92,16 +91,38 @@ impl XSDP {
         })
     }
 
-    pub(crate) fn validate_extended_checksum(&self) -> bool {
+    fn validate_extended_checksum(&self) -> bool {
         unsafe {
             let ptr = self as *const _ as *const u8;
             let mut sum: u8 = 0;
             let length = self.length as usize;
+
             for i in 0..length {
                 sum = sum.wrapping_add(*ptr.add(i));
             }
+
             sum == 0
         }
+    }
+
+    pub fn get_acpi_revision(&self) -> AcpiRevision {
+        match self.rsdp.revision {
+            1 => AcpiRevision::Acpi10,
+            2 => AcpiRevision::Acpi20,
+            _ => AcpiRevision::Unknown
+        }
+    }
+
+    pub fn get_rsdt_address(&self) -> u64 {
+        self.rsdp.rsdt_address as u64
+    }
+
+    pub fn get_xsdt_address(&self) -> u64 {
+        self.xsdt_address
+    }
+
+    pub fn validate(&self) -> bool {
+        self.rsdp.validate_checksum() && self.validate_extended_checksum()
     }
 
     pub fn print(&self) {
@@ -126,5 +147,23 @@ impl XSDP {
         vgaprintln!("Extended Checksum  : {:#04x}", extended_checksum);
         vgaprintln!("Reserved           : {:?}", reserved);
         vgaprintln!("====================================");
+    }
+}
+
+// ============================================================
+//              **SERCHING THE MEMORY FOR RSDP**
+// ============================================================
+pub fn get_rsdp_address(physical_memory_offset: u64) -> u64 {
+    unsafe {
+        let mut addr = BIOS_START;
+        while addr <= BIOS_END {
+            let vaddr = (addr + physical_memory_offset) as *const u8;
+            let slice = core::slice::from_raw_parts(vaddr, 8);
+            if slice == RSD_EXPECTED_SIGNATURE {
+                return addr + physical_memory_offset;
+            }
+            addr += 16;
+        }
+        BIOS_START
     }
 }
