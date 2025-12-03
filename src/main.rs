@@ -9,8 +9,11 @@
 extern crate alloc;
 
 use core::{panic::PanicInfo};
+use core::fmt::Error;
 use bootloader::{entry_point, BootInfo};
 use crate::drivers::acpi;
+use crate::drivers::acpi::acpi::enable_acpi;
+use crate::drivers::acpi::acpi_tables::{ACPITables, AcpiError};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
@@ -37,8 +40,15 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    let tables = acpi::acpi_tables::initialize_acpi_tables(&boot_info);
-    acpi::acpi::init(&tables);
+    let tables = match acpi::acpi_tables::get_acpi_tables(&boot_info) {
+        Ok(a) => {a}
+        Err(AcpiError::InvalidRsdtMappingsError) => {panic!("No ACPI tables found!")}
+        Err(AcpiError::InvalidRevisionError) => {panic!("Invalid ACPI revision number!")},
+        Err(AcpiError::InvalidChecksumError(x)) => {panic!("Invalid checksum for {}", x.as_str())},
+        Err(AcpiError::InvalidSdpChecksumError()) => todo!()
+    };
+    enable_acpi(tables).expect("Enabling ACPI failed!");
+
 
     loop{
         x86_64::instructions::hlt();

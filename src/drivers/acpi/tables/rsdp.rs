@@ -18,7 +18,7 @@ const RSD_EXPECTED_SIGNATURE: &[u8] = b"RSD PTR ";
 //  XSDP is used on ACPI version 2.0+
 // ============================================================
 #[repr(C, packed)]
-struct RSDP {
+pub struct RSDP {
     pub signature: [u8; 8],
     pub checksum: u8,
     pub oem_id: [u8; 6],
@@ -37,14 +37,20 @@ pub struct XSDP {
     pub reserved: [u8; 3]
 }
 
-impl RSDP {
-    pub fn new_from_rsd_ptr(ptr: u64) -> &'static RSDP {
-        unsafe {
-            &*(ptr as *const RSDP)
-        }
+pub trait DesciptionPointerTable {
+    fn get_signature(&self) -> [u8; 8];
+    fn validate(&self) -> bool;
+    fn get_oem_id(&self) -> [u8; 6];
+    fn get_revision(&self) -> AcpiRevision;
+    fn get_sdt_address(&self) -> u64;
+}
+
+impl DesciptionPointerTable for RSDP {
+    fn get_signature(&self) -> [u8; 8] {
+        self.signature
     }
 
-    pub fn validate_checksum(&self) -> bool {
+    fn validate(&self) -> bool {
         unsafe {
             let ptr = self as *const _ as *const u8;
             let mut sum: u8 = 0;
@@ -55,43 +61,43 @@ impl RSDP {
         }
     }
 
-    pub fn print(&self) {
-        let signature = self.signature;
-        let checksum = self.checksum;
-        let oem_id = self.oem_id;
-        let revision = self.revision;
-        let rsdt_address = self.rsdt_address;
-
-        vgaprintln!("==== RSDP Table Descriptor) ====");
-        vgaprintln!("Signature          : {}", String::from_utf8_lossy(&signature));
-        vgaprintln!("Checksum           : {:#04x}", checksum);
-        vgaprintln!("OEM ID             : {}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!("Revision           : {}", revision);
-        vgaprintln!("RSDT Address       : {:#010x}", rsdt_address);
-        vgaprintln!("====================================");
+    fn get_oem_id(&self) -> [u8; 6] {
+        self.oem_id
     }
-}
 
-impl XSDP {
-    pub fn new_xsdp_from_rsd_ptr(ptr: u64) -> &'static XSDP {
-        unsafe {
-            &*(ptr as *const XSDP)
+    fn get_revision(&self) -> AcpiRevision {
+        match self.revision {
+            0 => AcpiRevision::Acpi10,
+            2 => AcpiRevision::Acpi20,
+            _ => AcpiRevision::Unknown
         }
     }
 
+    fn get_sdt_address(&self) -> u64 {
+        self.rsdt_address as u64
+    }
+}
 
 
-    pub fn new_rsdp_from_ptr(ptr: u64) -> Box<XSDP> {
-        Box::new(XSDP {
-            rsdp: RSDP::new_from_rsd_ptr(ptr),
-            length: 0,
-            xsdt_address: 0,
-            extended_checksum: 0,
-            reserved: [0,0,0]
-        })
+impl RSDP {
+    pub fn new_from_rsd_ptr(ptr: u64) -> &'static RSDP {
+        unsafe {
+            &*(ptr as *const RSDP)
+        }
+    }
+}
+
+
+impl DesciptionPointerTable for XSDP {
+    fn get_signature(&self) -> [u8; 8] {
+        self.rsdp.signature
     }
 
-    fn validate_extended_checksum(&self) -> bool {
+    fn validate(&self) -> bool {
+        if !self.rsdp.validate() {
+            return false;
+        }
+
         unsafe {
             let ptr = self as *const _ as *const u8;
             let mut sum: u8 = 0;
@@ -105,48 +111,38 @@ impl XSDP {
         }
     }
 
-    pub fn get_acpi_revision(&self) -> AcpiRevision {
+    fn get_oem_id(&self) -> [u8; 6] {
+        self.rsdp.oem_id
+    }
+
+    fn get_revision(&self) -> AcpiRevision {
         match self.rsdp.revision {
-            1 => AcpiRevision::Acpi10,
+            0 => AcpiRevision::Acpi10,
             2 => AcpiRevision::Acpi20,
             _ => AcpiRevision::Unknown
         }
     }
 
-    pub fn get_rsdt_address(&self) -> u64 {
-        self.rsdp.rsdt_address as u64
-    }
-
-    pub fn get_xsdt_address(&self) -> u64 {
+    fn get_sdt_address(&self) -> u64 {
         self.xsdt_address
     }
+}
 
-    pub fn validate(&self) -> bool {
-        self.rsdp.validate_checksum() && self.validate_extended_checksum()
+impl XSDP {
+    pub fn new_xsdp_from_rsd_ptr(ptr: u64) -> &'static XSDP {
+        unsafe {
+            &*(ptr as *const XSDP)
+        }
     }
 
-    pub fn print(&self) {
-        let signature = self.rsdp.signature;
-        let checksum = self.rsdp.checksum;
-        let oem_id = self.rsdp.oem_id;
-        let revision = self.rsdp.revision;
-        let rsdt_address = self.rsdp.rsdt_address;
-        let length = self.length;
-        let xsdt_address = self.xsdt_address;
-        let extended_checksum = self.extended_checksum;
-        let reserved = self.reserved;
-
-        vgaprintln!("==== XSDP Table Descriptor) ====");
-        vgaprintln!("Signature          : {}", String::from_utf8_lossy(&signature));
-        vgaprintln!("Checksum           : {:#04x}", checksum);
-        vgaprintln!("OEM ID             : {}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!("Revision           : {}", revision);
-        vgaprintln!("RSDT Address       : {:#010x}", rsdt_address);
-        vgaprintln!("Length             : {}", length);
-        vgaprintln!("XSDT Address       : {:#018x}", xsdt_address);
-        vgaprintln!("Extended Checksum  : {:#04x}", extended_checksum);
-        vgaprintln!("Reserved           : {:?}", reserved);
-        vgaprintln!("====================================");
+    pub fn new_rsdp_from_ptr(ptr: u64) -> Box<XSDP> {
+        Box::new(XSDP {
+            rsdp: RSDP::new_from_rsd_ptr(ptr),
+            length: 0,
+            xsdt_address: 0,
+            extended_checksum: 0,
+            reserved: [0,0,0]
+        })
     }
 }
 

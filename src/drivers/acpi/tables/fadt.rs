@@ -4,9 +4,10 @@
  */
 use core::ptr::slice_from_raw_parts;
 use crate::asm::{inw};
-use crate::drivers::acpi::acpi_sdt::ACPISDTHeader;
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 use crate::{vgaprintln};
+use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
+
 // ============================================================
 //               **FADT STRUCT**
 // ============================================================
@@ -139,18 +140,6 @@ impl FADT {
             5 => PrefferedPowerManagementProfile::SOHOServer,
             6 => PrefferedPowerManagementProfile::AppliancePC,
             _ => PrefferedPowerManagementProfile::Reserved
-        }
-    }
-
-
-    pub fn print(&self) {
-        let a = self.smi_command_port;
-        let b = self.pm1a_control_block;
-        unsafe {
-            vgaprintln!("FADT smi command port:");
-            vgaprintln!("{}", inw(a as u16));
-            vgaprintln!("FADT pm1a control block:");
-            vgaprintln!("{}", inw(b as u16));
         }
     }
 }

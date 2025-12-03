@@ -13,22 +13,10 @@ use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
 use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::drivers::vga::vga_text::ColorTextMode;
 
-//please forgive me
-pub static mut TABLES: Once<&ACPITables> = Once::new();
-
-#[macro_export]
-macro_rules! get_acpi_tables {
-    () => {
-        {
-            *TABLES.get().unwrap_unchecked()
-        }
-    };
-}
-
-pub fn enable_acpi() -> Result<(), Error> {
+pub fn enable_acpi(tables: ACPITables) -> Result<(), Error> {
     vgaprint!("Enabling ACPI...");
     unsafe {
-        let fadt: &FADT = match get_acpi_tables!().find_sdt_table(ACPISignature::FADT) {
+        let fadt: &FADT = match tables.find_sdt_table(ACPISignature::FADT) {
             None => {
                 return Err(Error);
             }
@@ -55,20 +43,6 @@ pub fn enable_acpi() -> Result<(), Error> {
         }
     }
     print_ok_msg!();
-    Ok(())
-}
-
-pub fn init(t: &'static Result<ACPITables, Error>) -> Result<(), Error> {
-    match t {
-        Err(_) => {
-            panic!("No ACPI tables found!");
-        }
-        Ok(t) => {
-            unsafe {
-                TABLES.call_once(|| t);
-            }
-        }
-    };
     Ok(())
 }
 
