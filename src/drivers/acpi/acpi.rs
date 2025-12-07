@@ -3,16 +3,16 @@
  * 01/11/2025
  */
 use core::fmt::Error;
-use lazy_static::lazy_static;
-use spin::Once;
 use crate::drivers::acpi::acpi_tables::{ACPISignature, ACPITables};
-use crate::asm::{inw, outb};
+use crate::asm::{inw, outb, outw};
 use crate::drivers::acpi::tables::fadt::FADT;
-use crate::interrupts::hardware::pic8259::get_current_time_millis;
+use crate::interrupts::hardware::pic8259::{get_current_time_millis};
 use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
+use crate::drivers::acpi::tables::dsdt::{S5Obj, DSDT};
 use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::drivers::vga::vga_text::ColorTextMode;
 
+#[allow(dead_code)]
 pub fn enable_acpi(tables: &ACPITables) -> Result<(), Error> {
     vgaprint!("Enabling ACPI...");
     unsafe {
@@ -43,6 +43,26 @@ pub fn enable_acpi(tables: &ACPITables) -> Result<(), Error> {
         }
     }
     print_ok_msg!();
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn acpi_soft_off_state(tables: &ACPITables) -> Result<(), Error> {
+    let facp_ptr: u64 = match tables.find_sdt_table(ACPISignature::FADT) {
+        Some(x) => x,
+        None => return Err(Error)
+    };
+
+    let fadt: &FADT = FADT::new_from_ptr(facp_ptr);
+    let dsdt: &DSDT = DSDT::new_from_ptr(fadt.get_dsdt_pointer() + tables.get_memory_offset());
+    let s5 = match S5Obj::new_from_dsdt(dsdt) {
+        Some(x) => x,
+        None => return Err(Error)
+    };
+
+    unsafe {
+        outw(fadt.pm1a_control_block as u16, s5.SLP_TYPa as u16 | (1 << 13));
+    }
     Ok(())
 }
 

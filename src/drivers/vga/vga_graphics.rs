@@ -802,7 +802,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         }
         unsafe {
             asm!("cli");
-            set_320_200_mode_X_mode_regs();
+            set_320_200_mode_x_mode_regs();
 
             //Setting the color pallete
             load_8bit_color_pallet_into_dac();

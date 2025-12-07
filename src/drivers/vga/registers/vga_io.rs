@@ -18,11 +18,15 @@ pub unsafe fn sequcencer_write(index: u8, value: u8) {
     }
 }
 
+#[allow(dead_code)]
 pub unsafe fn crtc_write(index: u8, value: u8) {
-    outb(VGA_CRT_CONTROL_INDEX, index);
-    outb(VGA_CRT_CONTROL_DATA, value);
+    unsafe {
+        outb(VGA_CRT_CONTROL_INDEX, index);
+        outb(VGA_CRT_CONTROL_DATA, value);
+    }
 }
 
+#[allow(dead_code)]
 pub unsafe fn attribute_controller_write(index: u8, value: u8) {
     unsafe {
         // Reset flip-flop
@@ -33,6 +37,7 @@ pub unsafe fn attribute_controller_write(index: u8, value: u8) {
     }
 }
 
+#[allow(dead_code)]
 pub unsafe fn misc_output_write(value: u8) {
     unsafe {
         outb(VGA_MISC_OUTPUT_INDEX, value);
@@ -67,7 +72,7 @@ pub fn set_13h_mode_regs() {
     );
 }
 
-pub fn set_320_200_mode_X_mode_regs() {
+pub fn set_320_200_mode_x_mode_regs() {
     set_reg_values(
         VGA_320_200_X_MISC_OUTPUT_REG,
         VGA_320_200_X_CRT_CONTROL_REGS,

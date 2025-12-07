@@ -6,6 +6,7 @@ use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use crate::vgaprintln;
 
+#[allow(dead_code)]
 pub trait ACPITablePrinter {
     fn print(&self);
 }
@@ -30,11 +31,11 @@ impl ACPITablePrinter for RSDP {
 
 impl ACPITablePrinter for XSDP {
     fn print(&self) {
-        let signature = self.rsdp.signature;
-        let checksum = self.rsdp.checksum;
-        let oem_id = self.rsdp.oem_id;
-        let revision = self.rsdp.revision;
-        let rsdt_address = self.rsdp.rsdt_address;
+        let signature = self.signature;
+        let checksum = self.checksum;
+        let oem_id = self.oem_id;
+        let revision = self.revision;
+        let rsdt_address = self.rsdt_address;
         let length = self.length;
         let xsdt_address = self.xsdt_address;
         let extended_checksum = self.extended_checksum;

@@ -3,9 +3,7 @@
  * 03/11/2025
  */
 use core::ptr::slice_from_raw_parts;
-use crate::asm::{inw};
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
-use crate::{vgaprintln};
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 
@@ -25,7 +23,7 @@ pub struct GenericAddressStructure {
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct FADT {
-    pub h: ACPISDTHeader,
+    pub header: ACPISDTHeader,
     pub firmware_ctrl: u32,
     pub dsdt: u32,
 
@@ -91,6 +89,7 @@ pub struct FADT {
     pub x_gpe1_block: GenericAddressStructure,
 }
 
+
 pub enum PrefferedPowerManagementProfile {
     Unspecified,
     Desktop,
@@ -108,13 +107,18 @@ impl AcpiSdtTable for FADT {
         ACPISignature::FADT
     }
 
+    fn validate(&self) -> bool {
+        self.get_sdt_header().validate_checksum()
+    }
+
     fn get_sdt_header(&self) -> ACPISDTHeader {
-        self.h
+        self.header
     }
 }
 
+#[allow(dead_code)]
 impl FADT {
-    pub fn new_from_ptr(ptr: u64) -> &'static FADT {
+    pub fn new_from_ptr<'a>(ptr: u64) -> &'a FADT {
         unsafe {
             let header = ACPISDTHeader::new_from_ptr_u64(ptr);
             let length = header.length as usize;
@@ -143,6 +147,7 @@ impl FADT {
             4 => PrefferedPowerManagementProfile::EnterpriseServer,
             5 => PrefferedPowerManagementProfile::SOHOServer,
             6 => PrefferedPowerManagementProfile::AppliancePC,
+            7 => PrefferedPowerManagementProfile::PerformanceServer,
             _ => PrefferedPowerManagementProfile::Reserved
         }
     }

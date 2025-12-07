@@ -7,7 +7,6 @@ use alloc::vec::Vec;
 use core::ptr::slice_from_raw_parts;
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
-use crate::vgaprintln;
 
 // ============================================================
 //               **XSDT & RSDT**
@@ -25,17 +24,17 @@ impl AcpiSdtTable for RSDT {
         ACPISignature::RSDT
     }
 
-    fn get_sdt_header(&self) -> ACPISDTHeader {
-        self.header
-    }
-
     fn validate(&self) -> bool {
         self.header.validate_checksum()
+    }
+
+    fn get_sdt_header(&self) -> ACPISDTHeader {
+        self.header
     }
 }
 
 impl RSDT {
-    pub fn new_from_ptr(ptr: u64) -> &'static RSDT {
+    pub fn new_from_ptr<'a>(ptr: u64) -> &'a RSDT {
         unsafe {
             let header = ACPISDTHeader::new_from_ptr_u64(ptr);
             let length = header.length as usize;
@@ -74,13 +73,17 @@ impl AcpiSdtTable for XSDT {
         ACPISignature::XSDT
     }
 
+    fn validate(&self) -> bool {
+        self.header.validate_checksum()
+    }
+
     fn get_sdt_header(&self) -> ACPISDTHeader {
         self.header
     }
 }
 
 impl XSDT {
-    pub(crate) fn new(ptr: u64) -> &'static XSDT {
+    pub fn new<'a>(ptr: u64) -> &'a XSDT {
         unsafe {
             let header = ACPISDTHeader::new_from_ptr_u64(ptr);
             let length = header.length as usize;

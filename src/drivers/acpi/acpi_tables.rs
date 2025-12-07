@@ -6,24 +6,20 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bootloader::BootInfo;
 use crate::drivers::acpi::tables::{rsdp, AcpiRevision};
-use crate::drivers::acpi::tables::dsdt::DSDT;
-use crate::drivers::acpi::tables::fadt::FADT;
-use crate::drivers::acpi::tables::rsdp::{DesciptionPointerTable, RSDP, XSDP};
+use crate::drivers::acpi::tables::rsdp::{DescriptionPointerTable, RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
-use crate::vgaprintln;
 
-#[derive(Debug)]
-pub struct InvalidChecksumError;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ACPISignature([u8; 4]); //all signatures are 4 chars (except rsdp)
 
+#[allow(dead_code)]
 impl ACPISignature {
     pub const RSDT: ACPISignature = ACPISignature(*b"RSDT");
     pub const XSDT: ACPISignature = ACPISignature(*b"XSDT");
     pub const FADT: ACPISignature = ACPISignature(*b"FACP");
     pub const DSDT: ACPISignature = ACPISignature(*b"DSDT");
-    
+
     pub fn as_str<'a>(&self) -> &'a str {
         match self { 
             &ACPISignature::RSDT => "RSDT",
@@ -35,18 +31,17 @@ impl ACPISignature {
     }
 }
 
+#[derive(Debug)]
 pub enum AcpiError {
     InvalidRevisionError,
-    InvalidRsdtMappingsError,
     InvalidSdpChecksumError(),
     InvalidChecksumError(ACPISignature)
 }
 
+#[allow(dead_code)]
 pub trait AcpiSdtTable {
     fn get_signature(&self) -> ACPISignature;
-    fn validate(&self) -> bool {
-        self.get_sdt_header().validate_checksum()
-    }
+    fn validate(&self) -> bool;
     fn get_sdt_header(&self) -> ACPISDTHeader;
 }
 
@@ -57,6 +52,7 @@ pub struct ACPITables<'a> {
     rsdt_mappings: Vec<u64>
 }
 
+#[allow(dead_code)]
 impl<'a> ACPITables<'a> {
     fn new_from_xsdp(xsdp: &'a XSDP, mem_physical_offset: u64) -> Self {
         ACPITables {
@@ -100,15 +96,18 @@ impl<'a> ACPITables<'a> {
         None
     }
 
+    pub fn get_memory_offset(&self) -> u64 {
+        self.mem_physical_offset
+    }
+
 }
 // ============================================================
 //               **INITIALIZING THE TABLES**
 // ============================================================
-pub fn get_acpi_tables(boot_info: &BootInfo) -> Result<ACPITables, AcpiError> {
+pub fn get_acpi_tables(boot_info: &'_ BootInfo) -> Result<ACPITables<'_>, AcpiError> {
     let logical_rsdp_address: u64 = rsdp::get_rsdp_address(boot_info.physical_memory_offset);
     //*RSDP / XSDP*
     let rsdp = RSDP::new_from_rsd_ptr(logical_rsdp_address);
-
     if !rsdp.validate() {
         return Err(AcpiError::InvalidSdpChecksumError());
     }
@@ -135,12 +134,15 @@ pub fn get_acpi_tables(boot_info: &BootInfo) -> Result<ACPITables, AcpiError> {
         }
         AcpiRevision::Acpi20 => {
             let xsdp = XSDP::new_xsdp_from_rsd_ptr(logical_rsdp_address);
+            if !xsdp.validate() {
+                return Err(AcpiError::InvalidSdpChecksumError());
+            }
+
             acpi_tables = ACPITables::new_from_xsdp(xsdp, boot_info.physical_memory_offset);
 
             let xsdt = XSDT::new(
                 xsdp.get_sdt_address() + acpi_tables.mem_physical_offset
             );
-
             if !xsdt.validate() {
                 return Err(AcpiError::InvalidChecksumError(ACPISignature::XSDT));
             }
@@ -149,10 +151,4 @@ pub fn get_acpi_tables(boot_info: &BootInfo) -> Result<ACPITables, AcpiError> {
         }
     }
     Ok(acpi_tables)
-}
-
-
-pub fn parse_dsdt(fadt: &FADT) -> &DSDT {
-    let ptr = fadt.get_dsdt_pointer();
-    DSDT::new_from_ptr(ptr)
 }

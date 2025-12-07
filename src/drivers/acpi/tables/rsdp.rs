@@ -1,7 +1,4 @@
-use alloc::boxed::Box;
-use alloc::string::String;
 use crate::drivers::acpi::tables::AcpiRevision;
-use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
 
 /*
  * Created by Antoni Kuczyński
@@ -27,9 +24,12 @@ pub struct RSDP {
 }
 
 #[repr(C, packed)]
-#[derive(Copy, Clone)]
 pub struct XSDP {
-    pub rsdp: &'static RSDP,
+    pub signature: [u8; 8],
+    pub checksum: u8,
+    pub oem_id: [u8; 6],
+    pub revision: u8,
+    pub rsdt_address: u32,
     //XSDP fields - ACPI 2.0+
     pub length: u32,
     pub xsdt_address: u64,
@@ -37,7 +37,8 @@ pub struct XSDP {
     pub reserved: [u8; 3]
 }
 
-pub trait DesciptionPointerTable {
+#[allow(dead_code)]
+pub trait DescriptionPointerTable {
     fn get_signature(&self) -> [u8; 8];
     fn validate(&self) -> bool;
     fn get_oem_id(&self) -> [u8; 6];
@@ -45,7 +46,7 @@ pub trait DesciptionPointerTable {
     fn get_sdt_address(&self) -> u64;
 }
 
-impl DesciptionPointerTable for RSDP {
+impl DescriptionPointerTable for RSDP {
     fn get_signature(&self) -> [u8; 8] {
         self.signature
     }
@@ -66,11 +67,7 @@ impl DesciptionPointerTable for RSDP {
     }
 
     fn get_revision(&self) -> AcpiRevision {
-        match self.revision {
-            0 => AcpiRevision::Acpi10,
-            2 => AcpiRevision::Acpi20,
-            _ => AcpiRevision::Unknown
-        }
+        AcpiRevision::from_u8(self.revision)
     }
 
     fn get_sdt_address(&self) -> u64 {
@@ -80,7 +77,7 @@ impl DesciptionPointerTable for RSDP {
 
 
 impl RSDP {
-    pub fn new_from_rsd_ptr(ptr: u64) -> &'static RSDP {
+    pub fn new_from_rsd_ptr<'a>(ptr: u64) -> &'a RSDP {
         unsafe {
             &*(ptr as *const RSDP)
         }
@@ -88,16 +85,12 @@ impl RSDP {
 }
 
 
-impl DesciptionPointerTable for XSDP {
+impl DescriptionPointerTable for XSDP {
     fn get_signature(&self) -> [u8; 8] {
-        self.rsdp.signature
+        self.signature
     }
 
     fn validate(&self) -> bool {
-        if !self.rsdp.validate() {
-            return false;
-        }
-
         unsafe {
             let ptr = self as *const _ as *const u8;
             let mut sum: u8 = 0;
@@ -112,15 +105,11 @@ impl DesciptionPointerTable for XSDP {
     }
 
     fn get_oem_id(&self) -> [u8; 6] {
-        self.rsdp.oem_id
+        self.oem_id
     }
 
     fn get_revision(&self) -> AcpiRevision {
-        match self.rsdp.revision {
-            0 => AcpiRevision::Acpi10,
-            2 => AcpiRevision::Acpi20,
-            _ => AcpiRevision::Unknown
-        }
+        AcpiRevision::from_u8(self.revision)
     }
 
     fn get_sdt_address(&self) -> u64 {
@@ -129,20 +118,10 @@ impl DesciptionPointerTable for XSDP {
 }
 
 impl XSDP {
-    pub fn new_xsdp_from_rsd_ptr(ptr: u64) -> &'static XSDP {
+    pub fn new_xsdp_from_rsd_ptr<'a>(ptr: u64) -> &'a XSDP {
         unsafe {
             &*(ptr as *const XSDP)
         }
-    }
-
-    pub fn new_rsdp_from_ptr(ptr: u64) -> Box<XSDP> {
-        Box::new(XSDP {
-            rsdp: RSDP::new_from_rsd_ptr(ptr),
-            length: 0,
-            xsdt_address: 0,
-            extended_checksum: 0,
-            reserved: [0,0,0]
-        })
     }
 }
 

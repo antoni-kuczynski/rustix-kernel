@@ -4,6 +4,7 @@
  */
 use alloc::vec::Vec;
 
+#[allow(dead_code)]
 pub struct Bitmap {
     pub mem: Vec<u8>,
     pub width: usize,
@@ -13,7 +14,7 @@ pub struct Bitmap {
 
 impl Bitmap {
     fn new(width: usize, height: usize, pixel_width: usize, data: Vec<u8>) -> Option<Self> {
-        if (data.len() * pixel_width != width * height) {
+        if data.len() * pixel_width != width * height {
             return None;
         }
         
