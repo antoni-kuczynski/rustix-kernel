@@ -1,5 +1,5 @@
-use crate::Rectangle;
-use crate::PointUnsigned;
+use crate::graphics::graphics::Rectangle;
+use crate::graphics::graphics::PointUnsigned;
 use alloc::format;
 use alloc::string::String;
 use crate::graphics::color::ColorU8;
@@ -9,6 +9,8 @@ use crate::{point, rect};
 use crate::drivers::vga::vga_fonts::VgaFont;
 use crate::graphics::test_bitmap::get_my_cat_bitmap;
 
+
+#[allow(dead_code)]
 pub fn vga_demo(mut g: Graphics) {
     let radius: isize = 20;
     let cat_bitmap = get_my_cat_bitmap().unwrap();
@@ -67,8 +69,8 @@ pub fn vga_demo(mut g: Graphics) {
 
         for i in 0..coords.len() {
             let (dx, dy) = velocities[i];
-            let mut x = coords[i].x as isize;
-            let mut y = coords[i].y as isize;
+            let x = coords[i].x as isize;
+            let y = coords[i].y as isize;
 
             g.set_color(colors[i]);
             g.set_font(VgaFont::FONT_16PX);
@@ -120,6 +122,7 @@ pub fn vga_demo(mut g: Graphics) {
     }
 }
 
+#[allow(dead_code)]
 pub fn test_offscreen_primitives() {
     let mut g = Graphics::new();
     let w = g.get_video_width();

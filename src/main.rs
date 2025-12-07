@@ -8,23 +8,21 @@
 
 extern crate alloc;
 
-use crate::graphics::graphics::PointUnsigned;
-use crate::graphics::graphics::Rectangle;
+use core::{panic::PanicInfo};
+use bootloader::{entry_point, BootInfo};
+use crate::drivers::acpi::acpi::{acpi2_reset_command, enable_acpi};
+use crate::drivers::acpi::acpi_tables::{get_acpi_tables};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::graphics::graphics::Graphics;
+use crate::interrupts::hardware::pic8259::sleep;
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
-use bootloader::{entry_point, BootInfo};
-use core::panic::PanicInfo;
-use crate::drivers::vga::CURRENT_VGA_MODE;
-use crate::graphics::vga_demo::{vga_demo};
 
 mod drivers;
 mod interrupts;
 mod memory;
 mod bootinfo;
+pub mod asm;
 mod graphics;
-mod asm;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -36,26 +34,23 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     interrupts::enable();
 
     let mut _offset_page_table = pages::init(&boot_info);
-
     let mut _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
-
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    CURRENT_VGA_MODE.lock().switch_to(0x03);
+    let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
+    enable_acpi(&tables).expect("Enabling ACPI failed!");
 
-    // test_offscreen_primitives();
-    let g: Graphics = Graphics::new();
-    vga_demo(g);
+    sleep(2000);
+    acpi2_reset_command(&tables).expect("failed to acpi reset the pc");
 
-    loop {
+    loop{
         x86_64::instructions::hlt();
     }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    VGAWRITER.lock().init_vga_text_mode_03h();  //on panic switch to text mode
     VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);
