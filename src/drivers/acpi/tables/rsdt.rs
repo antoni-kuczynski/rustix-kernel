@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::ptr::slice_from_raw_parts;
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
+use crate::vgaprintln;
 
 // ============================================================
 //               **XSDT & RSDT**
@@ -26,6 +27,10 @@ impl AcpiSdtTable for RSDT {
 
     fn get_sdt_header(&self) -> ACPISDTHeader {
         self.header
+    }
+
+    fn validate(&self) -> bool {
+        self.header.validate_checksum()
     }
 }
 

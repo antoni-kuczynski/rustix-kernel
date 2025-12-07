@@ -3,6 +3,8 @@
  * 03/11/2025
  */
 use crate::drivers::acpi::acpi_tables::ACPISignature;
+use crate::drivers::acpi::tables::AcpiRevision;
+use crate::vgaprintln;
 
 // ============================================================
 //
@@ -44,6 +46,14 @@ impl ACPISDTHeader {
                 sum = sum.wrapping_add(*ptr.add(i));
             }
             sum == 0
+        }
+    }
+
+    pub fn get_revision(&self) -> AcpiRevision {
+        match self.revision {
+            0 => AcpiRevision::Acpi10,
+            2 => AcpiRevision::Acpi20,
+            _ => AcpiRevision::Unknown
         }
     }
 }

@@ -13,7 +13,7 @@ use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
 use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::drivers::vga::vga_text::ColorTextMode;
 
-pub fn enable_acpi(tables: ACPITables) -> Result<(), Error> {
+pub fn enable_acpi(tables: &ACPITables) -> Result<(), Error> {
     vgaprint!("Enabling ACPI...");
     unsafe {
         let fadt: &FADT = match tables.find_sdt_table(ACPISignature::FADT) {

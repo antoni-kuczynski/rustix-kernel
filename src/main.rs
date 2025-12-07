@@ -13,7 +13,9 @@ use core::fmt::Error;
 use bootloader::{entry_point, BootInfo};
 use crate::drivers::acpi;
 use crate::drivers::acpi::acpi::enable_acpi;
-use crate::drivers::acpi::acpi_tables::{ACPITables, AcpiError};
+use crate::drivers::acpi::acpi_tables::{ACPISignature, ACPITables, AcpiError, AcpiSdtTable};
+use crate::drivers::acpi::tables::dsdt::DSDT;
+use crate::drivers::acpi::tables::fadt::FADT;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
@@ -47,7 +49,12 @@ fn _start(boot_info: &'static BootInfo) -> ! {
         Err(AcpiError::InvalidChecksumError(x)) => {panic!("Invalid checksum for {}", x.as_str())},
         Err(AcpiError::InvalidSdpChecksumError()) => todo!()
     };
-    enable_acpi(tables).expect("Enabling ACPI failed!");
+    enable_acpi(&tables).expect("Enabling ACPI failed!");
+
+    let facp_ptr: u64 = tables.find_sdt_table(ACPISignature::FADT).unwrap();
+    let fadt: &FADT = FADT::new_from_ptr(facp_ptr);
+    let dsdt: &DSDT = DSDT::new_from_ptr(fadt.get_dsdt_pointer() + boot_info.physical_memory_offset);
+    vgaprintln!("{}", dsdt.get_sdt_header().signature.as_str());
 
 
     loop{

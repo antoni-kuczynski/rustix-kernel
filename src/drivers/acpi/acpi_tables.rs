@@ -6,6 +6,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use bootloader::BootInfo;
 use crate::drivers::acpi::tables::{rsdp, AcpiRevision};
+use crate::drivers::acpi::tables::dsdt::DSDT;
+use crate::drivers::acpi::tables::fadt::FADT;
 use crate::drivers::acpi::tables::rsdp::{DesciptionPointerTable, RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
@@ -20,13 +22,15 @@ impl ACPISignature {
     pub const RSDT: ACPISignature = ACPISignature(*b"RSDT");
     pub const XSDT: ACPISignature = ACPISignature(*b"XSDT");
     pub const FADT: ACPISignature = ACPISignature(*b"FACP");
+    pub const DSDT: ACPISignature = ACPISignature(*b"DSDT");
     
     pub fn as_str<'a>(&self) -> &'a str {
         match self { 
-            RSDT => "RSDT",
-            XSDT => "XSDT",
-            FADT => "FADT",
-            
+            &ACPISignature::RSDT => "RSDT",
+            &ACPISignature::XSDT => "XSDT",
+            &ACPISignature::FADT => "FADT",
+            &ACPISignature::DSDT => "DSDT",
+            _ => "----"
         }
     }
 }
@@ -145,4 +149,10 @@ pub fn get_acpi_tables(boot_info: &BootInfo) -> Result<ACPITables, AcpiError> {
         }
     }
     Ok(acpi_tables)
+}
+
+
+pub fn parse_dsdt(fadt: &FADT) -> &DSDT {
+    let ptr = fadt.get_dsdt_pointer();
+    DSDT::new_from_ptr(ptr)
 }

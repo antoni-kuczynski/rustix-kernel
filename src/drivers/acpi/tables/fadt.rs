@@ -6,6 +6,7 @@ use core::ptr::slice_from_raw_parts;
 use crate::asm::{inw};
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 use crate::{vgaprintln};
+use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 
 // ============================================================
@@ -126,8 +127,11 @@ impl FADT {
         }
     }
 
-    pub fn get_dsdt_pointer(&self, mem_logical_offset: u64) -> u64 {
-        self.dsdt as u64 + mem_logical_offset
+    pub fn get_dsdt_pointer(&self) -> u64 {
+        match self.get_sdt_header().get_revision() {
+            AcpiRevision::Acpi20 => self.x_dsdt,
+            _ => self.dsdt as u64
+        }
     }
 
     pub fn get_preffered_power_management_profile(&self) -> PrefferedPowerManagementProfile {
