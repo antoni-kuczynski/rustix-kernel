@@ -10,7 +10,8 @@ extern crate alloc;
 
 use core::{panic::PanicInfo};
 use bootloader::{entry_point, BootInfo};
-use crate::drivers::acpi;
+use crate::drivers::acpi::acpi::{enable_acpi};
+use crate::drivers::acpi::acpi_tables::{get_acpi_tables};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
@@ -20,6 +21,7 @@ mod interrupts;
 mod memory;
 mod bootinfo;
 pub mod asm;
+mod graphics;
 
 entry_point!(_start);
 fn _start(boot_info: &'static BootInfo) -> ! {
@@ -31,14 +33,12 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     interrupts::enable();
 
     let mut _offset_page_table = pages::init(&boot_info);
-
     let mut _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
-
     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
         .expect("heap init failed");
 
-    let _acpi_tables = acpi::acpi_tables::initialize_acpi_tables(&boot_info);
-    acpi::acpi::init(_acpi_tables);
+    let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
+    enable_acpi(&tables).expect("Enabling ACPI failed!");
 
     loop{
         x86_64::instructions::hlt();

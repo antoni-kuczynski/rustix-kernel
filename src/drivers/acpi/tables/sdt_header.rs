@@ -2,6 +2,8 @@
  * Created by Antoni Kuczyński
  * 03/11/2025
  */
+use crate::drivers::acpi::acpi_tables::ACPISignature;
+use crate::drivers::acpi::tables::AcpiRevision;
 
 // ============================================================
 //
@@ -11,7 +13,7 @@
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 pub struct ACPISDTHeader {
-    pub signature: [u8; 4],
+    pub signature: ACPISignature,
     pub length: u32,
     pub revision: u8,
     pub checksum: u8,
@@ -22,19 +24,14 @@ pub struct ACPISDTHeader {
     pub creator_revision: u32,
 }
 
+#[allow(dead_code)]
 impl ACPISDTHeader {
-    fn new_from_ptr_u32(ptr: u32) -> &'static ACPISDTHeader {
+    pub(crate) fn new_from_ptr_u64<'a>(ptr: u64) -> &'a ACPISDTHeader {
         unsafe {
             &*(ptr as *const ACPISDTHeader)
         }
     }
-
-    pub(crate) fn new_from_ptr_u64(ptr: u64) -> &'static ACPISDTHeader {
-        unsafe {
-            &*(ptr as *const ACPISDTHeader)
-        }
-    }
-    pub(crate) fn validate_checksum(&self) -> bool {
+    pub fn validate_checksum(&self) -> bool {
         unsafe {
             let ptr = self as *const _ as *const u8;
             let mut sum: u8 = 0;
@@ -44,5 +41,9 @@ impl ACPISDTHeader {
             }
             sum == 0
         }
+    }
+
+    pub fn get_revision(&self) -> AcpiRevision {
+        AcpiRevision::from_u8(self.revision)
     }
 }
