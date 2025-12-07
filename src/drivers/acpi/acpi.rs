@@ -8,6 +8,7 @@ use crate::asm::{inw, outb, outw};
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::interrupts::hardware::pic8259::{get_current_time_millis};
 use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
+use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{S5Obj, DSDT};
 use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::drivers::vga::vga_text::ColorTextMode;
@@ -62,6 +63,30 @@ pub fn acpi_soft_off_state(tables: &ACPITables) -> Result<(), Error> {
 
     unsafe {
         outw(fadt.pm1a_control_block as u16, s5.SLP_TYPa as u16 | (1 << 13));
+    }
+    Ok(())
+}
+
+#[allow(dead_code)]
+pub fn acpi2_reset_command(tables: &ACPITables) -> Result<(), Error> {
+    if tables.get_revision() != AcpiRevision::Acpi20 {
+        return Err(Error);
+    }
+
+    let facp_ptr: u64 = match tables.find_sdt_table(ACPISignature::FADT) {
+        Some(x) => x,
+        None => return Err(Error)
+    };
+
+    let fadt: &FADT = FADT::new_from_ptr(facp_ptr);
+
+    //check if this feature is supported
+    if (fadt.flags >> 10) & 0x01 != 1 {
+        return Err(Error)
+    }
+
+    unsafe {
+        outb(fadt.reset_reg.address as u16, fadt.reset_value);
     }
     Ok(())
 }
