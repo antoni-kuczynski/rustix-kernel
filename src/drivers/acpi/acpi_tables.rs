@@ -31,6 +31,7 @@ impl ACPISignature {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum AcpiError {
     InvalidRevisionError,

@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod vga_regs;
 pub mod vga_io;
 // ============================================================
@@ -27,6 +29,7 @@ const VGA_GRAPHICS_CONTROLLER_INDEX: u16 = 0x03CE;
 const VGA_GRAPHICS_CONTROLLER_DATA:  u16 = 0x03CF;
 
 // ----------------------- *DAC / PALETTE* --------------------
+
 const VGA_DAC_READ_INDEX:  u16 = 0x03C7;
 const VGA_DAC_WRITE_INDEX: u16 = 0x03C8;
 const VGA_DAC_DATA:        u16 = 0x03C9;

@@ -1,7 +1,11 @@
-use crate::{vgaprint};
+use crate::{VGAWRITER};
+use crate::vgaprintln;
+use crate::ColorTextMode;
+use crate::{print_fail_msg, print_ok_msg, vgaprint};
 use core::fmt::Error;
-use crate::drivers::pci::pci_device::PciDeviceHeader;
+use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitializer};
 use crate::drivers::pci::pci_bar::PciBAR;
+use crate::drivers::usb::uhci::UHCI;
 
 pub mod uhci;
 
@@ -11,6 +15,7 @@ const PIF_OHCI_CONTROLLER: u8 = 0x10;
 const PIF_EHCI_CONTROLLER: u8 = 0x20;
 const PIF_XHCI_CONTROLLER: u8 = 0x30;
 
+#[allow(dead_code)]
 pub trait UsbControllerInitializer {
     fn initialize(&self) -> Result<(), Error>;
 }
@@ -18,9 +23,15 @@ pub trait UsbControllerInitializer {
 pub fn init_usb_controller(pci_dev: &PciDeviceHeader) {
     match pci_dev.prog_info_byte() {
         PIF_UHCI_CONTROLLER => {
-            vgaprint!("Initializing UHCI...TODO\n");
-            let bar = PciBAR::get(&pci_dev, 4);
-            bar.print();
+            vgaprint!("Initializing UHCI...");
+            match UHCI::initialize(&pci_dev) {
+                Ok(_) => {
+                    print_ok_msg!();
+                },
+                Err(_e) => {
+                    print_fail_msg!();
+                }
+            }
         },
         PIF_OHCI_CONTROLLER => {
             vgaprint!("Initializing OHCI...TODO\n");

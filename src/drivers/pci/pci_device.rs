@@ -1,8 +1,8 @@
+#![allow(dead_code)]
 /*
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-use core::fmt::Error;
 use crate::vgaprintln;
 
 #[repr(C, packed)]
@@ -16,14 +16,20 @@ pub struct PciDeviceHeader {
     base_id: u32
 }
 
+#[derive(Debug)]
+pub enum PciDeviceInitError {
+    NotImplemeted,
+    InvalidBarIoType
+}
+
 pub trait PciDeviceInitializer {
-    fn initialize(&self) -> Result<(), Error>;
+    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError>;
 }
 
 
 impl PciDeviceInitializer for PciDeviceHeader {
-    fn initialize(&self) -> Result<(), Error> {
-        Err(Error)
+    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+        Err(PciDeviceInitError::NotImplemeted)
     }
 }
 impl PciDeviceHeader {

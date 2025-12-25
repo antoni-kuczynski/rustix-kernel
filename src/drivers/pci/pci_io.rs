@@ -8,6 +8,7 @@ use crate::asm::*;
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
 const PCI_CONFIG_DATA: u16 = 0xCFC;
 
+#[allow(dead_code)]
 #[inline(always)]
 fn pci_addr(id: u32, reg: u32) -> u32 {
     0x8000_0000 | id | (reg & 0xfc)
@@ -20,6 +21,7 @@ pub fn pci_read8(id: u32, reg: u32) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 pub fn pci_read16(id: u32, reg: u32) -> u16 {
     unsafe {
         outl(PCI_CONFIG_ADDR, pci_addr(id, reg));
@@ -34,6 +36,7 @@ pub fn pci_read32(id: u32, reg: u32) -> u32 {
     }
 }
 
+#[allow(dead_code)]
 pub fn pci_write8(id: u32, reg: u32, data: u8) {
     unsafe {
         outl(PCI_CONFIG_ADDR, pci_addr(id, reg));
@@ -41,6 +44,7 @@ pub fn pci_write8(id: u32, reg: u32, data: u8) {
     }
 }
 
+#[allow(dead_code)]
 pub fn pci_write16(id: u32, reg: u32, data: u16) {
     unsafe {
         outl(PCI_CONFIG_ADDR, pci_addr(id, reg));
