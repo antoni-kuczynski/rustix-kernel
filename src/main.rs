@@ -12,6 +12,7 @@ use core::{panic::PanicInfo};
 use bootloader::{entry_point, BootInfo};
 use crate::drivers::acpi::acpi::{acpi2_reset_command, enable_acpi};
 use crate::drivers::acpi::acpi_tables::{get_acpi_tables};
+use crate::drivers::pci::pci;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::interrupts::hardware::pic8259::sleep;
 use crate::memory::mapping::BootInfoFrameAllocator;
@@ -41,8 +42,7 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
     enable_acpi(&tables).expect("Enabling ACPI failed!");
 
-    sleep(2000);
-    acpi2_reset_command(&tables).expect("failed to acpi reset the pc");
+    pci::pci_init();
 
     loop{
         x86_64::instructions::hlt();
