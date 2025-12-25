@@ -1,9 +1,9 @@
+#![allow(dead_code)]
 /*
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-use core::fmt::Error;
-use crate::__vgaprintln;
+use crate::vgaprintln;
 
 #[repr(C, packed)]
 pub struct PciDeviceHeader {
@@ -16,14 +16,20 @@ pub struct PciDeviceHeader {
     base_id: u32
 }
 
+#[derive(Debug)]
+pub enum PciDeviceInitError {
+    NotImplemeted,
+    InvalidBarIoType
+}
+
 pub trait PciDeviceInitializer {
-    fn initialize(&self) -> Result<(), Error>;
+    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError>;
 }
 
 
 impl PciDeviceInitializer for PciDeviceHeader {
-    fn initialize(&self) -> Result<(), Error> {
-        Err(Error)
+    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+        Err(PciDeviceInitError::NotImplemeted)
     }
 }
 impl PciDeviceHeader {
@@ -49,14 +55,14 @@ impl PciDeviceHeader {
         let header_type = self.header_type;
         let base_id = self.base_id;
 
-        __vgaprintln!("PCI Device Header:");
-        __vgaprintln!("  Vendor ID   : 0x{:04x}", vendor_id);
-        __vgaprintln!("  Device ID   : 0x{:04x}", device_id);
-        __vgaprintln!("  Class Code  : 0x{:02x}", class_code);
-        __vgaprintln!("  Subclass    : 0x{:02x}", sub_class);
-        __vgaprintln!("  Prog IF     : 0x{:02x}", prog_if);
-        __vgaprintln!("  Header Type : 0x{:02x}", header_type);
-        __vgaprintln!("  Base ID : 0x{:08x}", base_id);
+        vgaprintln!("PCI Device Header:");
+        vgaprintln!("  Vendor ID   : 0x{:04x}", vendor_id);
+        vgaprintln!("  Device ID   : 0x{:04x}", device_id);
+        vgaprintln!("  Class Code  : 0x{:02x}", class_code);
+        vgaprintln!("  Subclass    : 0x{:02x}", sub_class);
+        vgaprintln!("  Prog IF     : 0x{:02x}", prog_if);
+        vgaprintln!("  Header Type : 0x{:02x}", header_type);
+        vgaprintln!("  Base ID : 0x{:08x}", base_id);
     }
 
     pub fn prog_info_byte(&self) -> u8 {
