@@ -9,6 +9,7 @@ use crate::drivers::pci::pci::PCI_MMIO_ALLOCS;
 const PCI_CONFIG_ADDR: u16 = 0xCF8;
 const PCI_CONFIG_DATA: u16 = 0xCFC;
 
+#[allow(dead_code)]
 #[inline(always)]
 fn pci_addr(id: u32, reg: u32) -> u32 {
     0x8000_0000 | id | (reg & 0xfc)
@@ -28,6 +29,7 @@ pub fn pci_read8(id: u32, reg: u32) -> u8 {
     }
 }
 
+#[allow(dead_code)]
 pub fn pci_read16(id: u32, reg: u32) -> u16 {
     if let Some(ptr) = get_mmio_addr(id, reg) {
         unsafe { core::ptr::read_volatile(ptr as *const u16) }
@@ -56,6 +58,7 @@ pub fn pci_read32(id: u32, reg: u32) -> u32 {
     }
 }
 
+#[allow(dead_code)]
 pub fn pci_write8(id: u32, reg: u32, data: u8) {
     if let Some(ptr) = get_mmio_addr(id, reg) {
         unsafe { core::ptr::write_volatile(ptr, data) }
@@ -70,6 +73,7 @@ pub fn pci_write8(id: u32, reg: u32, data: u8) {
     }
 }
 
+#[allow(dead_code)]
 pub fn pci_write16(id: u32, reg: u32, data: u16) {
     if let Some(ptr) = get_mmio_addr(id, reg) {
         unsafe { core::ptr::write_volatile(ptr as *mut u16, data) }
