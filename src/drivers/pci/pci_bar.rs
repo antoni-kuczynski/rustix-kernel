@@ -6,6 +6,8 @@ use crate::drivers::pci::pci_device::PciDeviceHeader;
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use crate::vgaprintln;
 
+#[derive(PartialEq, Eq)]
+
 pub struct PciBAR {
     base_address: u64,
     size: u64,
@@ -18,7 +20,8 @@ struct BarInfo {
     mask: u32
 }
 
-enum BarType {
+#[derive(PartialEq, Eq)]
+pub enum BarType {
     Mmio32,
     Mmio64,
     Io,
@@ -62,6 +65,7 @@ I/O Space BAR Layout Bits 31-2 	Bit 1 	Bit 0
 4-Byte Aligned Base Address 	Reserved 	Always 1
  */
 
+#[allow(dead_code)]
 impl PciBAR {
     pub fn get(device: &PciDeviceHeader, bar_index: u8) -> Self {
         let bar = BarInfo::get(bar_index, device.base_id());
@@ -129,5 +133,21 @@ impl PciBAR {
         vgaprintln!("  Base Address : 0x{:016x}", self.base_address);
         vgaprintln!("  Size         : 0x{:x} ({} bytes)", self.size, self.size);
         vgaprintln!("  Prefetchable : {}", self.prefetchable);
+    }
+
+    pub fn base_address(&self) -> u64 {
+        self.base_address
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    pub fn bar_type(&self) -> &BarType {
+        &self.bar_type
+    }
+
+    pub fn prefetchable(&self) -> bool {
+        self.prefetchable
     }
 }
