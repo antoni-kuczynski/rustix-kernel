@@ -3,14 +3,11 @@
  * 24/12/2025
  */
 
-use crate::VGAWRITER;
-use crate::ColorTextMode;
 use pc_keyboard::Error;
-use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitializer};
+use crate::drivers::pci::pci_device::{PciDeviceHeader};
 use crate::drivers::pci::pci_io::{pci_read16, pci_read8};
-use crate::{print_ok_msg, vgaprintln};
+use crate::{vgaprintln};
 use crate::drivers::usb;
-use crate::drivers::usb::uhci::UHCI;
 
 const CFG_HEADER_TYPE: u32 = 0x0E;
 const CFG_VENDOR_ID: u32 = 0x00;
@@ -81,6 +78,8 @@ fn pci_check_device(bus: u32, device: u32, function: u32) -> Option<PciDeviceHea
     let prog_info_byte = pci_read8(base_dev_id, CFG_PROG_IF);
     let header_type = pci_read8(base_dev_id, CFG_HEADER_TYPE);
 
-    let dev_info = PciDeviceHeader::new(vendor_id, device_id, class_code, sub_class, prog_info_byte, header_type);
+    let dev_info = PciDeviceHeader::new(
+        vendor_id, device_id, class_code, sub_class, prog_info_byte, header_type, base_dev_id
+    );
     Some(dev_info)
 }

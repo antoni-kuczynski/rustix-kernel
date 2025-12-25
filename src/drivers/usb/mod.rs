@@ -1,10 +1,7 @@
-use crate::{vgaprint, VGAWRITER};
-use crate::ColorTextMode;
-use alloc::vec;
-use alloc::vec::Vec;
+use crate::{vgaprint};
 use core::fmt::Error;
 use crate::drivers::pci::pci_device::PciDeviceHeader;
-use crate::{print_fail_msg, vgaprintln};
+use crate::drivers::pci::pci_bar::PciBAR;
 
 pub mod uhci;
 
@@ -22,12 +19,16 @@ pub fn init_usb_controller(pci_dev: &PciDeviceHeader) {
     match pci_dev.prog_info_byte() {
         PIF_UHCI_CONTROLLER => {
             vgaprint!("Initializing UHCI...TODO\n");
+            let bar = PciBAR::get(&pci_dev, 4);
+            bar.print();
         },
         PIF_OHCI_CONTROLLER => {
             vgaprint!("Initializing OHCI...TODO\n");
         },
         PIF_EHCI_CONTROLLER => {
             vgaprint!("Initializing EHCI...TODO\n");
+            let bar = PciBAR::get(&pci_dev, 0);
+            bar.print();
         },
         PIF_XHCI_CONTROLLER => {
             vgaprint!("Initializing XHCI...TODO\n");
