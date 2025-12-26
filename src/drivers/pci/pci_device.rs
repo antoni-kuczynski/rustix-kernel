@@ -3,6 +3,7 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
+use bootloader::BootInfo;
 use crate::vgaprintln;
 
 #[repr(C, packed)]
@@ -19,16 +20,17 @@ pub struct PciDeviceHeader {
 #[derive(Debug)]
 pub enum PciDeviceInitError {
     NotImplemeted,
-    InvalidBarIoType
+    InvalidBarIoType,
+    InitializationFailure
 }
 
 pub trait PciDeviceInitializer {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError>;
+    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo) -> Result<(), PciDeviceInitError>;
 }
 
 
 impl PciDeviceInitializer for PciDeviceHeader {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo) -> Result<(), PciDeviceInitError> {
         Err(PciDeviceInitError::NotImplemeted)
     }
 }
