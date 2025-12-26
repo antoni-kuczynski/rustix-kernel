@@ -42,7 +42,7 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
     enable_acpi(&tables).expect("Enabling ACPI failed!");
 
-    pci::pci_init();
+    pci::pci_init(&boot_info).expect("PCI init failed");
 
     loop{
         x86_64::instructions::hlt();

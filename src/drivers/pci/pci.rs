@@ -2,7 +2,7 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-
+use bootloader::BootInfo;
 use pc_keyboard::Error;
 use crate::drivers::pci::pci_device::{PciDeviceHeader};
 use crate::drivers::pci::pci_io::{pci_read16, pci_read8};
@@ -24,16 +24,16 @@ const CLASS_CODE_SERIAL_BUS_CONTROLLER: u8 = 0x0C;
 const SUBCLASS_USB_CONTROLLER: u8 = 0x03;
 
 
-fn init_device(device: &PciDeviceHeader) {
+fn init_device(device: &PciDeviceHeader, boot_info: &BootInfo) {
     //INITIALIZE DEVICES
 
     //USB CONTROLLERS
     if device.class_code() == CLASS_CODE_SERIAL_BUS_CONTROLLER && device.sub_class() == SUBCLASS_USB_CONTROLLER {
-        usb::init_usb_controller(&device)
+        usb::init_usb_controller(&device, &boot_info)
     }
 }
 
-pub fn pci_init() -> Result<(), Error> {
+pub fn pci_init(boot_info: &BootInfo) -> Result<(), Error> {
     vgaprintln!("Initializing PCI devices...");
     for bus in 0..256 {
         for device in 0..32 {
@@ -51,7 +51,7 @@ pub fn pci_init() -> Result<(), Error> {
                 match device {
                     None => {},
                     Some(dev) => {
-                        init_device(&dev)
+                        init_device(&dev, &boot_info)
                     }
                 }
 
