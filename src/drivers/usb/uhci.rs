@@ -33,7 +33,7 @@ impl PciDeviceInitializer for UHCI {
 
         if pci_bar.bar_type() != &BarType::Io {
             //only io is supported
-            return Err(PciDeviceInitError::InvalidBarIoType);
+            return Err(PciDeviceInitError::InvalidBarType);
         }
 
         let mut frame_list = Box::new([0u32; 1024]);
