@@ -122,3 +122,7 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
 
     end_of_interrupt(PicInterruptIndex::Keyboard.as_u8());
 }
+
+pub fn pic_get_ticks_per_ms() -> u64 {
+    TICKS_PER_MS as u64
+}

@@ -3,7 +3,7 @@ use core::ptr;
 use bootloader::BootInfo;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
-use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarIoType};
+use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType};
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use crate::interrupts::hardware::pic8259::{get_current_time_millis, get_ticks};
 use crate::vgaprintln;
@@ -58,7 +58,7 @@ impl PciDeviceInitializer for EHCI {
         let bar = PciBAR::get(pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
-            return Err(InvalidBarIoType);
+            return Err(InvalidBarType);
         }
 
         unsafe {

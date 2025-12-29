@@ -7,9 +7,11 @@ use bootloader::BootInfo;
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::usb::ehci::EHCI;
 use crate::drivers::usb::uhci::UHCI;
+use crate::drivers::usb::xhci::XHCI;
 
 pub mod uhci;
 mod ehci;
+mod xhci;
 
 const PIF_UHCI_CONTROLLER: u8 = 0x00;
 const PIF_OHCI_CONTROLLER: u8 = 0x10;
@@ -51,7 +53,16 @@ pub fn init_usb_controller(pci_dev: &PciDeviceHeader, boot_info: &BootInfo) {
 
         },
         PIF_XHCI_CONTROLLER => {
-            vgaprint!("Initializing XHCI...TODO\n");
+            vgaprint!("Initializing XHCI...");
+            match XHCI::initialize(&pci_dev, &boot_info) {
+                Ok(_) => {
+                    print_ok_msg!();
+                }
+                Err(e) => {
+                    print_fail_msg!();
+                    vgaprintln!("{:?}", e)
+                }
+            }
         },
         _ => todo!()
     }
