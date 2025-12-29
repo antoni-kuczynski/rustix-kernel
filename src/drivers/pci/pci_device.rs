@@ -20,8 +20,9 @@ pub struct PciDeviceHeader {
 #[derive(Debug)]
 pub enum PciDeviceInitError {
     NotImplemeted,
-    InvalidBarIoType,
-    InitializationFailure
+    InvalidBarType,
+    InitializationFailure,
+    TimeoutError
 }
 
 pub trait PciDeviceInitializer {
