@@ -23,7 +23,8 @@ pub enum PciDeviceInitError {
     NotImplemeted,
     InvalidBarType,
     InitializationFailure,
-    TimeoutError
+    TimeoutError,
+    NoMSIXCapabilities
 }
 
 pub trait PciDeviceInitializer {
