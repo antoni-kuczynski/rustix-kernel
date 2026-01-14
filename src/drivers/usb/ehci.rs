@@ -1,6 +1,7 @@
 use alloc::boxed::Box;
 use core::ptr;
 use bootloader::BootInfo;
+use x86_64::structures::paging::OffsetPageTable;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType};
@@ -54,7 +55,7 @@ fn handle_extended_capabilities(eecp: u32, base_id: u32) -> Result<u32, EhciExte
 }
 
 impl PciDeviceInitializer for EHCI {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
         let bar = PciBAR::get(pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
