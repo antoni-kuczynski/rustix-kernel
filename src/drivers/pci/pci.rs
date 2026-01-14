@@ -4,6 +4,7 @@
  */
 use bootloader::BootInfo;
 use pc_keyboard::Error;
+use x86_64::structures::paging::OffsetPageTable;
 use crate::drivers::pci::pci_device::{PciDeviceHeader};
 use crate::drivers::pci::pci_io::{pci_read16, pci_read8};
 use crate::{vgaprintln};
@@ -24,16 +25,16 @@ const CLASS_CODE_SERIAL_BUS_CONTROLLER: u8 = 0x0C;
 const SUBCLASS_USB_CONTROLLER: u8 = 0x03;
 
 
-fn init_device(device: &PciDeviceHeader, boot_info: &BootInfo) {
+fn init_device(device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) {
     //INITIALIZE DEVICES
 
     //USB CONTROLLERS
     if device.class_code() == CLASS_CODE_SERIAL_BUS_CONTROLLER && device.sub_class() == SUBCLASS_USB_CONTROLLER {
-        usb::init_usb_controller(&device, &boot_info)
+        usb::init_usb_controller(&device, &boot_info, &offset_page_table)
     }
 }
 
-pub fn pci_init(boot_info: &BootInfo) -> Result<(), Error> {
+pub fn pci_init(boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), Error> {
     vgaprintln!("Initializing PCI devices...");
     for bus in 0..256 {
         for device in 0..32 {
@@ -51,7 +52,7 @@ pub fn pci_init(boot_info: &BootInfo) -> Result<(), Error> {
                 match device {
                     None => {},
                     Some(dev) => {
-                        init_device(&dev, &boot_info)
+                        init_device(&dev, &boot_info, &offset_page_table)
                     }
                 }
 

@@ -4,6 +4,7 @@ use crate::ColorTextMode;
 use crate::{print_fail_msg, print_ok_msg, vgaprint};
 use core::fmt::Error;
 use bootloader::BootInfo;
+use x86_64::structures::paging::OffsetPageTable;
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::usb::ehci::EHCI;
 use crate::drivers::usb::uhci::UHCI;
@@ -23,11 +24,11 @@ pub trait UsbControllerInitializer {
     fn initialize(&self) -> Result<(), Error>;
 }
 
-pub fn init_usb_controller(pci_dev: &PciDeviceHeader, boot_info: &BootInfo) {
+pub fn init_usb_controller(pci_dev: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) {
     match pci_dev.prog_info_byte() {
         PIF_UHCI_CONTROLLER => {
             vgaprint!("Initializing UHCI...");
-            match UHCI::initialize(&pci_dev, &boot_info) {
+            match UHCI::initialize(&pci_dev, &boot_info, &offset_page_table) {
                 Ok(_) => {
                     print_ok_msg!();
                 },
@@ -41,7 +42,7 @@ pub fn init_usb_controller(pci_dev: &PciDeviceHeader, boot_info: &BootInfo) {
         },
         PIF_EHCI_CONTROLLER => {
             vgaprint!("Initializing EHCI...");
-            match EHCI::initialize(&pci_dev, &boot_info) {
+            match EHCI::initialize(&pci_dev, &boot_info, &offset_page_table) {
                 Ok(_) => {
                     print_ok_msg!();
                 }
@@ -54,7 +55,7 @@ pub fn init_usb_controller(pci_dev: &PciDeviceHeader, boot_info: &BootInfo) {
         },
         PIF_XHCI_CONTROLLER => {
             vgaprint!("Initializing XHCI...");
-            match XHCI::initialize(&pci_dev, &boot_info) {
+            match XHCI::initialize(&pci_dev, &boot_info, &offset_page_table) {
                 Ok(_) => {
                     print_ok_msg!();
                 }

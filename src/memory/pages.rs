@@ -51,7 +51,7 @@ pub fn init(boot_info: &'static BootInfo) -> OffsetPageTable<'static>{
 }
 
 // translates virtual adress to physical if mapped
-pub fn v_to_p(v: VirtAddr, mapper: OffsetPageTable) -> Option<PhysAddr>{
+pub fn virtual_to_physical(v: VirtAddr, mapper: &OffsetPageTable) -> Option<PhysAddr>{
     mapper.translate_addr(v)
 }
 
