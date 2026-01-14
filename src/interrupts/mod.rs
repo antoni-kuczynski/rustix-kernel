@@ -2,6 +2,8 @@ use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX, hardware::pic8259::{keyboard_interrupt_handler, timer_interrupt_handler, PicInterruptIndex}}, vgaprint, vgaprintln};
+use crate::drivers::usb::interrupts::xhci_interrupt_handler;
+use crate::drivers::usb::interrupts::xhci_interrupt_handler::XHCIInterruptIndex;
 
 pub mod exceptions;
 pub mod gdt;
@@ -24,17 +26,27 @@ lazy_static!{
             }
 
         // interrupts
-        idt[PicInterruptIndex::Timer.as_u8()]
+        idt[PicInterruptIndex::Timer.as_u8()] //0x20
             .set_handler_fn(timer_interrupt_handler);
-        idt[PicInterruptIndex::Keyboard.as_u8()]
+        idt[PicInterruptIndex::Keyboard.as_u8()] //0x28
             .set_handler_fn(keyboard_interrupt_handler);
+
+        //==================
+        //      XHCI
+        //==================
+
+        //XHCI MSI-X INTERRUPT 0x40
+        idt[XHCIInterruptIndex::MsiXMessageData as u8]
+            .set_handler_fn(xhci_interrupt_handler::xhci_msix_irq_handler);
+
+
 
         idt
     };
 }
 
 pub fn init_idt() {
-    vgaprint!("Initlializing interrupt descriptor table...");
+    vgaprint!("Initializing interrupt descriptor table...");
 
     IDT.load();
 

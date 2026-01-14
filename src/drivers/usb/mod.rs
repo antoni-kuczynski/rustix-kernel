@@ -13,6 +13,7 @@ use crate::drivers::usb::xhci::XHCI;
 pub mod uhci;
 mod ehci;
 mod xhci;
+pub mod interrupts;
 
 const PIF_UHCI_CONTROLLER: u8 = 0x00;
 const PIF_OHCI_CONTROLLER: u8 = 0x10;
