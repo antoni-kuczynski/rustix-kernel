@@ -5,6 +5,7 @@
 use crate::interrupts::hardware::pic8259::{sleep};
 use alloc::boxed::Box;
 use bootloader::BootInfo;
+use x86_64::structures::paging::OffsetPageTable;
 use crate::asm::{outb, outl, outw};
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
@@ -28,7 +29,7 @@ const UHCI_FRBASEADD: u64 = 0x08;
 const UHCI_USB_CMD: u64 = 0x00;
 
 impl PciDeviceInitializer for UHCI {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
         let pci_bar = PciBAR::get(&pci_device, 4);
 
         if pci_bar.bar_type() != &BarType::Io {

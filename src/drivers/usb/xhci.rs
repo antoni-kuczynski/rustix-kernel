@@ -2,6 +2,8 @@
  * Created by Antoni Kuczyński
  * 29/12/2025
  */
+#![allow(dead_code)]
+
 
 /*
 ==============================================================
@@ -10,14 +12,18 @@
 ==============================================================
  */
 use alloc::boxed::Box;
+use alloc::vec;
 use alloc::vec::Vec;
-use core::cmp::max;
 use core::ptr;
 use bootloader::BootInfo;
+use x86_64::structures::paging::OffsetPageTable;
+use x86_64::VirtAddr;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{InvalidBarType, TimeoutError};
 use crate::interrupts::hardware::pic8259::{get_ticks, pic_get_ticks_per_ms};
+use crate::memory::pages::virtual_to_physical;
+use crate::vgaprintln;
 /*
 Base
 │
@@ -43,6 +49,7 @@ const CAP_REG_HCSPARAMS1: u8 = 0x04;
 const OP_REG_USBSTS: u8 = 0x04;
 const OP_REG_CONFIG: u8 = 0x38;
 const OP_REG_DCBAAP: u8 = 0x30;
+const OP_REG_CRCR: u8 = 0x18;
 
 //DEVICE CONTEXT BASE ARRAY
 
@@ -805,34 +812,218 @@ impl Dcbaa {
     }
 }
 
+//=========================================
+//  TRB
+//=========================================
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct Trb {
+    pub parameter: u64, //pointer / value
+    pub status: u32,    //length, residual...
+    pub control: u32,   //type, cycle, flags
+}
+
+impl Trb {
+    // ====== CONSTANTS ======
+    const CYCLE_BIT: u32 = 1 << 0;
+    const CHAIN_BIT: u32 = 1 << 4;
+
+    const TRB_TYPE_SHIFT: u32 = 10;
+    const TRB_TYPE_MASK:  u32 = 0x3F << Self::TRB_TYPE_SHIFT;
+
+    // Length is usually bits 0–16 of status
+    const LENGTH_MASK: u32 = 0x1FFFF;
+
+    // ===== TRB TYPE CONSTANTS (Table 6‑91) =====
+    pub const TRB_RESERVED0: u8 = 0;
+    pub const TRB_NORMAL: u8 = 1;
+    pub const TRB_SETUP_STAGE: u8 = 2;
+    pub const TRB_DATA_STAGE: u8 = 3;
+    pub const TRB_STATUS_STAGE: u8 = 4;
+    pub const TRB_ISOCH: u8 = 5;
+    pub const TRB_LINK: u8 = 6;
+    pub const TRB_EVENT_DATA: u8 = 7;
+    pub const TRB_NO_OP: u8 = 8;
+
+    pub const TRB_ENABLE_SLOT: u8 = 9;
+    pub const TRB_DISABLE_SLOT: u8 = 10;
+    pub const TRB_ADDRESS_DEVICE: u8 = 11;
+    pub const TRB_CONFIGURE_ENDPOINT: u8 = 12;
+    pub const TRB_EVALUATE_CONTEXT: u8 = 13;
+    pub const TRB_RESET_ENDPOINT: u8 = 14;
+    pub const TRB_STOP_ENDPOINT: u8 = 15;
+    pub const TRB_SET_DEQUEUE_PTR: u8 = 16;
+    pub const TRB_RESET_DEVICE: u8 = 17;
+    pub const TRB_FORCE_EVENT: u8 = 18;
+    pub const TRB_NEGOTIATE_BW: u8 = 19;
+    pub const TRB_SET_LTV: u8 = 20;
+    pub const TRB_GET_PORT_BW: u8 = 21;
+    pub const TRB_FORCE_HEADER: u8 = 22;
+    pub const TRB_NO_OP_CMD: u8 = 23;
+    pub const TRB_GET_EXT_PROP: u8 = 24;
+    pub const TRB_SET_EXT_PROP: u8 = 25;
+
+    pub const TRB_TRANSFER_EVENT: u8 = 32;
+    pub const TRB_COMMAND_COMPLETION_EVENT: u8 = 33;
+    pub const TRB_PORT_STATUS_CHANGE_EVENT: u8 = 34;
+    pub const TRB_BW_REQUEST_EVENT: u8 = 35;
+    pub const TRB_DOORBELL_EVENT: u8 = 36;
+    pub const TRB_HOST_CONTROLLER_EVENT: u8 = 37;
+    pub const TRB_DEVICE_NOTIFICATION_EVENT: u8 = 38;
+    pub const TRB_MFINDEX_WRAP_EVENT: u8 = 39;
+
+    // ====== PARAMETER ======
+    pub fn parameter(&self) -> u64 {
+        self.parameter
+    }
+
+    pub fn set_parameter(&mut self, value: u64) {
+        self.parameter = value;
+    }
+
+    // ====== LENGTH (status low bits) ======
+    pub fn length(&self) -> u32 {
+        self.status & Self::LENGTH_MASK
+    }
+
+    pub fn set_length(&mut self, len: u32) {
+        self.status = (self.status & !Self::LENGTH_MASK) | (len & Self::LENGTH_MASK);
+    }
+
+    // ====== CYCLE BIT ======
+    pub fn cycle(&self) -> bool {
+        (self.control & Self::CYCLE_BIT) != 0
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        if cycle {
+            self.control |= Self::CYCLE_BIT;
+        } else {
+            self.control &= !Self::CYCLE_BIT;
+        }
+    }
+
+    // ====== CHAIN BIT ======
+    pub fn chain(&self) -> bool {
+        (self.control & Self::CHAIN_BIT) != 0
+    }
+
+    pub fn set_chain(&mut self, chain: bool) {
+        if chain {
+            self.control |= Self::CHAIN_BIT;
+        } else {
+            self.control &= !Self::CHAIN_BIT;
+        }
+    }
+
+    // ====== TRB TYPE ======
+    pub fn trb_type(&self) -> u8 {
+        ((self.control & Self::TRB_TYPE_MASK) >> Self::TRB_TYPE_SHIFT) as u8
+    }
+
+    pub fn set_trb_type(&mut self, ty: u8) {
+        let ctrl = self.control & !Self::TRB_TYPE_MASK;
+        self.control = ctrl | ((ty as u32) << Self::TRB_TYPE_SHIFT);
+    }
+
+    // ====== RAW CONTROL ======
+    pub fn control(&self) -> u32 {
+        self.control
+    }
+
+    pub fn set_control(&mut self, value: u32) {
+        self.control = value;
+    }
+
+    // ====== RAW STATUS ======
+    pub fn status(&self) -> u32 {
+        self.status
+    }
+
+    pub fn set_status(&mut self, value: u32) {
+        self.status = value;
+    }
+}
+//====================================================
+//          TRB RING
+//====================================================
+#[derive(Debug)]
+struct TrbCreationError();
+
+pub struct TrbRing {
+    trbs: &'static mut [Trb],
+    enqueue_index: usize,
+    cycle_state: bool,
+}
+
+impl TrbRing {
+    pub fn alloc_trb_array(len: usize) -> &'static mut [Trb] {
+        let mut v = Vec::with_capacity(len);
+        v.resize(len, Trb { parameter: 0, status: 0, control: 0 });
+
+        let slice = v.leak(); //turns Vec into &'static mut [Trb]
+        slice
+    }
+
+
+    pub fn new(trbs: &'static mut [Trb], offset_page_table: &OffsetPageTable) -> Result<TrbRing, TrbCreationError> {
+        let last_index = trbs.len() - 1;
+
+        //set the last TRB in ring to LINK type
+        trbs[last_index].set_trb_type(Trb::TRB_LINK);
+        trbs[last_index].set_cycle(true);
+
+        let virt = VirtAddr::new(trbs.as_mut_ptr() as *mut u64 as u64);
+        let phys = match virtual_to_physical(virt, offset_page_table) {
+            Some(x) => x,
+            None => return Err(TrbCreationError())
+        };
+
+        trbs[last_index].set_parameter(phys.as_u64());
+
+
+        Ok(
+            TrbRing {
+                trbs,
+                enqueue_index: 0,
+                cycle_state: true
+            }
+        )
+    }
+}
+
+
+
+
 pub struct XHCI<'a> {
     pci_device: &'a PciDeviceHeader,
 
     slots: u32,
     context_size: u32,
-    dcbaa_ptr: u64
+    dcbaa: &'a Dcbaa
 }
 
 impl<'a> XHCI<'a> {
-    fn new(dev: &'a PciDeviceHeader) -> Self {
+    fn new(pci_device: &'a PciDeviceHeader, slots: u32, context_size: u32, dcbaa: &'a Dcbaa) -> Self {
         XHCI {
-            pci_device: dev,
-            slots: 0,
-            context_size: 0,
-            dcbaa_ptr: 0
+            pci_device,
+            slots,
+            context_size,
+            dcbaa
         }
     }
+
+
 }
 
 
 impl PciDeviceInitializer for XHCI<'_> {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
         let bar = PciBAR::get(pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
             return Err(InvalidBarType);
         }
-        let xhci_controller = XHCI::new(&pci_device);
 
         unsafe {
             let base = bar.base_address() + boot_info.physical_memory_offset;
@@ -859,25 +1050,70 @@ impl PciDeviceInitializer for XHCI<'_> {
             let hccparams1: u32 = ptr::read_volatile((base + CAP_REG_HCSPARAMS1 as u64) as *mut u32);
 
             //enable all slots
+            let max_slots: u32 =  hccparams1 & 0xFF;
             {
-                let max_slots: u32 =  hccparams1 & 0xFF;
                 let config_reg = ptr::read_volatile((op_base + OP_REG_CONFIG as u64) as *const u32);
                 ptr::write_volatile((op_base + OP_REG_CONFIG as u64) as *mut u32, config_reg | max_slots);
             }
 
-            let context_size: u8 = if hccparams1 & 0x02 == 1 {
+            let context_size = if (hccparams1 & (1 << 2)) != 0 {
                 64
             } else {
                 32
             };
 
-            let dcbaa = Box::new(Dcbaa {
+            //init DCBAA
+            //NOTE: idk if this is correct, lets
+            let mut dcbaa = Box::new(Dcbaa {
                 entries: [0; 256]
             });
 
-            ptr::write_volatile((op_base + OP_REG_DCBAAP as u64) as *mut u64, Box::into_raw(dcbaa) as u64);
+            //setting up dma address
+            let virt_address = VirtAddr::from_ptr(Box::as_mut(&mut dcbaa));
+            let dma_addr = match virtual_to_physical(virt_address, offset_page_table) {
+                None => {
+                    return Err(PciDeviceInitError::InitializationFailure);
+                },
+                Some(x) => x
+            };
+
+            //writing the address
+            ptr::write_volatile((op_base + OP_REG_DCBAAP as u64) as *mut u64, dma_addr.as_u64());
 
 
+            //COMMAND RING
+            let crcr_addr = op_base + OP_REG_CRCR as u64;
+            let crcr = ptr::read_volatile(crcr_addr as *const u64);
+
+            //command ring is runnning
+            // if crcr & 0x03 == 1 {
+            //
+            // }
+            let mut trb_arr = TrbRing::alloc_trb_array(8);
+            let trb_ring = TrbRing::new(trb_arr, offset_page_table).expect("allocating memory for TRB ring failed!");
+
+
+            let trb_virt = VirtAddr::new(trb_ring.trbs.as_mut_ptr() as u64);
+            let trb_dma = match virtual_to_physical(trb_virt, offset_page_table) {
+                None => { return Err(PciDeviceInitError::InitializationFailure)},
+                Some(x) => x.as_u64()
+            };
+
+            vgaprintln!("{}", trb_dma);
+
+            ptr::write_volatile(crcr_addr as *mut u64,
+                                (trb_dma & !0b111111) | (crcr & 0b111111)
+            );
+
+
+
+
+            let xhci_controller = XHCI::new(
+                &pci_device,
+                max_slots,
+                context_size,
+                &dcbaa
+            );
         }
 
         Ok(())
