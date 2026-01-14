@@ -121,6 +121,28 @@ impl PciBAR {
         }
     }
 
+    pub fn from_bir(device: &PciDeviceHeader, bir: u8) -> Result<Self, &'static str> {
+        if bir > 5 {
+            return Err("Invalid BIR (must be 0–5)");
+        }
+
+        let bar = PciBAR::get(device, bir);
+
+        if bar.bar_type == BarType::Io {
+            return Err("MSI-X bar type cannot be I/O type");
+        }
+
+        Ok(bar)
+    }
+
+    pub fn mmio_virt_base(&self, phys_mem_offset: u64) -> u64 {
+        self.base_address + phys_mem_offset
+    }
+
+    pub fn mmio_addr(&self, phys_mem_offset: u64, offset: u32) -> u64 {
+        self.mmio_virt_base(phys_mem_offset) + offset as u64
+    }
+
     pub fn print(&self) {
         let bar_type_str = match self.bar_type {
             BarType::Mmio32 => "MMIO (32-bit)",
