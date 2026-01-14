@@ -20,7 +20,9 @@ use x86_64::structures::paging::OffsetPageTable;
 use x86_64::VirtAddr;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
-use crate::drivers::pci::pci_device::PciDeviceInitError::{InvalidBarType, TimeoutError};
+use crate::drivers::pci::pci_device::PciDeviceInitError::{InvalidBarType, NoMSIXCapabilities, TimeoutError};
+use crate::drivers::pci::pci_io::{pci_read16, pci_read32, pci_read8};
+use crate::drivers::usb::interrupts::xhci_interrupt_handler::XHCIInterruptIndex;
 use crate::interrupts::hardware::pic8259::{get_ticks, pic_get_ticks_per_ms};
 use crate::memory::pages::virtual_to_physical;
 use crate::vgaprintln;
@@ -463,7 +465,93 @@ Mult. If LEC = ‘0’, then this field indicates the maximum number of bursts w
 this endpoint supports. Mult is a “zero-based” value, where 0 to 3 represents 1 to 4 bursts,
 respectively. The valid range of values is ‘0’ to ‘2’.117 This field shall be ‘0’ for all endpoint types
 except for SS Isochronous.
-If LEC = ‘1’, then this field shall be RsvdZ and Mult is calculated as:
+If LEC = ‘1’, then this field sA TRB (Transfer Request Block) Ring defines a queue, which is used to transfer
+Work Items between producer and consumer entities
+26
+.
+
+A TRB Ring is defined as a circular queue of TRB data structures. TRB rings are
+used to pass
+
+Work Items
+
+from the producer to the consumer. Two pointers
+(Enqueue and Dequeue) associated with each ring identify where the producer
+will Enqueue the next Work Item on the ring and where the consumer will
+Dequeue the next Work Item from the ring.
+
+A Work Item is comprised of one or more TRB data structures. A Work Item may
+define an operation to perform, or the result of an operation that has been
+performed.
+
+There are 3 basic types or TRB Rings;
+
+Transfer, Event
+, and
+
+Command
+. Each type
+of ring defines an exclusive set of TRB data structures; however they all employ
+the underlying TRB Ring mechanism to organize their work items and the basic
+TRB template.
+
+Transfer Rings
+
+provide data transport to and from USB devices. There is a 1:1
+mapping between Transfer Rings and USB Pipes. They are defined by an
+Endpoint Context data structure contained in a Device Context, or the Stream
+Context Array pointed to by the Endpoint Conte
+xt.
+
+The
+
+Event Ring
+
+provides the xHC with a means of reporting to system software:
+data transfer and command completion status, Root Hub port status changes,
+and other xHC related events. An Event Ring is defined by the Event Ring
+Segment Table Base Address, Segment Table Si
+ze, and Dequeue Pointer
+registers which reside in the Runtime Registers.
+
+The
+
+Command Ring
+
+provides system software the ability to issue commands to
+enumerate USB Devices, configure the xHC to support those devices, and to
+coordinate virtualization features. The Command Ring is managed by the
+Command Ring Control Register that resides in the Op
+erational Registers.
+
+The
+
+Enqueue Pointer
+
+and
+
+Dequeue Pointer
+
+are terms used to refer to the
+logical beginning and end of the valid entries in a TRB Ring. The size of a TRB
+
+26
+
+Note: The xHCI Producer/Consumer model is not related to the
+
+PCI
+
+Producer/Consumer model.
+200
+
+Document Number:
+868296
+, Revision:
+
+2.0
+
+ring is determined by the number and size of the segments that comprise the
+ring.hall be RsvdZ and Mult is calculated as:
 ROUNDUP(Max ESIT Payload / Max Packet Size / (Max Burst Size + 1)) - 1.
 
 Max Primary Streams (MaxPStreams). This field identifies the maximum number of Primary
@@ -947,6 +1035,43 @@ impl Trb {
 //====================================================
 //          TRB RING
 //====================================================
+
+/*
+A TRB (Transfer Request Block) Ring defines a queue, which is used to transfer
+Work Items between producer and consumer entities26.
+A TRB Ring is defined as a circular queue of TRB data structures. TRB rings are
+used to pass Work Items from the producer to the consumer. Two pointers
+(Enqueue and Dequeue) associated with each ring identify where the producer
+will Enqueue the next Work Item on the ring and where the consumer will
+Dequeue the next Work Item from the ring.
+A Work Item is comprised of one or more TRB data structures. A Work Item may
+define an operation to perform, or the result of an operation that has been
+performed.
+There are 3 basic types or TRB Rings; Transfer, Event, and Command. Each type
+of ring defines an exclusive set of TRB data structures; however they all employ
+the underlying TRB Ring mechanism to organize their work items and the basic
+TRB template.
+Transfer Rings provide data transport to and from USB devices. There is a 1:1
+mapping between Transfer Rings and USB Pipes. They are defined by an
+Endpoint Context data structure contained in a Device Context, or the Stream
+Context Array pointed to by the Endpoint Context.
+The Event Ring provides the xHC with a means of reporting to system software:
+data transfer and command completion status, Root Hub port status changes,
+and other xHC related events. An Event Ring is defined by the Event Ring
+Segment Table Base Address, Segment Table Size, and Dequeue Pointer
+registers which reside in the Runtime Registers.
+The Command Ring provides system software the ability to issue commands to
+enumerate USB Devices, configure the xHC to support those devices, and to
+coordinate virtualization features. The Command Ring is managed by the
+Command Ring Control Register that resides in the Operational Registers.
+The Enqueue Pointer and Dequeue Pointer are terms used to refer to the
+logical beginning and end of the valid entries in a TRB Ring. The size of a TRB
+26 Note: The xHCI Producer/Consumer model is not related to the PCI Producer/Consumer model.
+200 Document Number:868296, Revision: 2.0
+ring is determined by the number and size of the segments that comprise the
+ring.
+
+ */
 #[derive(Debug)]
 struct TrbCreationError();
 
@@ -992,6 +1117,79 @@ impl TrbRing {
     }
 }
 
+//=======================================================
+//      MSI-X CONFIGURATION CAPABILITY STRUCTURE
+//=======================================================
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct MsixCapability {
+    pub cap_id: u8,          //0x11
+    pub next: u8,            //next capability pointer
+    pub message_control: u16,
+    pub table: u32,
+    pub pba: u32,
+}
+
+impl MsixCapability {
+    //Number of MSI-X vectors supported
+    pub fn table_size(&self) -> u16 {
+        (self.message_control & 0x07FF) + 1
+    }
+
+    //Is MSI-X enabled?
+    pub fn enabled(&self) -> bool {
+        (self.message_control & (1 << 15)) != 0
+    }
+
+    //Enable MSI-X
+    pub fn enable(&mut self) {
+        self.message_control |= 1 << 15;
+    }
+
+    //Mask all MSI-X vectors
+    pub fn mask_all(&mut self) {
+        self.message_control |= 1 << 14;
+    }
+
+    //Unmask all MSI-X vectors
+    pub fn unmask_all(&mut self) {
+        self.message_control &= !(1 << 14);
+    }
+
+    //BAR index of the MSI-X table
+    pub fn table_bir(&self) -> u8 {
+        (self.table & 0x7) as u8
+    }
+
+    //Offset of MSI-X table in BAR
+    pub fn table_offset(&self) -> u32 {
+        self.table & !0x7
+    }
+
+    //BAR index of the PBA
+    pub fn pba_bir(&self) -> u8 {
+        (self.pba & 0x7) as u8
+    }
+
+    //Offset of the PBA in BAR
+    pub fn pba_offset(&self) -> u32 {
+        self.pba & !0x7
+    }
+}
+
+//=======================================================
+//      MSI-X TABLE ENTRY
+//=======================================================
+#[repr(C)]
+struct MsixTableEntry {
+    msg_addr_low:  u32,
+    msg_addr_high: u32,
+    msg_data:      u32,
+    vector_ctrl:   u32,
+}
+
+
+
 
 
 
@@ -1000,16 +1198,18 @@ pub struct XHCI<'a> {
 
     slots: u32,
     context_size: u32,
-    dcbaa: &'a Dcbaa
+    dcbaa: &'a Dcbaa,
+    trb_ring: &'a TrbRing
 }
 
 impl<'a> XHCI<'a> {
-    fn new(pci_device: &'a PciDeviceHeader, slots: u32, context_size: u32, dcbaa: &'a Dcbaa) -> Self {
+    fn new(pci_device: &'a PciDeviceHeader, slots: u32, context_size: u32, dcbaa: &'a Dcbaa, trb_ring: &'a TrbRing) -> Self {
         XHCI {
             pci_device,
             slots,
             context_size,
-            dcbaa
+            dcbaa,
+            trb_ring
         }
     }
 
@@ -1062,8 +1262,9 @@ impl PciDeviceInitializer for XHCI<'_> {
                 32
             };
 
+            //=========================================================================
             //init DCBAA
-            //NOTE: idk if this is correct, lets
+            //NOTE: idk if this is correct, lets leave it for now
             let mut dcbaa = Box::new(Dcbaa {
                 entries: [0; 256]
             });
@@ -1079,8 +1280,7 @@ impl PciDeviceInitializer for XHCI<'_> {
 
             //writing the address
             ptr::write_volatile((op_base + OP_REG_DCBAAP as u64) as *mut u64, dma_addr.as_u64());
-
-
+            //==================================================
             //COMMAND RING
             let crcr_addr = op_base + OP_REG_CRCR as u64;
             let crcr = ptr::read_volatile(crcr_addr as *const u64);
@@ -1104,15 +1304,66 @@ impl PciDeviceInitializer for XHCI<'_> {
             ptr::write_volatile(crcr_addr as *mut u64,
                                 (trb_dma & !0b111111) | (crcr & 0b111111)
             );
+            //========================================================================
 
 
+            //MSI-X CONFIGURATION
+            let status = pci_read16(pci_device.base_id(), 0x06); //read status register
+            if status & (0x01 << 4) == 0 {
+                return Err(NoMSIXCapabilities);
+            }
+
+            //read capabilities pointer
+            let mut cap_ptr = pci_read8(pci_device.base_id(), 0x34);
+
+            //search for MSI-X ptr
+            while cap_ptr != 0 {
+                let cap_id = pci_read8(pci_device.base_id(), cap_ptr as u32);
+
+                if cap_id == 0x11 {
+                    //we found MSI-X so exit
+                    break;
+                }
+
+                cap_ptr = pci_read8(pci_device.base_id(), (cap_ptr + 1) as u32);
+            }
+
+            let msix_cap_offset = cap_ptr;
+            let table_raw = pci_read32(pci_device.base_id(), (msix_cap_offset + 0x04) as u32);
+            let table_bir = (table_raw & 0x7) as u8;
+            let table_offset = table_raw & !0x7;
+
+            let pba_raw = pci_read32(pci_device.base_id(), (msix_cap_offset + 0x08) as u32);
+            let pba_bir = (pba_raw & 0x7) as u8;
+            let pba_offset = pba_raw & !0x7;
+
+            let table_bar = PciBAR::from_bir(pci_device, table_bir).expect("Obtaining the MSI-X BAR failed");
+            let mut table_mmio =
+                table_bar.mmio_addr(boot_info.physical_memory_offset, table_offset);
+
+
+            //finally, the MSIX table
+            let msix_table_ptr = table_mmio as *mut MsixTableEntry;
+            const LAPIC_MSI_ADDR: u64 = 0xFEE0_0000;
+
+            unsafe {
+                let mut entry0 = ptr::read_unaligned(msix_table_ptr);
+
+                entry0.msg_addr_low  = LAPIC_MSI_ADDR as u32;
+                entry0.msg_addr_high = (LAPIC_MSI_ADDR >> 32) as u32;
+                entry0.msg_data      = XHCIInterruptIndex::MsiXMessageData as u32;
+                entry0.vector_ctrl   = 0; //enabled
+            }
+
+            
 
 
             let xhci_controller = XHCI::new(
                 &pci_device,
                 max_slots,
                 context_size,
-                &dcbaa
+                &dcbaa,
+                &trb_ring
             );
         }
 
