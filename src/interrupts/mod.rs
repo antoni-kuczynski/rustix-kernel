@@ -35,10 +35,13 @@ lazy_static!{
         //      XHCI
         //==================
 
-        //XHCI MSI-X INTERRUPT 0x40
-        idt[XHCIInterruptIndex::MsiXMessageData as u8]
-            .set_handler_fn(xhci_interrupt_handler::xhci_msix_irq_handler);
+        //XHCI MSI-X COMMAND AND PORT DATA 0x40
+        idt[XHCIInterruptIndex::MsiXCommandPortData as u8]
+            .set_handler_fn(xhci_interrupt_handler::xhci_msix_command_data_irq_handler);
 
+        //XHCI MSI-X TRANSFER DATA 0x41
+        idt[XHCIInterruptIndex::MsiXTransferEvents as u8]
+            .set_handler_fn(xhci_interrupt_handler::xhci_msix_transfer_irq_handler);
 
 
         idt
