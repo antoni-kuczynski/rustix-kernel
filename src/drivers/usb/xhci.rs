@@ -20,8 +20,8 @@ use x86_64::structures::paging::OffsetPageTable;
 use x86_64::VirtAddr;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
-use crate::drivers::pci::pci_device::PciDeviceInitError::{InvalidBarType, NoMSIXCapabilities, TimeoutError};
-use crate::drivers::pci::pci_io::{pci_read16, pci_read32, pci_read8};
+use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType, NoMSIXCapabilities, TimeoutError};
+use crate::drivers::pci::pci_io::{pci_read16, pci_read32, pci_read8, pci_write16};
 use crate::drivers::usb::interrupts::xhci_interrupt_handler::XHCIInterruptIndex;
 use crate::interrupts::hardware::pic8259::{get_ticks, pic_get_ticks_per_ms};
 use crate::memory::pages::virtual_to_physical;
@@ -40,11 +40,20 @@ Base
 
 op_base = base + caplength
 
+
+The Runtime Base shall be 32-
+byte aligned and is calculated by adding the value Runtime Register Space
+Offset register (refer to Section 5.3.8) to the Capability Base address. All
+Runtime registers are multiples of 32 bits in length.
+
+runtime_base = RTSOFF +
+
  */
 
 //CAPABILITY REGS
 const CAP_REG_CAPLENGTH: u8 = 0x00;
 const CAP_REG_HCSPARAMS1: u8 = 0x04;
+const CAP_REG_RTSOFF: u8 = 0x18;
 
 
 //OPERATIONAL REGS
@@ -53,6 +62,44 @@ const OP_REG_CONFIG: u8 = 0x38;
 const OP_REG_DCBAAP: u8 = 0x30;
 const OP_REG_CRCR: u8 = 0x18;
 
+
+//RUNTIME REGISTERS
+const RT_ERSTSZ: u8 = 0x28;
+const RT_ERSTBA: u8 = 0x30;
+
+// ============================================================================
+// xHCI Data Structure Requirements (from spec sections 4.x / 6.x)
+// ============================================================================
+//
+//  Name                               Max Size      Boundary      Align   Spec
+//  ---------------------------------------------------------------------------
+//  Device Context Base Address Array   2048 bytes    PAGESIZE      64     §6.1
+//  Device Context                      2048 bytes    PAGESIZE      64     §6.2.1
+//  Input Control Context               64 bytes      PAGESIZE      64     §6.2.5.1
+//  Slot Context                        64 bytes      PAGESIZE      32     §6.2.2
+//  Endpoint Context                    64 bytes      PAGESIZE      32     §6.2.3
+//  Stream Context                      16 bytes      PAGESIZE      16     §6.2.4.1
+//  Stream Array (Linear)               1 MB          None          16     §6.2.4
+//  Stream Array (Primary/Secondary)    4 KB          PAGESIZE      16     §6.2.4
+//
+//  Transfer Ring segments              64 KB         64 KB         16     §4.9.2
+//  Command Ring segments               64 KB         64 KB         64     §4.9.3
+//  Event Ring segments                 64 KB         64 KB         64     §4.9.4
+//
+//  Event Ring Segment Table            512 KB        None          64     §6.5
+//
+//  Scratchpad Buffer Array             2^48 bytes    PAGESIZE      64     §6.6
+//  Scratchpad Buffers                  PAGESIZE      PAGESIZE      Page   §4.20
+//
+// ============================================================================
+//
+// Notes:
+// - “Boundary Requirement” means the structure must not cross that boundary.
+// - “Alignment” is the minimum alignment of the base address.
+// - Transfer/Command/Event ring *segments* must be ≤ 64 KB and aligned to 64 KB.
+// - Device/Slot/Endpoint contexts must be page-aligned and meet their alignment.
+// - Scratchpad buffers must be page-aligned and page-sized.
+// ============================================================================
 //DEVICE CONTEXT BASE ARRAY
 
 /*
@@ -1118,6 +1165,96 @@ impl TrbRing {
 }
 
 //=======================================================
+//          EVENT RING SEGMENT TABLE
+//=======================================================
+/*
+The Event Ring Segment Table (ERST) is used to define multi -segment Event
+Rings and to enable runtime expansion and shrinking of the Event Ring. The
+location of the Event Ring Segment Table is defined by the Event Ring Segment
+Table Base Address Register (section 5.5.2.3.2). The size of the Event Ring
+Segment Table is defined by the Event Ring Segment Table Base Size Register
+(section 5.5.2.3.1).
+ */
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+struct ERST {
+    ring_addr_low: u32,
+    ring_addr_high: u32,
+    ring_segment_size: u32,
+    rsvdz: u32
+}
+
+impl ERST {
+    fn new(ring_addr: u64, ring_segment_size: u32) -> ERST {
+        assert_eq!(ring_addr & 0x1F, 0, "Event ring must be 32-byte aligned");
+
+        let ring_addr_high: u32 = (ring_addr >> 32) as u32;
+        let ring_addr_low: u32 = (ring_addr & 0xFFFFFFE0) as u32;
+
+        Self {
+            ring_addr_low,
+            ring_addr_high,
+            ring_segment_size,
+            rsvdz: 0u32
+        }
+    }
+
+    #[inline(always)]
+    pub fn ring_addr_low(&self) -> u32 {
+        unsafe {
+            let base = self as *const _ as *const u8;
+            let ptr = base.add(0) as *const u32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_ring_addr_low(&mut self, val: u32) {
+        unsafe {
+            let base = self as *mut _ as *mut u8;
+            let ptr = base.add(0) as *mut u32;
+            ptr::write_unaligned(ptr, val);
+        }
+    }
+
+    #[inline(always)]
+    pub fn ring_addr_high(&self) -> u32 {
+        unsafe {
+            let base = self as *const _ as *const u8;
+            let ptr = base.add(4) as *const u32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_ring_addr_high(&mut self, val: u32) {
+        unsafe {
+            let base = self as *mut _ as *mut u8;
+            let ptr = base.add(4) as *mut u32;
+            ptr::write_unaligned(ptr, val);
+        }
+    }
+
+    #[inline(always)]
+    pub fn ring_segment_size(&self) -> u32 {
+        unsafe {
+            let base = self as *const _ as *const u8;
+            let ptr = base.add(8) as *const u32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_ring_segment_size(&mut self, val: u32) {
+        unsafe {
+            let base = self as *mut _ as *mut u8;
+            let ptr = base.add(8) as *mut u32;
+            ptr::write_unaligned(ptr, val);
+        }
+    }
+}
+
+//=======================================================
 //      MSI-X CONFIGURATION CAPABILITY STRUCTURE
 //=======================================================
 #[repr(C, packed)]
@@ -1131,6 +1268,10 @@ pub struct MsixCapability {
 }
 
 impl MsixCapability {
+    pub unsafe fn new(ptr: *const u8) -> Self {
+        ptr::read_unaligned(ptr as *const MsixCapability)
+    }
+
     //Number of MSI-X vectors supported
     pub fn table_size(&self) -> u16 {
         (self.message_control & 0x07FF) + 1
@@ -1175,6 +1316,42 @@ impl MsixCapability {
     pub fn pba_offset(&self) -> u32 {
         self.pba & !0x7
     }
+
+    pub fn write_back(&self, pci: &PciDeviceHeader, cap_ptr: u8) {
+        // Message Control is at offset +2
+        pci_write16(
+            pci.base_id(),
+            (cap_ptr as u32) + 0x02,
+            self.message_control,
+        );
+    }
+
+    pub fn print(&self) {
+        let msg_control = self.message_control;
+        let table_bir = (self.table & 0x7) as u8;
+        let table_offset = self.table & !0x7;
+
+        let pba_bir = (self.pba & 0x7) as u8;
+        let pba_offset = self.pba & !0x7;
+
+        let table_size = (self.message_control & 0x07FF) + 1;
+        let function_mask = (self.message_control & (1 << 14)) != 0;
+        let msix_enabled = (self.message_control & (1 << 15)) != 0;
+
+        vgaprintln!("MSI-X Capability:");
+        vgaprintln!("  Cap ID          : 0x{:02X}", self.cap_id);
+        vgaprintln!("  Next Pointer    : 0x{:02X}", self.next);
+        vgaprintln!("  Message Control : 0x{:04X}", msg_control);
+        vgaprintln!("    Table Size    : {}", table_size);
+        vgaprintln!("    Function Mask : {}", function_mask);
+        vgaprintln!("    MSI-X Enabled : {}", msix_enabled);
+        vgaprintln!("  Table:");
+        vgaprintln!("    BIR           : {}", table_bir);
+        vgaprintln!("    Offset        : 0x{:08X}", table_offset);
+        vgaprintln!("  PBA:");
+        vgaprintln!("    BIR           : {}", pba_bir);
+        vgaprintln!("    Offset        : 0x{:08X}", pba_offset);
+    }
 }
 
 //=======================================================
@@ -1188,9 +1365,118 @@ struct MsixTableEntry {
     vector_ctrl:   u32,
 }
 
+impl MsixTableEntry {
+    pub const MASK_BIT: u32 = 1 << 0;
+
+    pub fn is_masked(&self) -> bool {
+        self.vector_ctrl & Self::MASK_BIT != 0
+    }
+
+    pub fn set_masked(&mut self, masked: bool) {
+        if masked {
+            self.vector_ctrl |= Self::MASK_BIT;
+        } else {
+            self.vector_ctrl &= !Self::MASK_BIT;
+        }
+    }
+}
+
+pub struct MsiXTableView {
+    base: *mut MsixTableEntry,
+}
+
+impl MsiXTableView {
+    fn new(base: *mut MsixTableEntry) -> Self {
+        Self { base }
+    }
+
+    unsafe fn entry(&self, vector: u16) -> &mut MsixTableEntry {
+        unsafe {
+            &mut *self.base.add(vector as usize)
+        }
+    }
+
+    unsafe fn mask(&self, vector: u16) {
+        unsafe {
+            let e = self.entry(vector);
+            ptr::write_volatile(&mut e.vector_ctrl, e.vector_ctrl | 1);
+        }
+    }
+
+    unsafe fn unmask(&self, vector: u16) {
+        unsafe {
+            let e = self.entry(vector);
+            ptr::write_volatile(&mut e.vector_ctrl, e.vector_ctrl & !1);
+        }
+    }
+
+    pub unsafe fn print(&self, count: usize) {
+        for i in 0..count {
+            let e = self.entry(i as u16);
+
+            let addr = ((e.msg_addr_high as u64) << 32) | (e.msg_addr_low as u64);
+            let masked = if e.is_masked() { "yes" } else { "no" };
+
+            vgaprintln!(
+                "MSI-X Entry {:>3}: addr=0x{:016x}, data=0x{:08x}, masked={}",
+                i,
+                addr,
+                e.msg_data,
+                masked
+            );
+        }
+    }
+
+}
 
 
 
+//=======================================================
+//      MSI-X PENDING BIT ARRAY
+//=======================================================
+struct MsixPBA {
+    base: *const u32,
+    vectors: usize
+}
+
+impl MsixPBA {
+    fn new(pba_bar_base: *mut u8, pba_offset: u32, vectors: usize) -> Self {
+        let base = unsafe {
+            pba_bar_base.add(pba_offset as usize) as *const u32
+        };
+
+        MsixPBA { base, vectors }
+    }
+
+    unsafe fn is_pending(&self, vector: u16) -> bool {
+        unsafe {
+            let vector_index: usize = (vector as usize) >> 6;
+            let bit = (vector as usize) % 64;
+
+            let val = ptr::read_volatile(self.base.add(vector_index));
+            (val >> bit) & 0x01 != 0
+        }
+    }
+}
+
+//=======================================================
+//      MSI-X VECTOR
+//=======================================================
+struct MsiXVector {
+    vector: u16,
+    table: MsiXTableView,
+    pba: MsixPBA
+}
+
+impl MsiXVector {
+    fn new(vector: u16, table: MsiXTableView, pba: MsixPBA) -> MsiXVector {
+        Self {
+            vector,
+            table,
+            pba
+        }
+    }
+}
 
 
 pub struct XHCI<'a> {
@@ -1199,17 +1485,27 @@ pub struct XHCI<'a> {
     slots: u32,
     context_size: u32,
     dcbaa: &'a Dcbaa,
-    trb_ring: &'a TrbRing
+    command_ring: &'a TrbRing,
+    msix_capability: &'a MsixCapability,
+    msix_pba: &'a MsixPBA
 }
 
 impl<'a> XHCI<'a> {
-    fn new(pci_device: &'a PciDeviceHeader, slots: u32, context_size: u32, dcbaa: &'a Dcbaa, trb_ring: &'a TrbRing) -> Self {
+    fn new(pci_device: &'a PciDeviceHeader,
+           slots: u32,
+           context_size: u32,
+           dcbaa: &'a Dcbaa,
+           command_ring: &'a TrbRing,
+           msix_capability: &'a MsixCapability,
+           msix_pba: &'a MsixPBA) -> Self {
         XHCI {
             pci_device,
             slots,
             context_size,
             dcbaa,
-            trb_ring
+            command_ring,
+            msix_capability,
+            msix_pba
         }
     }
 
@@ -1227,16 +1523,17 @@ impl PciDeviceInitializer for XHCI<'_> {
 
         unsafe {
             let base = bar.base_address() + boot_info.physical_memory_offset;
-            let op_base = base + ptr::read_volatile((base + CAP_REG_CAPLENGTH as u64) as *const u8) as u64;
+            let operational_base = base + ptr::read_volatile((base + CAP_REG_CAPLENGTH as u64) as *const u8) as u64;
+            let runtime_base = base + (ptr::read_volatile((base + CAP_REG_RTSOFF as u64) as *const u32) as u64) & !0x1F;
 
 
-            let mut usbsts = ptr::read_volatile((op_base + OP_REG_USBSTS as u64) as *const u32);
+            let mut usbsts = ptr::read_volatile((operational_base + OP_REG_USBSTS as u64) as *const u32);
             let mut ticks = get_ticks();
             let max_ticks = (pic_get_ticks_per_ms() * 1000) + ticks;
 
             const CONTROLLER_READY: u32 = 0;
             while ticks < max_ticks {
-                usbsts = ptr::read_volatile((op_base + OP_REG_USBSTS as u64) as *const u32);
+                usbsts = ptr::read_volatile((operational_base + OP_REG_USBSTS as u64) as *const u32);
                 if usbsts & 0x800 == CONTROLLER_READY {
                     break;
                 }
@@ -1252,8 +1549,8 @@ impl PciDeviceInitializer for XHCI<'_> {
             //enable all slots
             let max_slots: u32 =  hccparams1 & 0xFF;
             {
-                let config_reg = ptr::read_volatile((op_base + OP_REG_CONFIG as u64) as *const u32);
-                ptr::write_volatile((op_base + OP_REG_CONFIG as u64) as *mut u32, config_reg | max_slots);
+                let config_reg = ptr::read_volatile((operational_base + OP_REG_CONFIG as u64) as *const u32);
+                ptr::write_volatile((operational_base + OP_REG_CONFIG as u64) as *mut u32, config_reg | max_slots);
             }
 
             let context_size = if (hccparams1 & (1 << 2)) != 0 {
@@ -1279,27 +1576,25 @@ impl PciDeviceInitializer for XHCI<'_> {
             };
 
             //writing the address
-            ptr::write_volatile((op_base + OP_REG_DCBAAP as u64) as *mut u64, dma_addr.as_u64());
+            ptr::write_volatile((operational_base + OP_REG_DCBAAP as u64) as *mut u64, dma_addr.as_u64());
             //==================================================
             //COMMAND RING
-            let crcr_addr = op_base + OP_REG_CRCR as u64;
+            let crcr_addr = operational_base + OP_REG_CRCR as u64;
             let crcr = ptr::read_volatile(crcr_addr as *const u64);
 
             //command ring is runnning
             // if crcr & 0x03 == 1 {
             //
             // }
-            let mut trb_arr = TrbRing::alloc_trb_array(8);
-            let trb_ring = TrbRing::new(trb_arr, offset_page_table).expect("allocating memory for TRB ring failed!");
+            let mut trb_arr = alloc_aligned_trb_array(256, 64);
+            let command_ring = TrbRing::new(trb_arr, offset_page_table).expect("allocating memory for TRB ring failed!");
 
 
-            let trb_virt = VirtAddr::new(trb_ring.trbs.as_mut_ptr() as u64);
+            let trb_virt = VirtAddr::new(command_ring.trbs.as_mut_ptr() as u64);
             let trb_dma = match virtual_to_physical(trb_virt, offset_page_table) {
                 None => { return Err(PciDeviceInitError::InitializationFailure)},
                 Some(x) => x.as_u64()
             };
-
-            vgaprintln!("{}", trb_dma);
 
             ptr::write_volatile(crcr_addr as *mut u64,
                                 (trb_dma & !0b111111) | (crcr & 0b111111)
@@ -1328,34 +1623,107 @@ impl PciDeviceInitializer for XHCI<'_> {
                 cap_ptr = pci_read8(pci_device.base_id(), (cap_ptr + 1) as u32);
             }
 
-            let msix_cap_offset = cap_ptr;
-            let table_raw = pci_read32(pci_device.base_id(), (msix_cap_offset + 0x04) as u32);
-            let table_bir = (table_raw & 0x7) as u8;
-            let table_offset = table_raw & !0x7;
+            if cap_ptr == 0 {
+                return Err(InitializationFailure);
+            }
 
-            let pba_raw = pci_read32(pci_device.base_id(), (msix_cap_offset + 0x08) as u32);
-            let pba_bir = (pba_raw & 0x7) as u8;
-            let pba_offset = pba_raw & !0x7;
+            let mut msix_capability = MsixCapability {
+                cap_id: pci_read8(pci_device.base_id(), cap_ptr as u32),
+                next: pci_read8(pci_device.base_id(), (cap_ptr + 1) as u32),
+                message_control: pci_read16(pci_device.base_id(), (cap_ptr + 2) as u32),
+                table: pci_read32(pci_device.base_id(), (cap_ptr + 4) as u32),
+                pba: pci_read32(pci_device.base_id(), (cap_ptr + 8) as u32),
+            };
 
-            let table_bar = PciBAR::from_bir(pci_device, table_bir).expect("Obtaining the MSI-X BAR failed");
-            let mut table_mmio =
-                table_bar.mmio_addr(boot_info.physical_memory_offset, table_offset);
+            msix_capability.mask_all();
+            pci_write16(pci_device.base_id(), (cap_ptr + 2) as u32, msix_capability.message_control);
+
+            if msix_capability.table_size() < 2 {
+                return Err(InitializationFailure);
+            }
+
+            let table_bar = PciBAR::from_bir(pci_device, msix_capability.table_bir()).
+                expect("Table bar not found");
+
+            let table_mmio = table_bar.mmio_addr(boot_info.physical_memory_offset, msix_capability.table_offset());
 
 
-            //finally, the MSIX table
             let msix_table_ptr = table_mmio as *mut MsixTableEntry;
+            let msix_table_view: MsiXTableView = MsiXTableView::new(msix_table_ptr);
             const LAPIC_MSI_ADDR: u64 = 0xFEE0_0000;
 
             unsafe {
                 let mut entry0 = ptr::read_unaligned(msix_table_ptr);
+                let mut entry1 = ptr::read_unaligned(msix_table_ptr.wrapping_add(1));
 
-                entry0.msg_addr_low  = LAPIC_MSI_ADDR as u32;
+                entry0.msg_addr_low = LAPIC_MSI_ADDR as u32;
                 entry0.msg_addr_high = (LAPIC_MSI_ADDR >> 32) as u32;
-                entry0.msg_data      = XHCIInterruptIndex::MsiXMessageData as u32;
-                entry0.vector_ctrl   = 0; //enabled
+                entry0.msg_data = XHCIInterruptIndex::MsiXCommandPortData as u32;
+                entry0.vector_ctrl = 0; //enabled
+
+                entry1.msg_addr_low = LAPIC_MSI_ADDR as u32;
+                entry1.msg_addr_high = (LAPIC_MSI_ADDR >> 32) as u32;
+                entry1.msg_data = XHCIInterruptIndex::MsiXTransferEvents as u32;
+                entry1.vector_ctrl = 0; //enabled
+
+                ptr::write_unaligned(msix_table_ptr, entry0);
+                ptr::write_unaligned(msix_table_ptr.wrapping_add(1), entry1);
             }
 
-            
+            let pba_bar = PciBAR::from_bir(&pci_device, msix_capability.pba_bir()).expect("no bar for bir");
+            let msix_pba = MsixPBA::new(
+                pba_bar.base_address() as *mut u8,
+                msix_capability.pba_offset(),
+                2
+            );
+
+            msix_capability.enable();
+            pci_write16(pci_device.base_id(), (cap_ptr + 2) as u32, msix_capability.message_control);
+
+
+            //Event Ring Segment Table Size Register (ERSTSZ)
+            /*
+            Event Ring Segment Table Size – RW. Default = ‘0’. This field identifies the number of valid
+            Event Ring Segment Table entries in the Event Ring Segment Table pointed to by the Event Ring
+            Segment Table Base Address register. The maximum value supported by an xHC implementation
+            for this register is defined by the ERST Max field in the HCSPARAMS2 register (section 5.3.4).
+            For Secondary Interrupters: Writing a value of ‘0’ to this field disables the Event Ring. Any events
+            targeted at this Event Ring when it is disabled shall result in undefined behavior of the Event
+            Ring.
+            For the Primary Interrupter: Writing a value of ‘0’ to this field shall result in undefined behavior
+            of the Event Ring. The Primary Event Ring cannot be disabled.
+             */
+            let erstsz_addr_base = runtime_base + RT_ERSTSZ as u64;
+
+            let erstsz_primary = erstsz_addr_base + 0;
+            let erstsz_secondary_first = erstsz_addr_base + (1 << 5);
+
+            ptr::write_volatile(erstsz_primary as *mut u32, 0x01);
+            ptr::write_volatile(erstsz_secondary_first as *mut u32, 0x01);
+
+            /*
+            The Event Ring Segment Table Base Address Register identifies the start address
+            of the Event Ring Segment Table (ERST). Refer to section 6.5 for the definition of
+            an ERST entry.
+             */
+            let erstba_base = runtime_base + RT_ERSTBA as u64;
+            let erstba_primary = erstba_base;
+            let erstba_secondary = erstba_base + (1 << 5);
+
+            let erst_primary = alloc_aligned_erst();
+            let erst_secondary = alloc_aligned_erst();
+            let erst_p_addr = virtual_to_physical(
+                VirtAddr::new((erst_primary as *mut ERST as u64) & !0x1F),
+                offset_page_table
+            );
+            let erst_sec_addr = virtual_to_physical(
+                VirtAddr::new((erst_secondary as *mut ERST as u64) & !0x1F),
+                offset_page_table
+            );
+
+            // ptr::write_volatile(erstba_primary as *mut u64, erst_p_addr);
+            // ptr::write_volatile(erstba_secondary as *mut u64, );
+
 
 
             let xhci_controller = XHCI::new(
@@ -1363,10 +1731,47 @@ impl PciDeviceInitializer for XHCI<'_> {
                 max_slots,
                 context_size,
                 &dcbaa,
-                &trb_ring
+                &command_ring,
+                &msix_capability,
+                &msix_pba
             );
         }
 
         Ok(())
     }
 }
+
+fn alloc_aligned_trb_array(len: usize, align: usize) -> &'static mut [Trb] {
+    //allocate extra space - len TRBs + alignment padding
+    let total_bytes = len * size_of::<Trb>() + align;
+    let mut raw = Vec::<u8>::with_capacity(total_bytes);
+    raw.resize(total_bytes, 0);
+
+    let base_ptr = raw.as_mut_ptr() as usize;
+    let aligned = (base_ptr + (align - 1)) & !(align - 1);
+
+    let slice_ptr = aligned as *mut Trb;
+
+    forget(raw);
+
+    unsafe { core::slice::from_raw_parts_mut(slice_ptr, len) }
+}
+
+use core::mem::{size_of, forget};
+
+pub fn alloc_aligned_erst() -> &'static mut ERST {
+    let total_bytes = size_of::<ERST>() + 64;
+
+    let mut raw = Vec::<u8>::with_capacity(total_bytes);
+    raw.resize(total_bytes, 0);
+
+    let base_ptr = raw.as_mut_ptr() as usize;
+    let aligned = (base_ptr + (64 - 1)) & !(64 - 1);
+
+    let ptr = aligned as *mut ERST;
+
+    forget(raw);
+
+    unsafe { &mut *ptr }
+}
+
