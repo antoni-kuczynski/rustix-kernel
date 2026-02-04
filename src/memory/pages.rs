@@ -38,10 +38,9 @@
  * Page table 4 location is set in Cr3 register
  */
 
-use bootloader::BootInfo;
 use spin::Once;
 use x86_64::{registers::control::Cr3, structures::paging::{OffsetPageTable, PageTable,  Translate}, PhysAddr, VirtAddr};
-
+use crate::BootInfo;
 
 static PHYSICAL_MEMORY_OFFSET: Once<VirtAddr> = Once::new();
 

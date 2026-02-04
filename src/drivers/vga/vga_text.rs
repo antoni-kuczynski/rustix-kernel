@@ -6,7 +6,7 @@ use core::ops::Add;
 use core::ptr;
 use spin::Mutex;
 use lazy_static::lazy_static;
-use crate::drivers::vga::CURRENT_VGA_MODE;
+// use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::drivers::vga::vga_fonts::*;
 use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, set_12h_mode_regs, write_fonts};
 /*
@@ -142,7 +142,7 @@ pub struct VgaTextMode {
 
 impl VgaTextMode {
 
-    fn new() -> Self{
+    pub(crate) fn new() -> Self{
         Self {
             column_position: 0,
             row_position: 0,
@@ -254,9 +254,9 @@ impl VgaTextMode {
     }
 
     pub fn init_vga_text_mode_03h(&mut self) {
-        if CURRENT_VGA_MODE.lock().get() == Some(0x03) {
-            return;
-        }
+        // if CURRENT_VGA_MODE.lock().get() == Some(0x03) {
+        //     return;
+        // }
 
         unsafe {
             asm!("cli");
@@ -271,7 +271,7 @@ impl VgaTextMode {
         self.column_position = 0;
         self.row_position = 0;
         self.color_code = ColorCodeTextMode::new(ColorTextMode::White, ColorTextMode::Black);
-        CURRENT_VGA_MODE.lock().switch_to(0x03);
+        // CURRENT_VGA_MODE.lock().switch_to(0x03);
     }
 }
 

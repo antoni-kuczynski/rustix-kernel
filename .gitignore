@@ -1,0 +1,3 @@
+./rustix.iso
+./target
+./iso/boot/rustix

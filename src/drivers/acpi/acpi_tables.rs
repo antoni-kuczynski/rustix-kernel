@@ -4,7 +4,7 @@
  */
 use alloc::vec;
 use alloc::vec::Vec;
-use bootloader::BootInfo;
+use crate::BootInfo;
 use crate::drivers::acpi::tables::{rsdp, AcpiRevision};
 use crate::drivers::acpi::tables::rsdp::{DescriptionPointerTable, RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
