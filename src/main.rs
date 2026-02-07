@@ -107,6 +107,7 @@ pub extern "C" fn rust_main() -> ! {
     }
 
     loop {
+        x86_64::instructions::hlt();
     }
 
 
