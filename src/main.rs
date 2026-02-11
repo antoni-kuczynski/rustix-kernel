@@ -20,6 +20,7 @@ mod interrupts;
 // mod memory;
 // mod bootinfo;
 pub mod asm;
+mod multiboot;
 // mod graphics;
 
 // entry_point!(_start);
@@ -47,8 +48,10 @@ pub mod asm;
 //     }
 // }
 
+use core::arch::asm;
 use core::panic::PanicInfo;
-use crate::drivers::vga::vga_text::VgaTextMode;
+use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
+use crate::multiboot::{MultibootInfo, MultibootInfoView};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -66,45 +69,16 @@ pub static MULTIBOOT2_HEADER: [u32; 6] = [
     8,          // end tag size
 ];
 
-pub fn cpu_in_long_mode() -> bool {
-    let (low, _high): (u32, u32);
-
-    unsafe {
-        core::arch::asm!(
-        "mov ecx, 0xC0000080", // IA32_EFER MSR
-        "rdmsr",               // read into EDX:EAX
-        out("eax") low,
-        out("edx") _high,
-        out("ecx") _,          // clobbered
-        );
-    }
-
-    //bit 10 = LMA (Long Mode Active)
-    (low & (1 << 10)) != 0
-}
-
-
-
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    let vga = 0xb8000 as *mut u8;
-    if cpu_in_long_mode() {
-        unsafe {
-            *vga.offset(0) = b'Y';
-            *vga.offset(1) = 0x0F;
-            *vga.offset(2) = b'E';
-            *vga.offset(3) = 0x0F;
-            *vga.offset(4) = b'S';
-            *vga.offset(5) = 0x0F;
-        }
-    } else {
-        unsafe {
-            *vga.offset(0) = b'N';
-            *vga.offset(1) = 0x0F;
-            *vga.offset(2) = b'O';
-            *vga.offset(3) = 0x0F;
-        }
-    }
+    let multiboot_addr = MultibootInfo::get_multiboot_address_from_ebx();
+    interrupts::init_idt();
+    interrupts::gdt::init_gdt();
+    interrupts::hardware::pic8259::init_pics();
+    interrupts::enable();
+
+    let multiboot_info = MultibootInfoView::new(multiboot_addr);
+    multiboot_info.print();
 
     loop {
         x86_64::instructions::hlt();
@@ -130,18 +104,11 @@ pub extern "C" fn rust_main() -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {
+    VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+    vgaprintln!("=!==============================!=");
+    vgaprintln!("Kernel panic! \n{}", _info);
+    vgaprintln!("=!==============================!=");
+    loop{
         x86_64::instructions::hlt();
     }
 }
-
-// #[panic_handler]
-// fn panic(_info: &PanicInfo) -> ! {
-//     VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
-//     vgaprintln!("=!==============================!=");
-//     vgaprintln!("Kernel panic! \n{}", _info);
-//     vgaprintln!("=!==============================!=");
-//     loop{
-//         x86_64::instructions::hlt();
-//     }
-// }

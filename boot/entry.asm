@@ -4,6 +4,7 @@ global _start
 _start:
     mov esp, stack_top  ; set up the stack
     mov ah, 0   ; error code
+    mov esi, ebx    ; store the multiboot struct address in esi
 
     call checkMultiboot
     call checkCPUID
@@ -211,6 +212,16 @@ LongMode:
     mov es, ax
     mov fs, ax
     mov gs, ax
+
+    mov ebx, esi    ; restore the multiboot struct address
+
+    mov dword [0xB8000], ebx
+
+
+    mov edi, 0xB8000
+    mov ecx, 1000
+    mov eax, 0x0F200F20
+    rep stosd   ; clear the screen
 
     extern rust_main
     jmp rust_main
