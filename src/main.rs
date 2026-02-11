@@ -20,7 +20,7 @@ mod interrupts;
 // mod memory;
 // mod bootinfo;
 pub mod asm;
-mod multiboot;
+mod boot;
 // mod graphics;
 
 // entry_point!(_start);
@@ -50,8 +50,8 @@ mod multiboot;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
+use crate::boot::multiboot::{MultibootInfoView};
 use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
-use crate::multiboot::{MultibootInfo, MultibootInfoView};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -69,16 +69,29 @@ pub static MULTIBOOT2_HEADER: [u32; 6] = [
     8,          // end tag size
 ];
 
+unsafe extern "C" {
+    static endKernel: u32;
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    let multiboot_addr = MultibootInfo::get_multiboot_address_from_ebx();
+    let multiboot_addr = MultibootInfoView::get_multiboot_address_from_ebx();
     interrupts::init_idt();
     interrupts::gdt::init_gdt();
     interrupts::hardware::pic8259::init_pics();
     interrupts::enable();
 
+    vgaprintln!("==============================");
     let multiboot_info = MultibootInfoView::new(multiboot_addr);
-    multiboot_info.print();
+    vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
+    vgaprintln!("==============================");
+    multiboot_info.print_memory_map();
+
+    unsafe {
+        let kernel_end = &endKernel as *const u32 as usize;
+        vgaprintln!("==============================");
+        vgaprintln!("End kernel: {:#011x}", kernel_end);
+    }
 
     loop {
         x86_64::instructions::hlt();
