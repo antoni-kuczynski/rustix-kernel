@@ -1,8 +1,17 @@
 BITS 32
 global _start
+
+; ====================================================
+KERNEL_OFFSET equ 0xFFFFFFFF80000000    ; kernel memory offset
+PHYS_BASE equ 0x00100000
+KERNEL_PAGES equ 8  ; amount of 2mb pages for kernel code + multiboot + etc
+
+extern endKernel
+%define V2P(a) (a - KERNEL_OFFSET)  ; virtual to physical
+%define P2V(a) (a + KERNEL_OFFSET)  ; physical to virtual
 ; ====================================================
 _start:
-    mov esp, stack_top  ; set up the stack
+    mov esp, V2P(stack_top)  ; set up the stack
     mov ah, 0   ; error code
     mov esi, ebx    ; store the multiboot struct address in esi
 
@@ -14,14 +23,13 @@ _start:
     call setupPageTables
     call enable64BitPaging
 
-    lgdt [GDT.Pointer]
-    jmp 0x08:LongMode
+    lgdt [V2P(GDT.Pointer)]
+    jmp 0x08:V2P(LongMode)
 
     hlt
-
 ; ====================================================
 enable64BitPaging:
-    mov eax, page_table_l4    ; page table start
+    mov eax, V2P(l4_pml4)    ; page table start
     mov cr3, eax
 
 
@@ -41,28 +49,28 @@ enable64BitPaging:
     ret
 ; ====================================================
 setupPageTables:
-    mov eax, page_table_l3
-    or eax, 0b11    ; present, writeable
-    mov [page_table_l4], eax
+    mov eax, V2P(l3_pdpt_low)
+    or eax, 0b11
+    mov [V2P(l4_pml4)], eax
 
-    mov eax, page_table_l2
-    or eax, 0b11    ; present, writeable
-    mov [page_table_l3], eax
+    mov eax, V2P(l2_pd_low)
+    or eax, 0b11
+    mov [V2P(l3_pdpt_low)], eax
 
-    mov ecx, 0  ; counter for the loop
+    mov ecx, 0
 
     .fillLoop:
         mov eax, 0x200000   ;2mb
         mul ecx
         or eax, 0b10000011  ; huge page flag
-        mov [page_table_l2 + ecx * 8], eax
+        mov [V2P(l2_pd_low) + ecx * 8], eax
 
         inc ecx
         cmp ecx, 512
         jne .fillLoop   ; continue until the whole table is mapped
         ret
 
-
+; ====================================================
 checkMultiboot:
     cmp eax, 0x36d76289
     jz .notMultibootError
@@ -120,12 +128,12 @@ checkCPUID:
 checkA20:
     pushad  ; push all 8 general purpose registers onto stack
     mov edi, 0x112345   ; odd megabyte address
-    mov esi, 0x012345   ; even megabyte address
+    mov ebx, 0x012345   ; even megabyte address
 
     ; move the values to both addresses and make sure they contain a different value
-    mov [esi], esi
+    mov [ebx], ebx
     mov [edi], edi
-    cmpsd   ; compare esi and edi
+    cmpsd   ; compare ebx and edi
     popad   ; restore registers
     je enableA20
     ret
@@ -201,8 +209,8 @@ GDT:
 
 ALIGN 4
 .Pointer:
-    dw $ - GDT - 1
-    dd GDT
+    dw V2P($ - GDT - 1)
+    dd V2P(GDT)
 ; ====================================================
 [BITS 64]
 LongMode:
@@ -213,10 +221,21 @@ LongMode:
     mov fs, ax
     mov gs, ax
 
+    call setupPageTablesLongMode
+
+    movabs rax, higherHalfMemory
+    jmp rax
+
+    hlt
+; ====================================================
+higherHalfMemory:
+    mov rax, 0xFFFFFFFF80000000
+    add rsp, rax    ; add the offset to stack pointer
+
+    mov rax, V2P(l4_pml4)
+    mov cr3, rax
+
     mov ebx, esi    ; restore the multiboot struct address
-
-    mov dword [0xB8000], ebx
-
 
     mov edi, 0xB8000
     mov ecx, 1000
@@ -224,16 +243,69 @@ LongMode:
     rep stosd   ; clear the screen
 
     extern rust_main
-    jmp rust_main
+    call rust_main
+    hlt
+; ====================================================
+setupPageTablesLongMode:
+    ;--------------------------------------------
+    ; second half kernel page tables
+    ; --------------------------------------------
+    ; map kernel l3 pdpt
+    mov rax, V2P(l3_pdpt_kernel)
+    or rax, 0b11
+    mov qword [V2P(l4_pml4) + 511*8], rax ; 9 bits equal to 1 = 511
+    ; ===========================
+
+    ; map kernel l2 pd
+    mov rax, V2P(l2_pd_kernel)
+    or rax, 0b11
+    mov [V2P(l3_pdpt_kernel) + 510*8], rax ; 8 msb bits 1, lsb=0, = 510
+    ; ===========================
+    ; --------------------------------------------
+
+    xor rcx, rcx
+    mov rdi, 0x00000000
+
+    .kernelMapLoop:
+        mov rax, rdi
+        or rax, 0b11    ; present, writeable flags
+        or rax, (1 << 7)    ; huge page flag
+        mov qword [V2P(l2_pd_kernel) + rcx*8], rax
+
+
+        add rdi, 0x200000   ; add 2mb
+        inc rcx
+        cmp rcx, KERNEL_PAGES
+        jbe .kernelMapLoop
+
+    ret
 ; ====================================================
 section .bss
+; ====================================================
 align 4096
-page_table_l4:
+l4_pml4:
     RESB 4096
-page_table_l3:
+; ====================================================
+align 4096
+l3_pdpt_low:
     RESB 4096
-page_table_l2:
+; ====================================================
+align 4096
+l3_pdpt_kernel:
     RESB 4096
+; ====================================================
+align 4096
+l2_pd_low:
+    RESB 4096
+; ====================================================
+align 4096
+l2_pd_kernel:
+    RESB 4096
+; ====================================================
+align 4096
+l1_pt_low:
+    RESB 4096
+; ====================================================
 
 stack_bottom:
     RESB 16384   ; 16kb stack space

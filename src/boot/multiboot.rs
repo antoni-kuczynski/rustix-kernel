@@ -1,4 +1,5 @@
 use core::arch::asm;
+use core::cmp::PartialEq;
 use core::ops::Add;
 use core::ptr;
 use core::ptr::read_volatile;
@@ -28,7 +29,7 @@ It’s guaranteed to be a multiple of 8. ‘entry_version’ is currently set at
 Future versions will increment this field. Future version are guranteed to be backward compatible with older format.
  */
 #[repr(C, packed)]
-struct MultibootMemoryMapTag { //type = 6
+pub struct MultibootMemoryMapTag { //type = 6
     header: MultibootTagBase,
     entry_size: u32,
     entry_version: u32,
@@ -64,6 +65,7 @@ struct MultibootMemoryMapEntry { //type = 6
     _reserved: u32
 }
 
+#[derive(PartialEq)]
 pub enum MemoryRegionType {
     AvailableRAM = 1,
     UsableAcpi = 3,
@@ -156,7 +158,16 @@ impl MultibootInfoView {
             None => None
         }
     }
-
+//==================================================================================================
+    pub fn get_available_memory_bytes(&self) -> Option<u64> {
+        let memory_map = match self.get_memory_map_info() {
+            None => {return None}
+            Some(a) => {a}
+        };
+        unsafe {
+            Some((*memory_map).get_available_memory_bytes())
+        }
+    }
 //==================================================================================================
     pub fn print_memory_map(&self) {
         unsafe {
@@ -183,13 +194,16 @@ impl MultibootInfoView {
                     Some(x) => {x}
                 };
 
+                if region_type != MemoryRegionType::AvailableRAM {
+                    continue
+                }
 
-                vgaprintln!("Memory map entry:");
-                vgaprintln!("========================");
-                vgaprintln!("Base addr: {:#011x}", base_addr);
-                vgaprintln!("Length: {:#011x}", length);
+                // vgaprintln!("Memory map entry:");
+                // vgaprintln!("========================");
+                vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
+                // vgaprintln!("Length: {:#011x}", length);
                 // vgaprintln!("Region type: {:#06x}", region_type);
-                vgaprintln!("========================");
+                // vgaprintln!("========================");
 
                 entry1 = entry1.add(1);
             }
@@ -227,7 +241,7 @@ impl MultibootInfoView {
         unsafe {
             let addr: u32;
             asm!(
-            "mov {0:e}, ebx",
+            "mov {0:e}, esi",
             out(reg) addr,
             );
             addr
@@ -285,6 +299,7 @@ impl MultibootTagBase {
     pub const MULTIBOOT_TAG_TYPE_EFI_64_BIT_IMAGE_HANDLE_POINTER: u32 = 20;
     pub const MULTIBOOT_TAG_TYPE_IMAGE_LOAD_BASE_PHYSICAL_ADDRESS: u32 = 21;
 }
+
 //==================================================================================================
 impl MultibootMemoryMapTag {
     /*
@@ -294,8 +309,46 @@ impl MultibootMemoryMapTag {
     value of 4 indicates reserved memory which needs to be preserved on hibernation,
     value of 5 indicates a memory which is occupied by defective RAM modules and all other values currently indicated a reserved area.
      */
-    //==================================================================================================
-    fn print(&self) {
+//==================================================================================================
+    pub fn get_available_memory_bytes(&self) -> u64 {
+        let mut mem_size: u64 = 0;
+        unsafe {
+            let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
+            let entry_length = self.entry_size;
+            let entry_version = self.entry_version;
+
+            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
+            assert_eq!(0, entry_version);   //should be 0
+
+            //this sucks so badly
+            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+            let last = entry1.byte_add(size_entries as usize);
+
+            while entry1 < last {
+                let base_addr = (*entry1).base_addr;
+                let length = (*entry1).length;
+                let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
+                    None => continue,   //invalid memory region so skip it
+                    Some(x) => {x}
+                };
+
+                /*
+                base_addr < 0xF000000000 because grub sometimes reports memory mapped io as usable memory
+                0xF000000000 is way beyond the physical memory range (unless u have a TB of ram)
+                that just happens on qemu i guess...
+                 */
+                if region_type == MemoryRegionType::AvailableRAM && base_addr < 0xF000000000 {
+                    mem_size += length;
+                    // vgaprintln!("size: {}", length);
+                }
+
+                entry1 = entry1.add(1);
+            }
+            mem_size
+        }
+    }
+//==================================================================================================
+    pub fn print(&self) {
         let tag_type = self.header.tag_type;
         let tag_size = self.header.size;
         let entry_size = self.entry_size;

@@ -21,6 +21,7 @@ mod interrupts;
 // mod bootinfo;
 pub mod asm;
 mod boot;
+mod memory;
 // mod graphics;
 
 // entry_point!(_start);
@@ -73,25 +74,46 @@ unsafe extern "C" {
     static endKernel: u32;
 }
 
+const PHYS_BASE: u32 = 0x00100000;
+const KERNEL_OFFSET: u64 = 0xFFFFFFFF80000000;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
+    let kernel_offset = KERNEL_OFFSET;
+    let phys_base = PHYS_BASE;
+    let end_kernel = unsafe {&endKernel as *const u32 as u64};
+
     let multiboot_addr = MultibootInfoView::get_multiboot_address_from_ebx();
     interrupts::init_idt();
     interrupts::gdt::init_gdt();
     interrupts::hardware::pic8259::init_pics();
     interrupts::enable();
 
-    vgaprintln!("==============================");
     let multiboot_info = MultibootInfoView::new(multiboot_addr);
-    vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
     vgaprintln!("==============================");
-    multiboot_info.print_memory_map();
+    vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
+    // multiboot_info.print_memory_map();
+    vgaprintln!("Kernel physical base: {:#06x}", phys_base);
+    vgaprintln!("Kernel logical offset: {:#011x}", kernel_offset);
+    vgaprintln!("Kernel physical end: {:#011x}", end_kernel);
+
 
     unsafe {
-        let kernel_end = &endKernel as *const u32 as usize;
+        // let kernel_end = &endKernel as *const u32 as u64;
         vgaprintln!("==============================");
-        vgaprintln!("End kernel: {:#011x}", kernel_end);
+        // vgaprintln!("Kernel start: {:#011x}, Kernel end: {:#011x}", KERNEL_START, kernel_end);
+        // vgaprintln!("Kernel: {}KB, Total memory: {}MB", (kernel_end - KERNEL_START) / 1024, (multiboot_info.get_available_memory_bytes().unwrap() / 1024) / 1024);
     }
+
+
+
+
+
+
+    // memory::pmm::init(&multiboot_info).expect("pmm init failed");
+    // memory::paging::init(&multiboot_info).expect("TODO: panic message");
+
+
 
     loop {
         x86_64::instructions::hlt();
