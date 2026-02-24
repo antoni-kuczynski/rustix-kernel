@@ -86,22 +86,32 @@ pub extern "C" fn rust_main() -> ! {
     interrupts::hardware::pic8259::init_pics();
     interrupts::enable();
 
-    let multiboot_info = MultibootInfoView::new(multiboot_addr);
-    vgaprintln!("==============================");
-    vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
-    vgaprintln!("Kernel physical base: {:#06x}", phys_base);
-    vgaprintln!("Kernel logical offset: {:#011x}", kernel_offset);
-    vgaprintln!("Kernel physical end: {:#011x}", end_kernel);
+
 
     unsafe {
-        let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags());
-        while modules != None {
-            (*modules.unwrap()).print();
-            modules = multiboot_info.get_modules_tag(modules.unwrap() as *const u32);
+        let multiboot_info = MultibootInfoView::new(multiboot_addr);
+        let memory_tag = multiboot_info.get_memory_map_tag().unwrap();
 
-        }
+        vgaprintln!("==============================");
+        vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
+        vgaprintln!("Kernel physical base: {:#06x}", phys_base);
+        vgaprintln!("Kernel logical offset: {:#011x}", kernel_offset);
+        vgaprintln!("Kernel physical end: {:#011x}", end_kernel);
+        vgaprintln!("Available memory: {}mb", (*memory_tag).get_available_memory_bytes() / 1048576);
 
 
+
+        // let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
+        //
+        // while modules != None {
+        //     let module = modules.unwrap();
+        //     (*module).print();
+        //     let start_ptr = module.byte_add((((*module).header().size() + 7) & !0x7) as usize);
+        //     modules = multiboot_info.get_modules_tag(start_ptr as *const u32);
+        // }
+
+        // vgaprintln!("============");
+        // let a = multiboot_info.get_tag_addr_by_type(0x00, multiboot_info.tags);
     }
 
 

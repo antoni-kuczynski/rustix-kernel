@@ -4,7 +4,8 @@ use core::cmp::PartialEq;
 use core::ptr;
 use core::ptr::read_volatile;
 use crate::{vgaprint, vgaprintln};
-
+use crate::memory::kernel_end;
+use crate::memory::P2V;
 
 /*
 ==============================================
@@ -18,7 +19,7 @@ https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html
 //==================================================================================================
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
-struct MultibootTagBase {
+pub struct MultibootTagBase {
     tag_type: u32,
     size: u32
 }
@@ -94,24 +95,47 @@ struct MultibootInfo {
 pub struct MultibootInfoView {
     base: &'static MultibootInfo,
     tags_size_bytes: usize,
-    tags: *const u32
+    pub tags: *const u32
 }
 //==================================================================================================
 impl MultibootInfoView {
     pub fn new(addr: u64) -> MultibootInfoView {
         unsafe {
-            let base = MultibootInfo::new(addr);
+            vgaprintln!("Addr: {:#011x}", addr);
+            let copied_addr = (P2V((kernel_end() + 15) & !0x07)) as *const u32; //64bit aligned start address;
 
-            if base._reserved != 0x00 {
-                panic!("Multiboot info reserved value is not zero!");
+            //---------------------------------------------------------
+            //copy multiboot info struct to right after kernel code
+            {
+                let base = MultibootInfo::new(addr);
+
+                if base._reserved != 0x00 {
+                    panic!("Multiboot info reserved value is not zero!");
+                }
+
+                let mut src_addr = base as *const MultibootInfo as *mut u8;
+                let size = base.total_size;
+
+                let mut target = copied_addr as *mut u8;
+                // vgaprintln!("{:#011x}", )
+
+                //todo: fixme
+                for i in 0..size {
+                    *target = *src_addr;
+                    // *src_addr = 0x00u8;
+
+                    src_addr = src_addr.add(1);
+                    target = target.add(1);
+                }
             }
+            //---------------------------------------------------------
+            let copied_base = MultibootInfo::new(copied_addr as u64);
 
-            let tags_size_bytes = base.total_size as usize - (2 * size_of::<u32>());
-            let addr = base as *const MultibootInfo as *const u32;
-            let tags = addr.add(2);
+            let tags_size_bytes = copied_base.total_size as usize - (2 * size_of::<u32>());
+            let tags = copied_addr.add(2);
 
             let view = Self {
-                base,
+                base: copied_base,
                 tags_size_bytes,
                 tags
             };
@@ -120,21 +144,17 @@ impl MultibootInfoView {
         }
     }
 //==================================================================================================
-    fn get_tag_addr_by_type(&self, tag_type: u32, start_tag_addr: *const u32) -> Option<*const u32> {
+    pub fn get_tag_addr_by_type(&self, tag_type: u32, start_tag_addr: *const u32) -> Option<*const u32> {
         unsafe {
             let mut tags = start_tag_addr as *const MultibootTagBase;
             let tags_end = self.tags.byte_add(self.tags_size_bytes) as *const MultibootTagBase;
-
-            if start_tag_addr != self.tags {
-                tags = tags.byte_add((*tags).size as usize);
-            }
 
             while tags < tags_end {
                 let tag_base = read_volatile(tags);
                 let current_tag_type = tag_base.tag_type;
                 let length = (tag_base.size as usize + 7) & !7;
 
-                vgaprintln!("{:#06x}", current_tag_type);
+                // vgaprintln!("{:#06x}", current_tag_type);
 
                 if current_tag_type == 0x00 {
                     break;
@@ -271,6 +291,14 @@ impl MultibootTagBase {
     pub const MULTIBOOT_TAG_TYPE_EFI_32_BIT_IMAGE_HANDLE_POINTER: u32 = 19;
     pub const MULTIBOOT_TAG_TYPE_EFI_64_BIT_IMAGE_HANDLE_POINTER: u32 = 20;
     pub const MULTIBOOT_TAG_TYPE_IMAGE_LOAD_BASE_PHYSICAL_ADDRESS: u32 = 21;
+
+    pub fn tag_type(&self) -> u32 {
+        self.tag_type
+    }
+
+    pub fn size(&self) -> u32 {
+        self.size
+    }
 }
 
 //==================================================================================================
@@ -300,8 +328,13 @@ impl MultibootMemoryMapTag {
             while entry1 < last {
                 let base_addr = (*entry1).base_addr;
                 let length = (*entry1).length;
+                let addr_range_type = (*entry1).addr_range_type;
+                // vgaprintln!("addr type: {}", addr_range_type);
                 let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
-                    None => continue,   //invalid memory region so skip it
+                    None => {
+                        entry1 = entry1.add(1);
+                        continue
+                    },   //invalid memory region so skip it
                     Some(x) => {x}
                 };
 
@@ -315,6 +348,7 @@ impl MultibootMemoryMapTag {
                     // vgaprintln!("size: {}", length);
                 }
 
+                // vgaprintln!("size: {}, region_type: {}", length, region_type.to_u32().unwrap());
                 entry1 = entry1.add(1);
             }
             mem_size
@@ -383,6 +417,7 @@ impl MultibootModulesTag {
             let mod_end = self.mod_end;
             let mut str = self.string;
 
+            vgaprintln!("===================================");
             vgaprintln!("Multiboot modules tag:");
             vgaprintln!("===================================");
             vgaprintln!("Type: {:#02x}", tag_type);
@@ -391,6 +426,22 @@ impl MultibootModulesTag {
             vgaprintln!("Mod end: {:#011x}", mod_end);
             vgaprintln!("===================================");
         }
+    }
+
+    pub fn header(&self) -> MultibootTagBase {
+        self.header
+    }
+
+    pub fn mod_start(&self) -> u32 {
+        self.mod_start
+    }
+
+    pub fn mod_end(&self) -> u32 {
+        self.mod_end
+    }
+
+    pub fn string(&self) -> *const u8 {
+        self.string
     }
 }
 
