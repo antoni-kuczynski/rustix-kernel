@@ -2,13 +2,13 @@
 
 use core::arch::asm;
 use core::fmt::Arguments;
-use core::ops::Add;
 use core::ptr;
 use spin::Mutex;
 use lazy_static::lazy_static;
 // use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::drivers::vga::vga_fonts::*;
 use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, set_12h_mode_regs, write_fonts};
+use crate::memory::P2V;
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -136,8 +136,8 @@ pub struct VgaTextMode {
     row_position: usize,            // keeps track of current row
     pub color_code: ColorCodeTextMode,          // specifies currently used colors (pub for macros)
     buffer: &'static mut VgaBuffer, // 'static is valid for VGA text buffer
-    buf_start_p: usize, //buffer start address - used for clear_buf
-    buf_end_p: usize    //buffer end address
+    buf_start_p: u64, //buffer start address - used for clear_buf
+    buf_end_p: u64    //buffer end address
 }
 
 impl VgaTextMode {
@@ -147,9 +147,9 @@ impl VgaTextMode {
             column_position: 0,
             row_position: 0,
             color_code: ColorCodeTextMode::new(ColorTextMode::White, ColorTextMode::Black),
-            buffer: unsafe { &mut *(0xb8000 as *mut VgaBuffer) },
-            buf_start_p: 0xB8000,
-            buf_end_p: 0xBBFFF
+            buffer: unsafe { &mut *(P2V(0xb8000) as *mut VgaBuffer) },
+            buf_start_p: P2V(0xB8000),
+            buf_end_p: P2V(0xBBFFF)
         }
     }
 
@@ -248,7 +248,7 @@ impl VgaTextMode {
             let pixel_p: *mut u8 = self.buf_start_p as *mut u8;
             let buf_size = self.buf_end_p - self.buf_start_p;
             for i in 0..buf_size {
-                ptr::write_volatile(pixel_p.add(i), 0x00);
+                ptr::write_volatile(pixel_p.add(i as usize), 0x00);
             }
         }
     }

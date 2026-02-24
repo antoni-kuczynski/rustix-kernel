@@ -4,7 +4,6 @@ global _start
 ; ====================================================
 KERNEL_OFFSET equ 0xFFFFFFFF80000000    ; kernel memory offset
 PHYS_BASE equ 0x00100000
-KERNEL_PAGES equ 8  ; amount of 2mb pages for kernel code + multiboot + etc
 
 extern endKernel
 %define V2P(a) (a - KERNEL_OFFSET)  ; virtual to physical
@@ -229,21 +228,25 @@ LongMode:
     hlt
 ; ====================================================
 higherHalfMemory:
-    mov rax, 0xFFFFFFFF80000000
-    add rsp, rax    ; add the offset to stack pointer
+    ; add kernel offset to stack pointer
+    mov rax, KERNEL_OFFSET
+    add rsp, rax
 
-    mov rax, V2P(l4_pml4)
+    ; remove the idendity mapping
+    mov rax, 0
+    mov qword [V2P(l4_pml4)], rax
+
+    ; flush page table
+    mov rax, cr3
     mov cr3, rax
 
     mov ebx, esi    ; restore the multiboot struct address
 
-    mov edi, 0xB8000
-    mov ecx, 1000
-    mov eax, 0x0F200F20
-    rep stosd   ; clear the screen
+    call vgaInit
 
     extern rust_main
     call rust_main
+
     hlt
 ; ====================================================
 setupPageTablesLongMode:
@@ -266,6 +269,11 @@ setupPageTablesLongMode:
     xor rcx, rcx
     mov rdi, 0x00000000
 
+    ; map until kernelEnd + multiboot info length + 2mb
+    mov rbx, endKernel
+    add rbx, [esi]
+    add rbx, 0x200000
+
     .kernelMapLoop:
         mov rax, rdi
         or rax, 0b11    ; present, writeable flags
@@ -275,8 +283,35 @@ setupPageTablesLongMode:
 
         add rdi, 0x200000   ; add 2mb
         inc rcx
-        cmp rcx, KERNEL_PAGES
+        cmp rdi, rbx
         jbe .kernelMapLoop
+
+    ret
+; ====================================================
+vgaInit:
+    ; clear the screen
+    mov rdi, P2V(0xB8000)
+    mov qword [rdi], 0x0
+    mov rcx, 1000
+    mov rax, 0x0F200F20
+    rep stosd
+
+    ; set the cursor to first char
+    mov dx, 0x3D4
+    mov al, 0x0F        ; cursor low byte index
+    out dx, al
+
+    mov dx, 0x3D5
+    mov al, 0           ; low byte of position
+    out dx, al
+
+    mov dx, 0x3D4
+    mov al, 0x0E        ; cursor high byte index
+    out dx, al
+
+    mov dx, 0x3D5
+    mov al, 0           ; high byte of position
+    out dx, al
 
     ret
 ; ====================================================

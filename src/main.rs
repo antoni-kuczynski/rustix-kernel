@@ -17,8 +17,6 @@
 
 mod drivers;
 mod interrupts;
-// mod memory;
-// mod bootinfo;
 pub mod asm;
 mod boot;
 mod memory;
@@ -51,8 +49,10 @@ mod memory;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
-use crate::boot::multiboot::{MultibootInfoView};
+use core::ptr;
+use crate::boot::multiboot::{MultibootInfoView, MultibootModulesTag};
 use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
+use crate::memory::{P2V, PHYS_BASE, VIRT_BASE};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -74,16 +74,13 @@ unsafe extern "C" {
     static endKernel: u32;
 }
 
-const PHYS_BASE: u32 = 0x00100000;
-const KERNEL_OFFSET: u64 = 0xFFFFFFFF80000000;
-
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    let kernel_offset = KERNEL_OFFSET;
+    let kernel_offset = VIRT_BASE;
     let phys_base = PHYS_BASE;
     let end_kernel = unsafe {&endKernel as *const u32 as u64};
 
-    let multiboot_addr = MultibootInfoView::get_multiboot_address_from_ebx();
+    let multiboot_addr: u64 = P2V(MultibootInfoView::get_multiboot_address_from_ebx() as u64);
     interrupts::init_idt();
     interrupts::gdt::init_gdt();
     interrupts::hardware::pic8259::init_pics();
@@ -92,21 +89,20 @@ pub extern "C" fn rust_main() -> ! {
     let multiboot_info = MultibootInfoView::new(multiboot_addr);
     vgaprintln!("==============================");
     vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
-    // multiboot_info.print_memory_map();
     vgaprintln!("Kernel physical base: {:#06x}", phys_base);
     vgaprintln!("Kernel logical offset: {:#011x}", kernel_offset);
     vgaprintln!("Kernel physical end: {:#011x}", end_kernel);
 
-
     unsafe {
-        // let kernel_end = &endKernel as *const u32 as u64;
-        vgaprintln!("==============================");
-        // vgaprintln!("Kernel start: {:#011x}, Kernel end: {:#011x}", KERNEL_START, kernel_end);
-        // vgaprintln!("Kernel: {}KB, Total memory: {}MB", (kernel_end - KERNEL_START) / 1024, (multiboot_info.get_available_memory_bytes().unwrap() / 1024) / 1024);
+        let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags());
+        while modules != None {
+            (*modules.unwrap()).print();
+            modules = multiboot_info.get_modules_tag(modules.unwrap() as *const u32);
+
+        }
+
+
     }
-
-
-
 
 
 
