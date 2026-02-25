@@ -101,38 +101,12 @@ pub struct MultibootInfoView {
 impl MultibootInfoView {
     pub fn new(addr: u64) -> MultibootInfoView {
         unsafe {
-            vgaprintln!("Addr: {:#011x}", addr);
-            let copied_addr = (P2V((kernel_end() + 15) & !0x07)) as *const u32; //64bit aligned start address;
-
             //---------------------------------------------------------
-            //copy multiboot info struct to right after kernel code
-            {
-                let base = MultibootInfo::new(addr);
-
-                if base._reserved != 0x00 {
-                    panic!("Multiboot info reserved value is not zero!");
-                }
-
-                let mut src_addr = base as *const MultibootInfo as *mut u8;
-                let size = base.total_size;
-
-                let mut target = copied_addr as *mut u8;
-                // vgaprintln!("{:#011x}", )
-
-                //todo: fixme
-                for i in 0..size {
-                    *target = *src_addr;
-                    // *src_addr = 0x00u8;
-
-                    src_addr = src_addr.add(1);
-                    target = target.add(1);
-                }
-            }
-            //---------------------------------------------------------
-            let copied_base = MultibootInfo::new(copied_addr as u64);
+            let base_ptr = addr as *const u32;
+            let copied_base = MultibootInfo::new(addr);
 
             let tags_size_bytes = copied_base.total_size as usize - (2 * size_of::<u32>());
-            let tags = copied_addr.add(2);
+            let tags = base_ptr.add(2);
 
             let view = Self {
                 base: copied_base,

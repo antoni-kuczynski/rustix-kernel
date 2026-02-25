@@ -104,21 +104,21 @@ pub fn sleep(ms: usize){
 //     );
 // }
 // // TODO after init heap add here buffer for reading
-// pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame){
-//
-//     let mut keyboard = PS2KEYBOARD.lock();
-//     let mut port = Port::new(0x60);
-//
-//     let scancode : u8 = unsafe{ port.read() };
-//
-//     if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
-//         if let Some(key) = keyboard.process_keyevent(key_event) {
-//             match key {
-//                 DecodedKey::Unicode(_character) =>(),
-//                 DecodedKey::RawKey(_key) => (),
-//             }
-//         }
-//     }
-//
-//     end_of_interrupt(PicInterruptIndex::Keyboard.as_u8());
-// }
+pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame){
+
+    // let mut keyboard = PS2KEYBOARD.lock();
+    // let mut port = Port::new(0x60);
+    //
+    // let scancode : u8 = unsafe{ port.read() };
+    //
+    // if let Ok(Some(key_event)) = keyboard.add_byte(scancode) {
+    //     if let Some(key) = keyboard.process_keyevent(key_event) {
+    //         match key {
+    //             DecodedKey::Unicode(_character) =>(),
+    //             DecodedKey::RawKey(_key) => (),
+    //         }
+    //     }
+    // }
+
+    end_of_interrupt(PicInterruptIndex::Keyboard.as_u8());
+}
