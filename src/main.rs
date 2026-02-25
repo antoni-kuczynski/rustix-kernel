@@ -14,6 +14,8 @@ use crate::drivers::acpi::acpi::{acpi2_reset_command, enable_acpi};
 use crate::drivers::acpi::acpi_tables::{get_acpi_tables};
 use crate::drivers::pci::pci;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
+use crate::graphics::graphics::Graphics;
+use crate::graphics::vga_demo::vga_demo;
 use crate::interrupts::hardware::pic8259::sleep;
 use crate::memory::mapping::BootInfoFrameAllocator;
 use crate::memory::pages;
@@ -43,6 +45,9 @@ fn _start(boot_info: &'static BootInfo) -> ! {
     enable_acpi(&tables).expect("Enabling ACPI failed!");
 
     pci::pci_init(&boot_info, &_offset_page_table).expect("PCI init failed");
+
+    let mut graphics = Graphics::new();
+    vga_demo(&mut graphics);
 
     loop{
         x86_64::instructions::hlt();

@@ -11,7 +11,7 @@ use crate::graphics::test_bitmap::get_my_cat_bitmap;
 
 
 #[allow(dead_code)]
-pub fn vga_demo(mut g: Graphics) {
+pub fn vga_demo(g: &mut Graphics) {
     let radius: isize = 20;
     let cat_bitmap = get_my_cat_bitmap().unwrap();
 
