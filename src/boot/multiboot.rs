@@ -1,9 +1,11 @@
 #![allow(dead_code)]
+use crate::VGAWRITER;
+use crate::ColorTextMode;
 use core::arch::asm;
 use core::cmp::PartialEq;
 use core::ptr;
 use core::ptr::read_volatile;
-use crate::{vgaprint, vgaprintln};
+use crate::{print_ok_msg, vgaprint, vgaprintln};
 use crate::memory::kernel_end;
 use crate::memory::P2V;
 
@@ -95,17 +97,19 @@ struct MultibootInfo {
 pub struct MultibootInfoView {
     base: &'static MultibootInfo,
     tags_size_bytes: usize,
-    pub tags: *const u32
+    pub tags: *const u32,
 }
 //==================================================================================================
+
 impl MultibootInfoView {
-    pub fn new(addr: u64) -> MultibootInfoView {
+    pub fn init_multiboot_info_struct(addr: u64) -> MultibootInfoView {
         unsafe {
-            vgaprintln!("Addr: {:#011x}", addr);
-            let copied_addr = (P2V((kernel_end() + 15) & !0x07)) as *const u32; //64bit aligned start address;
+            let copied_addr = (P2V(kernel_end() + 23) & !0x07) as *const u32; //64bit aligned start address;
+            vgaprintln!("Copying multiboot2 info struct to address {:#011x}...", copied_addr as u64);
 
             //---------------------------------------------------------
             //copy multiboot info struct to right after kernel code
+            //---------------------------------------------------------
             {
                 let base = MultibootInfo::new(addr);
 
@@ -117,12 +121,10 @@ impl MultibootInfoView {
                 let size = base.total_size;
 
                 let mut target = copied_addr as *mut u8;
-                // vgaprintln!("{:#011x}", )
 
-                //todo: fixme
-                for i in 0..size {
+                for _i in 0..size {
                     *target = *src_addr;
-                    // *src_addr = 0x00u8;
+                    *src_addr = 0x00u8;
 
                     src_addr = src_addr.add(1);
                     target = target.add(1);
@@ -130,15 +132,26 @@ impl MultibootInfoView {
             }
             //---------------------------------------------------------
             let copied_base = MultibootInfo::new(copied_addr as u64);
-
             let tags_size_bytes = copied_base.total_size as usize - (2 * size_of::<u32>());
             let tags = copied_addr.add(2);
+            print_ok_msg!(); // finished copying
 
             let view = Self {
                 base: copied_base,
                 tags_size_bytes,
                 tags
             };
+
+            let multiboot_end = (copied_base as *const MultibootInfo as *const u8).add(copied_base.total_size as usize);
+
+            let kernel_modules = view.get_modules_tag(view.tags);
+
+
+
+
+
+
+
 
             view
         }
@@ -257,8 +270,6 @@ impl MultibootInfoView {
 impl MultibootInfo {
     fn new(addr: u64) -> &'static Self {
         unsafe {
-            vgaprintln!("Reading boot info struct (addr={:#011x})...", addr);
-
             let ptr = addr as usize as *const MultibootInfo;
 
             match ptr.as_ref() {
@@ -355,7 +366,7 @@ impl MultibootMemoryMapTag {
         }
     }
 //==================================================================================================
-    fn print_memory_map(&self) {
+    pub fn print_memory_map(&self) {
         unsafe {
             let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
             let entry_length = self.entry_size;

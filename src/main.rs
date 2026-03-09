@@ -89,7 +89,7 @@ pub extern "C" fn rust_main() -> ! {
 
 
     unsafe {
-        let multiboot_info = MultibootInfoView::new(multiboot_addr);
+        let multiboot_info = MultibootInfoView::init_multiboot_info_struct(multiboot_addr);
         let memory_tag = multiboot_info.get_memory_map_tag().unwrap();
 
         vgaprintln!("==============================");
@@ -101,18 +101,20 @@ pub extern "C" fn rust_main() -> ! {
 
 
 
-        // let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
-        //
-        // while modules != None {
-        //     let module = modules.unwrap();
-        //     (*module).print();
-        //     let start_ptr = module.byte_add((((*module).header().size() + 7) & !0x7) as usize);
-        //     modules = multiboot_info.get_modules_tag(start_ptr as *const u32);
-        // }
+        let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
 
-        // vgaprintln!("============");
-        // let a = multiboot_info.get_tag_addr_by_type(0x00, multiboot_info.tags);
+        while modules != None {
+            let module = modules.unwrap();
+            (*module).print();
+            let start_ptr = module.byte_add((((*module).header().size() + 7) & !0x7) as usize);
+            modules = multiboot_info.get_modules_tag(start_ptr as *const u32);
+        }
+
+        vgaprintln!("============");
+        let b = multiboot_info.get_memory_map_tag().unwrap();
+        (*b).print_memory_map();
     }
+
 
 
 
