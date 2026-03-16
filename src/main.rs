@@ -52,7 +52,7 @@ use core::panic::PanicInfo;
 use core::ptr;
 use crate::boot::multiboot::{MultibootInfoView, MultibootModulesTag};
 use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
-use crate::memory::{P2V, PHYS_BASE, VIRT_BASE};
+use crate::memory::{SizeUnit, P2V, PHYS_BASE, VIRT_BASE};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -88,37 +88,34 @@ pub extern "C" fn rust_main() -> ! {
 
 
 
-    unsafe {
-        let multiboot_info = MultibootInfoView::init_multiboot_info_struct(multiboot_addr);
-        let memory_tag = multiboot_info.get_memory_map_tag().unwrap();
+    let multiboot_info = MultibootInfoView::init_multiboot_info_struct(multiboot_addr);
+    let memory_tag = multiboot_info.get_memory_map_tag().unwrap();
 
+    unsafe {
         vgaprintln!("==============================");
         vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
         vgaprintln!("Kernel physical base: {:#06x}", phys_base);
         vgaprintln!("Kernel logical offset: {:#011x}", kernel_offset);
         vgaprintln!("Kernel physical end: {:#011x}", end_kernel);
-        vgaprintln!("Available memory: {}mb", (*memory_tag).get_available_memory_bytes() / 1048576);
+        vgaprintln!("Available memory: {}mb", (*memory_tag).get_available_memory(SizeUnit::Megabyte));
+        vgaprintln!("Bitmap size: {}kb", ((*memory_tag).get_available_memory(SizeUnit::Byte) / 4096 / 8) / SizeUnit::Kilobyte.as_usize() as u64);
+        vgaprintln!("Multiboot end logical: {:#011x}", multiboot_info.multiboot_end_logical());
+
+        // let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
+        //
+        // while modules != None {
+        //     let module = modules.unwrap();
+        //     (*module).print();
+        //     let start_ptr = module.byte_add((((*module).header().size() + 7) & !0x7) as usize);
+        //     modules = multiboot_info.get_modules_tag(start_ptr as *const u32);
+        // }
 
 
-
-        let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
-
-        while modules != None {
-            let module = modules.unwrap();
-            (*module).print();
-            let start_ptr = module.byte_add((((*module).header().size() + 7) & !0x7) as usize);
-            modules = multiboot_info.get_modules_tag(start_ptr as *const u32);
-        }
-
-        vgaprintln!("============");
-        let b = multiboot_info.get_memory_map_tag().unwrap();
-        (*b).print_memory_map();
     }
 
 
 
-
-    // memory::pmm::init(&multiboot_info).expect("pmm init failed");
+    memory::pmm::init(&multiboot_info).expect("pmm init failed");
     // memory::paging::init(&multiboot_info).expect("TODO: panic message");
 
 

@@ -53,3 +53,25 @@ impl Cr3 {
         PhysicalAddress::new(Cr3::cr3_read() & 0x000FFFFFFFFFF000)
     }
 }
+
+
+pub enum SizeUnit {
+    Byte = 1,
+    Kilobyte = 1024,
+    Megabyte = 1_048_576,
+    Gigabyte = 1_073_741_824
+}
+
+impl SizeUnit {
+    pub fn as_usize(&self) -> usize {
+        match self {
+            SizeUnit::Byte => {1}
+            SizeUnit::Kilobyte => {1024}
+            SizeUnit::Megabyte => {1_048_576}
+            SizeUnit::Gigabyte => {1_073_741_824}
+        }
+    }
+}
+
+pub const FRAME_SIZE: u64 = 4096;
+pub const PAGE_SIZE: u64 = 4096;
