@@ -1,3 +1,6 @@
+use core::error::Error;
+use core::ops::Add;
+use core::fmt;
 use crate::boot::multiboot::{MemoryRegionType, MultibootInfoView, MultibootMemoryMapTag};
 use crate::{endKernel, vgaprintln};
 use crate::memory::{kernel_end, SizeUnit, FRAME_SIZE};
@@ -9,6 +12,38 @@ const FREE: u8 = 0;
 #[derive(Debug)]
 pub enum PmmInitError {
     NoMemorySizeProvided = 1
+}
+//==================================================================================================
+#[derive(Debug)]
+pub enum PmmAllocErrorType {
+    FrameAddressNotAligned = 1,
+    FrameAlreadyUsed = 2,
+    BitmapWriteFailed = 3
+}
+pub struct PmmAllocError {
+    frame: u64,
+    error_type: PmmAllocErrorType
+}
+
+
+impl fmt::Display for PmmAllocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} at phys frame address {:#x}", self.error_type, self.frame)
+    }
+}
+
+impl fmt::Debug for PmmAllocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?} at phys frame address {:#x}", self.error_type, self.frame)
+    }
+}
+
+impl PmmAllocError {
+    fn new(frame: u64, error_type: PmmAllocErrorType) -> Self {
+        Self {
+            frame, error_type
+        }
+    }
 }
 //==================================================================================================
 pub struct PmmBitmap {
@@ -62,10 +97,69 @@ impl PmmBitmap {
         }
 
     }
+
+    pub fn free_frame(&self) {
+
+    }
+
+    pub fn allocate_frame_range(&self, frame_start_addr: u64, frame_length: u64) -> Result<(), PmmAllocError> {
+        if frame_start_addr & 0xFFF != 0 {
+            return Err(PmmAllocError::new(frame_start_addr, PmmAllocErrorType::FrameAddressNotAligned));
+        }
+        let frame_end = frame_start_addr + frame_length*FRAME_SIZE;
+
+        let mut i = frame_start_addr;
+        while i < frame_end {
+            let alloc = self.allocate_frame(i);
+
+            //alloc went okay
+            if matches!(alloc, Ok(())) {
+                vgaprintln!("{:#011x}", i);
+                i = i + FRAME_SIZE;
+                continue;
+            }
+
+            //error occured
+            return alloc;
+        }
+        Ok(())
+    }
     
-    
-    fn allocate_frame(&self) {
-        //todo
+    pub fn allocate_frame(&self, frame_addr: u64) -> Result<(), PmmAllocError> {
+        if frame_addr & 0xFFF != 0 {
+            return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAddressNotAligned));
+        }
+
+        let target_bit = frame_addr / 4096;
+        let target_byte = if target_bit == 0 {
+            0 //frame 0
+        } else {
+            ((target_bit + 8) / 8) - 1
+        };
+
+        unsafe {
+            let ptr = (self.ptr.add(target_byte as usize));
+            if *ptr & (1 << (target_bit)) != 0 {
+                return Err(PmmAllocError::new(ptr as u64, PmmAllocErrorType::FrameAlreadyUsed));
+            }
+
+            *ptr |= 1 << (target_bit);
+
+            if *ptr | (1 << (target_bit)) == 0 {
+                return Err(PmmAllocError::new(ptr as u64, PmmAllocErrorType::BitmapWriteFailed));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn print(&self, range: usize) {
+        unsafe {
+            let mut arr = self.ptr;
+            for i in 0..range {
+                vgaprintln!("{}:    {:#08b}", i, *arr);
+                arr = arr.add(1);
+            }
+        }
     }
 }
 //==================================================================================================
@@ -84,9 +178,10 @@ pub fn init(multiboot_info: &MultibootInfoView) -> Result<(PmmBitmap), PmmInitEr
         let bitmap_size_bytes = mem_size / FRAME_SIZE / 8; //one bit per frame
         let bitmap = multiboot_info.multiboot_end_logical() as *mut u8;
 
+        //todo:fix and remove temp
         let mut p_bitmap = bitmap;
         for i in 0..bitmap_size_bytes {
-            *p_bitmap = USED; //later we mark regions as free
+            *p_bitmap = 0x00u8; //later we mark regions as free
             p_bitmap = p_bitmap.add(1);
         }
 

@@ -52,7 +52,7 @@ use core::panic::PanicInfo;
 use core::ptr;
 use crate::boot::multiboot::{MultibootInfoView, MultibootModulesTag};
 use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
-use crate::memory::{SizeUnit, P2V, PHYS_BASE, VIRT_BASE};
+use crate::memory::{SizeUnit, FRAME_SIZE, P2V, PHYS_BASE, VIRT_BASE};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -115,7 +115,19 @@ pub extern "C" fn rust_main() -> ! {
 
 
 
-    memory::pmm::init(&multiboot_info).expect("pmm init failed");
+    let pmm = memory::pmm::init(&multiboot_info).expect("pmm init failed");
+    // pmm.allocate_frame_range(0x00_000, 0x10_000).expect("1");
+    // let mut i = 0x0_000;
+    // while i <= 0xF_000 {
+    //     pmm.allocate_frame(i).expect("a");
+    //     i = i + 4096;
+    // }
+    // pmm.allocate_frame(0x1000).expect("1");
+    // pmm.allocate_frame(0x2000).expect("2");
+    // pmm.allocate_frame_range(0xA_000, 3).expect("a");
+    pmm.allocate_frame(0xdeadbeef).expect("Allocation error");
+    // pmm.allocate_frame_range(0xB_000, 3).expect("b");
+    pmm.print(8);
     // memory::paging::init(&multiboot_info).expect("TODO: panic message");
 
 
