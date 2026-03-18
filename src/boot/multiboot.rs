@@ -353,6 +353,11 @@ impl MultibootTagBase {
 }
 
 //==================================================================================================
+//TODO: I absolutely despise of the code repetition here, it's so extremely disgusting it makes me wanna reconsider my life choices.
+// For now it works so all is good, but for the love of god and all human beings looking at this abomination, change this!!!
+// It doesnt even apply to just this code - this whole multiboot code is a pile of shit held together by tiny strings
+// All these dumb pointer casts, code repetitions and braindead logic....
+// So please, fix this
 impl MultibootMemoryMapTag {
     /*
     ‘type’ is the variety of address range represented, where a
@@ -397,6 +402,32 @@ impl MultibootMemoryMapTag {
             mem_size / size_unit.as_usize() as u64
         }
     }
+    //==================================================================================================
+    pub fn get_high_usable_memory_address(&self) -> u64 {
+        unsafe {
+            let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
+            let entry_length = self.entry_size;
+            let entry_version = self.entry_version;
+
+            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
+            assert_eq!(0, entry_version);   //should be 0
+
+            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+            let last = entry1.byte_add(size_entries as usize);
+            let mut max = 0x00u64;
+
+            while entry1 < last {
+                let addr = (*entry1).base_addr + (*entry1).length;
+
+                if addr > max {
+                    max  = addr;
+                }
+
+                entry1 = entry1.add(1);
+            }
+            max
+        }
+    }
 //==================================================================================================
     pub fn print_memory_map(&self) {
         unsafe {
@@ -413,25 +444,8 @@ impl MultibootMemoryMapTag {
             while entry1 < last {
                 let base_addr = (*entry1).base_addr;
                 let length = (*entry1).length;
-                let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
-                    None => {
-                        entry1 = entry1.add(1);
-                        continue
-                    },   //invalid memory region so skip it
-                    Some(x) => { x }
-                };
 
-                if region_type != MemoryRegionType::AvailableRAM {
-                    entry1 = entry1.add(1);
-                    continue
-                }
-
-                // vgaprintln!("Memory map entry:");
-                // vgaprintln!("========================");
                 vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
-                // vgaprintln!("Length: {:#011x}", length);
-                // vgaprintln!("Region type: {:#06x}", region_type);
-                // vgaprintln!("========================");
 
                 entry1 = entry1.add(1);
             }
@@ -554,12 +568,12 @@ impl MemoryRegionType {
         }
     }
 
-    fn to_u32(&self) -> Option<u32> {
+    fn to_u32(&self) -> u32 {
         match self {
-            Self::AvailableRAM => Some(Self::ADDR_RANGE_TYPE_AVAILABLE_RAM),
-            Self::UsableAcpi => Some(Self::ADDR_RANGE_TYPE_USABLE_ACPI),
-            Self::HibernationPreserved => Some(Self::ADDR_RANGE_TYPE_RESERVED_HIBERNATION),
-            Self::DefectiveRAM => Some(Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM)
+            Self::AvailableRAM => Self::ADDR_RANGE_TYPE_AVAILABLE_RAM,
+            Self::UsableAcpi => Self::ADDR_RANGE_TYPE_USABLE_ACPI,
+            Self::HibernationPreserved => Self::ADDR_RANGE_TYPE_RESERVED_HIBERNATION,
+            Self::DefectiveRAM => Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM
         }
     }
 }

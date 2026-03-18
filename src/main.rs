@@ -98,7 +98,7 @@ pub extern "C" fn rust_main() -> ! {
         vgaprintln!("Kernel logical offset: {:#011x}", kernel_offset);
         vgaprintln!("Kernel physical end: {:#011x}", end_kernel);
         vgaprintln!("Available memory: {}mb", (*memory_tag).get_available_memory(SizeUnit::Megabyte));
-        vgaprintln!("Bitmap size: {}kb", ((*memory_tag).get_available_memory(SizeUnit::Byte) / 4096 / 8) / SizeUnit::Kilobyte.as_usize() as u64);
+        vgaprintln!("Bitmap size: {}kb", ((*memory_tag).get_high_usable_memory_address() / 4096 / 8) / SizeUnit::Kilobyte.as_usize() as u64);
         vgaprintln!("Multiboot end logical: {:#011x}", multiboot_info.multiboot_end_logical());
 
         // let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
@@ -116,17 +116,7 @@ pub extern "C" fn rust_main() -> ! {
 
 
     let pmm = memory::pmm::init(&multiboot_info).expect("pmm init failed");
-    // pmm.allocate_frame_range(0x00_000, 0x10_000).expect("1");
-    // let mut i = 0x0_000;
-    // while i <= 0xF_000 {
-    //     pmm.allocate_frame(i).expect("a");
-    //     i = i + 4096;
-    // }
-    // pmm.allocate_frame(0x1000).expect("1");
-    // pmm.allocate_frame(0x2000).expect("2");
-    // pmm.allocate_frame_range(0xA_000, 3).expect("a");
-    pmm.allocate_frame(0xdeadbeef).expect("Allocation error");
-    // pmm.allocate_frame_range(0xB_000, 3).expect("b");
+    
     pmm.print(8);
     // memory::paging::init(&multiboot_info).expect("TODO: panic message");
 

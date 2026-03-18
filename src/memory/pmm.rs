@@ -3,7 +3,7 @@ use core::ops::Add;
 use core::fmt;
 use crate::boot::multiboot::{MemoryRegionType, MultibootInfoView, MultibootMemoryMapTag};
 use crate::{endKernel, vgaprintln};
-use crate::memory::{kernel_end, SizeUnit, FRAME_SIZE};
+use crate::memory::{kernel_end, SizeUnit, FRAME_SIZE, V2P};
 use crate::memory::pmm::PmmInitError::NoMemorySizeProvided;
 //==================================================================================================
 const USED: u8 = 1;
@@ -18,7 +18,8 @@ pub enum PmmInitError {
 pub enum PmmAllocErrorType {
     FrameAddressNotAligned = 1,
     FrameAlreadyUsed = 2,
-    BitmapWriteFailed = 3
+    BitmapWriteFailed = 3,
+    FrameAlreadyFreed = 4
 }
 pub struct PmmAllocError {
     frame: u64,
@@ -97,35 +98,18 @@ impl PmmBitmap {
         }
 
     }
-
-    pub fn free_frame(&self) {
-
-    }
-
-    pub fn allocate_frame_range(&self, frame_start_addr: u64, frame_length: u64) -> Result<(), PmmAllocError> {
-        if frame_start_addr & 0xFFF != 0 {
-            return Err(PmmAllocError::new(frame_start_addr, PmmAllocErrorType::FrameAddressNotAligned));
-        }
-        let frame_end = frame_start_addr + frame_length*FRAME_SIZE;
-
-        let mut i = frame_start_addr;
-        while i < frame_end {
-            let alloc = self.allocate_frame(i);
-
-            //alloc went okay
-            if matches!(alloc, Ok(())) {
-                vgaprintln!("{:#011x}", i);
-                i = i + FRAME_SIZE;
-                continue;
-            }
-
-            //error occured
-            return alloc;
-        }
-        Ok(())
-    }
-    
+//==================================================================================================
     pub fn allocate_frame(&self, frame_addr: u64) -> Result<(), PmmAllocError> {
+        //mark as used = true
+        self.modify_frame(frame_addr, true)
+    }
+
+    pub fn free_frame(&self, frame_addr: u64) -> Result<(), PmmAllocError> {
+        //mark as used = false
+        self.modify_frame(frame_addr, false)
+    }
+//==================================================================================================
+    pub fn modify_frame(&self, frame_addr: u64, alloc_mode: bool) -> Result<(), PmmAllocError> {
         if frame_addr & 0xFFF != 0 {
             return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAddressNotAligned));
         }
@@ -139,19 +123,42 @@ impl PmmBitmap {
 
         unsafe {
             let ptr = (self.ptr.add(target_byte as usize));
-            if *ptr & (1 << (target_bit)) != 0 {
-                return Err(PmmAllocError::new(ptr as u64, PmmAllocErrorType::FrameAlreadyUsed));
+
+            return if alloc_mode {
+                alloc(ptr, target_bit, frame_addr)
+            } else {
+                free(ptr, target_bit, frame_addr)
+            };
+
+            unsafe fn alloc(ptr: *mut u8, target_bit: u64, frame_addr: u64) -> Result<(), PmmAllocError> {
+                if *ptr & (1 << (target_bit)) != FREE {
+                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAlreadyUsed));
+                }
+
+                *ptr |= 1 << (target_bit);
+
+                if *ptr | (1 << (target_bit)) == 0 {
+                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::BitmapWriteFailed));
+                }
+                Ok(())
             }
 
-            *ptr |= 1 << (target_bit);
 
-            if *ptr | (1 << (target_bit)) == 0 {
-                return Err(PmmAllocError::new(ptr as u64, PmmAllocErrorType::BitmapWriteFailed));
+            unsafe fn free(ptr: *mut u8, target_bit: u64, frame_addr: u64) -> Result<(), PmmAllocError> {
+                if *ptr & (1 << (target_bit)) == FREE {
+                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAlreadyFreed));
+                }
+
+                *ptr &= !(1 << (target_bit));
+
+                if *ptr | (1 << (target_bit)) == USED {
+                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::BitmapWriteFailed));
+                }
+                Ok(())
             }
         }
-        Ok(())
     }
-
+//==================================================================================================
     pub fn print(&self, range: usize) {
         unsafe {
             let mut arr = self.ptr;
@@ -173,15 +180,14 @@ pub fn init(multiboot_info: &MultibootInfoView) -> Result<(PmmBitmap), PmmInitEr
         }
     };
     unsafe {
-        let mem_size = (*mem_map).get_available_memory(SizeUnit::Byte);
+        let mem_size = (*mem_map).get_high_usable_memory_address();
 
         let bitmap_size_bytes = mem_size / FRAME_SIZE / 8; //one bit per frame
         let bitmap = multiboot_info.multiboot_end_logical() as *mut u8;
 
-        //todo:fix and remove temp
         let mut p_bitmap = bitmap;
-        for i in 0..bitmap_size_bytes {
-            *p_bitmap = 0x00u8; //later we mark regions as free
+        for i in 0..=bitmap_size_bytes {
+            *p_bitmap = 0xFFu8; //later we mark regions as free
             p_bitmap = p_bitmap.add(1);
         }
 
