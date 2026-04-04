@@ -251,7 +251,7 @@ higherHalfMemory:
 ; ====================================================
 setupPageTablesLongMode:
     ;--------------------------------------------
-    ; second half kernel page tables
+    ; higher half kernel page tables
     ; --------------------------------------------
     ; map kernel l3 pdpt
     mov rax, V2P(l3_pdpt_kernel)
@@ -264,28 +264,59 @@ setupPageTablesLongMode:
     or rax, 0b11
     mov [V2P(l3_pdpt_kernel) + 510*8], rax ; 8 msb bits 1, lsb=0, = 510
     ; ===========================
+
+    ; --------------------------------------------
+    .kernelPageTables:
+        xor rcx, rcx
+        mov rdi, 0x00000000
+
+        lea rbx, [endKernel]
+        ; ===========================
+        .kernelMapLoop:
+            mov rax, rdi
+            or rax, 0b11    ; present, writeable flags
+            or rax, (1 << 7)    ; huge page flag
+            mov qword [V2P(l2_pd_kernel) + rcx*8], rax
+
+
+            add rdi, 0x200000   ; add 2mb
+            inc rcx
+            cmp rdi, rbx
+            jb .kernelMapLoop
+        ; ===========================
     ; --------------------------------------------
 
-    xor rcx, rcx
-    mov rdi, 0x00000000
+    ; --------------------------------------------
+    tempHeapPageTables:
+        lea rdi, [earlyHeapStart]   ; set early heap start
+        lea rax, [endKernel]    ; end kernel address
+        add rax, 0x200000   ; add size of page
+        and rax, ~(0x200000 - 1) ; align to page
+        mov [rdi], rax          ; put in .bss
 
-    ; map until kernelEnd + multiboot info length + 2mb
-    mov rbx, endKernel
-    add rbx, [esi]
-    add rbx, 0x200000
-
-    .kernelMapLoop:
-        mov rax, rdi
-        or rax, 0b11    ; present, writeable flags
-        or rax, (1 << 7)    ; huge page flag
-        mov qword [V2P(l2_pd_kernel) + rcx*8], rax
+        lea rdi, [earlyHeapEnd] ; end of temp heap
+        add rax, 0x800000       ; size of temp heap = 8mb
+        mov [rdi], rax          ; put in .bss
 
 
-        add rdi, 0x200000   ; add 2mb
-        inc rcx
-        cmp rdi, rbx
-        jbe .kernelMapLoop
+        ; counter is rcx, which is left at value of last allocated page for the kernel
+        ; from previous loop
+        ; here we map a temp heap memory region of 8mb, right after kernel end
+        mov rdi, [earlyHeapStart] ; start address - already page aligned
+        mov rbx, [earlyHeapEnd] ; end address - already page aligned
+        ; ===========================
+        .earlyHeapMapLoop:
+            mov rax, rdi
+            or rax, 0b11    ; present, writeable flags
+            or rax, (1 << 7)    ; huge page flag
+            mov qword [V2P(l2_pd_kernel) + rcx*8], rax
 
+            add rdi, 0x200000   ; still using 2mb pages
+            inc rcx
+            cmp rdi, rbx
+            jb .earlyHeapMapLoop
+        ; ===========================
+    ; --------------------------------------------
     ret
 ; ====================================================
 vgaInit:
@@ -340,6 +371,15 @@ l2_pd_kernel:
 align 4096
 l1_pt_low:
     RESB 4096
+; ====================================================
+global earlyHeapStart
+global earlyHeapEnd
+; ====================================================
+earlyHeapStart:
+    RESQ 1
+; ====================================================
+earlyHeapEnd:
+    RESQ 1
 ; ====================================================
 
 stack_bottom:

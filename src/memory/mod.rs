@@ -3,6 +3,7 @@ use crate::endKernel;
 
 pub mod paging;
 pub mod pmm;
+pub mod early_heap;
 
 //==================================================================
 pub const PHYS_BASE: u32 = 0x00100000;
@@ -34,6 +35,19 @@ impl PhysicalAddress {
     }
 }
 
+pub struct MemoryRange {
+    pub start: u64,
+    pub end: u64
+}
+
+impl MemoryRange {
+    pub fn new(start: u64, end: u64) -> Self {
+        Self {
+            start, end
+        }
+    }
+}
+
 
 pub struct Cr3();
 
@@ -49,8 +63,8 @@ impl Cr3 {
         }
     }
 
-    pub fn cr3_page_table_base() -> PhysicalAddress {
-        PhysicalAddress::new(Cr3::cr3_read() & 0x000FFFFFFFFFF000)
+    pub fn cr3_page_table_base() -> u64 {
+        Cr3::cr3_read() & 0x000FFFFFFFFFF000
     }
 }
 

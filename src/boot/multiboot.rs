@@ -104,15 +104,15 @@ pub struct MultibootInfoView {
 //==================================================================================================
 
 impl MultibootInfoView {
-    pub fn init_multiboot_info_struct(addr: u64) -> MultibootInfoView {
+    pub fn init_multiboot_info_struct(original_address: u64, address_to_copy_to: u64) -> MultibootInfoView {
         unsafe {
             //---------------------------------------------------------
             //copy multiboot info struct to right after kernel code
             //---------------------------------------------------------
-            let copied_addr = (P2V(kernel_end() + 23) & !0x07) as *const u32; //64bit aligned start address;
+            let copied_addr = address_to_copy_to as *const u32; // address already guarenteed to be 8byte aligned
             vgaprintln!("Copying multiboot2 info struct to address {:#011x}...", copied_addr as u64);
             {
-                let base = MultibootInfo::new(addr);
+                let base = MultibootInfo::new(original_address);
 
                 if base._reserved != 0x00 {
                     panic!("Multiboot info reserved value is not zero!");
@@ -120,13 +120,10 @@ impl MultibootInfoView {
 
                 let mut src_addr = base as *const MultibootInfo as *mut u8;
                 let size = base.total_size;
-
                 let mut target = copied_addr as *mut u8;
-
                 for _i in 0..size {
                     *target = *src_addr;
                     *src_addr = 0x00u8;
-
                     src_addr = src_addr.add(1);
                     target = target.add(1);
                 }
@@ -429,28 +426,45 @@ impl MultibootMemoryMapTag {
         }
     }
 //==================================================================================================
-    pub fn print_memory_map(&self) {
-        unsafe {
-            let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
-            let entry_length = self.entry_size;
-            let entry_version = self.entry_version;
+pub fn print_memory_map(&self) {
+    unsafe {
+        let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
+        let entry_length = self.entry_size;
+        let entry_version = self.entry_version;
 
-            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
-            assert_eq!(0, entry_version);   //should be 0
+        assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
+        assert_eq!(0, entry_version);   //should be 0
 
-            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
-            let last = entry1.byte_add(size_entries as usize);
+        let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+        let last = entry1.byte_add(size_entries as usize);
 
-            while entry1 < last {
-                let base_addr = (*entry1).base_addr;
-                let length = (*entry1).length;
+        while entry1 < last {
+            let base_addr = (*entry1).base_addr;
+            let length = (*entry1).length;
+            let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
+                None => {
+                    entry1 = entry1.add(1);
+                    continue
+                },   //invalid memory region so skip it
+                Some(x) => { x }
+            };
 
-                vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
-
+            if region_type != MemoryRegionType::AvailableRAM {
                 entry1 = entry1.add(1);
+                continue
             }
+
+            // vgaprintln!("Memory map entry:");
+            // vgaprintln!("========================");
+            vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
+            // vgaprintln!("Length: {:#011x}", length);
+            // vgaprintln!("Region type: {:#06x}", region_type);
+            // vgaprintln!("========================");
+
+            entry1 = entry1.add(1);
         }
     }
+}
     //==================================================================================================
     pub fn print(&self) {
         let tag_type = self.header.tag_type;

@@ -1,9 +1,8 @@
-use core::error::Error;
 use core::ops::Add;
 use core::fmt;
-use crate::boot::multiboot::{MemoryRegionType, MultibootInfoView, MultibootMemoryMapTag};
-use crate::{endKernel, vgaprintln};
-use crate::memory::{kernel_end, SizeUnit, FRAME_SIZE, V2P};
+use crate::boot::multiboot::{MemoryRegionType, MultibootInfoView, MultibootMemoryMapEntry, MultibootMemoryMapTag};
+use crate::{vgaprintln};
+use crate::memory::{ FRAME_SIZE };
 use crate::memory::pmm::PmmInitError::NoMemorySizeProvided;
 //==================================================================================================
 const USED: u8 = 1;
@@ -71,8 +70,10 @@ impl PmmBitmap {
 
 
             let size_entries = (*memory_map).header().size() - size_of::<MultibootMemoryMapTag>() as u32;
-            let mut entry1 = (self as *const Self as *const u32).add(4) as *const crate::boot::multiboot::MultibootMemoryMapEntry;
+            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
             let last = entry1.byte_add(size_entries as usize);
+
+            vgaprintln!("entry 1: {:#011x}, last: {:#011x}", entry1 as *const u64 as u64, last as *const u64 as u64);
 
             while entry1 < last {
                 let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type()) {
@@ -83,15 +84,30 @@ impl PmmBitmap {
                     Some(x) => { x }
                 };
 
+                vgaprintln!("base_addr: {:#011x}, length: {}", (*entry1).base_addr(), (*entry1).length());
+
                 if region_type != MemoryRegionType::AvailableRAM {
                     entry1 = entry1.add(1);
                     continue
                 }
 
-                let base_addr = (*entry1).base_addr();
-                let length = (*entry1).length();
-                //todo
-                
+                let mut base_frame_addr = ((*entry1).base_addr() / 4096) & !(FRAME_SIZE - 1);
+                let length_of_frames = ((*entry1).length() / 4096) & !(FRAME_SIZE - 1);
+                let last_frame = base_frame_addr + length_of_frames;
+                let mut bitmap_ptr = self.ptr;
+
+                vgaprintln!("base: {:#011x} size: {}", base_frame_addr, length_of_frames);
+
+                while base_frame_addr <= (last_frame - 8 * FRAME_SIZE) {
+                    let byte = base_frame_addr / 8;
+                    let bit = base_frame_addr & 0x07;
+
+                    *bitmap_ptr = 0x00u8; //free
+
+                    bitmap_ptr = bitmap_ptr.add(1);
+                    base_frame_addr = base_frame_addr + FRAME_SIZE*8;
+                }
+
                 
                 entry1 = entry1.add(1);
             }
@@ -167,6 +183,14 @@ impl PmmBitmap {
                 arr = arr.add(1);
             }
         }
+    }
+
+    pub fn ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    pub fn length(&self) -> u64 {
+        self.length
     }
 }
 //==================================================================================================
