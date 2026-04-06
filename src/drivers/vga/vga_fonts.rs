@@ -1,3 +1,4 @@
+#![allow(unused)]
 //  *FONT STRUCT*
 pub struct VgaFont {
     pub mem: &'static [u8],

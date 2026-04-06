@@ -17,11 +17,9 @@
  *   (ascii art source https://os.phil-opp.com/hardware-interrupts/#the-8259-pic)
  */
 
-use lazy_static::lazy_static;
-// use pc_keyboard::{layouts::Us104Key, DecodedKey, HandleControl, Keyboard, ScancodeSet1};
 use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
-use x86_64::{instructions::port::Port, structures::idt::InterruptStackFrame};
+use x86_64::{structures::idt::InterruptStackFrame};
 
 use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, vgaprint, vgaprintln};
 

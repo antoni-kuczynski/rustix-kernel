@@ -34,72 +34,73 @@ impl EarlyHeap {
     }
 }
 //==================================================================================================
-pub fn init(memory_range: MemoryRange) -> Result<(EarlyHeap), PagingSetupError> {
-    unsafe {
-        let ptr_start = memory_range.start;
+pub fn init(memory_range: MemoryRange) -> Result<EarlyHeap, PagingSetupError> {
+    let ptr_start = memory_range.start;
 
-        let view = EarlyHeap {
-            temp_range: memory_range,
-            temp_ptr: ptr_start as *mut u64
-        };
+    let view = EarlyHeap {
+        temp_range: memory_range,
+        temp_ptr: ptr_start as *mut u64
+    };
 
-        Ok(view)
-    }
+    Ok(view)
 }
 
 //TODO: remove this garbage temp code :)
 pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
-    let (level_4_table_frame, _) = Cr3::read();
-    let phys_addr = level_4_table_frame.start_address();
+    unsafe {
+        let (level_4_table_frame, _) = Cr3::read();
+        let phys_addr = level_4_table_frame.start_address();
 
-    let virt_addr = phys_mem_offset + phys_addr.as_u64();
-    let pml4_table = &*(virt_addr as *const PageTable);
+        let virt_addr = phys_mem_offset + phys_addr.as_u64();
+        let pml4_table = &*(virt_addr as *const PageTable);
 
-    vgaprintln!("PML4 (L4) Table at: {:?}", phys_addr);
+        vgaprintln!("PML4 (L4) Table at: {:?}", phys_addr);
 
-    for (i, entry) in pml4_table.iter().enumerate() {
-        if !entry.is_unused() {
-            vgaprintln!("  L4 Entry {}: {:?}", i, entry);
+        for (i, entry) in pml4_table.iter().enumerate() {
+            if !entry.is_unused() {
+                vgaprintln!("  L4 Entry {}: {:?}", i, entry);
 
-            let pdpt_phys = entry.addr();
-            let pdpt_virt = phys_mem_offset + pdpt_phys.as_u64();
-            let pdpt_table = &*(pdpt_virt as *const PageTable);
+                let pdpt_phys = entry.addr();
+                let pdpt_virt = phys_mem_offset + pdpt_phys.as_u64();
+                let pdpt_table = &*(pdpt_virt as *const PageTable);
 
-            for (j, entry_l3) in pdpt_table.iter().enumerate() {
-                if !entry_l3.is_unused() {
-                    vgaprintln!("    L3 Entry {}: {:?}", j, entry_l3);
+                for (j, entry_l3) in pdpt_table.iter().enumerate() {
+                    if !entry_l3.is_unused() {
+                        vgaprintln!("    L3 Entry {}: {:?}", j, entry_l3);
 
-                    if entry_l3.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
-                        vgaprintln!("      [1GB Huge Page]");
-                        continue;
-                    }
-
-                    let pd_phys = entry_l3.addr();
-                    let pd_virt = phys_mem_offset + pd_phys.as_u64();
-                    let pd_table = &*(pd_virt as *const PageTable);
-
-                    for (k, entry_l2) in pd_table.iter().enumerate() {
-                        if !entry_l2.is_unused() {
-                            vgaprintln!("      L2 Entry {}: {:?}", k, entry_l2);
-
-                            if entry_l2.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
-                                vgaprintln!("        [2MB Huge Page]");
-                                continue;
-                            }
-
-                            let pt_phys = entry_l2.addr();
-                            let pt_virt = phys_mem_offset + pt_phys.as_u64();
-                            let pt_table = &*(pt_virt as *const PageTable);
-
-                            for (l, entry_l1) in pt_table.iter().enumerate() {
-                                if !entry_l1.is_unused() {
-                                    vgaprintln!("        L1 Entry {}: {:?}", l, entry_l1);
-                                }
-                            }
+                        if entry_l3.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                            vgaprintln!("      [1GB Huge Page]");
+                            continue;
                         }
-                    }
-                }
-            }
-        }
-    }
-}
+
+                        let pd_phys = entry_l3.addr();
+                        let pd_virt = phys_mem_offset + pd_phys.as_u64();
+                        let pd_table = &*(pd_virt as *const PageTable);
+
+                        for (k, entry_l2) in pd_table.iter().enumerate() {
+                            if !entry_l2.is_unused() {
+                                vgaprintln!("      L2 Entry {}: {:?}", k, entry_l2);
+
+                                if entry_l2.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                                    vgaprintln!("        [2MB Huge Page]");
+                                    continue;
+                                }
+
+                                let pt_phys = entry_l2.addr();
+                                let pt_virt = phys_mem_offset + pt_phys.as_u64();
+                                let pt_table = &*(pt_virt as *const PageTable);
+
+                                for (l, entry_l1) in pt_table.iter().enumerate() {
+                                    if !entry_l1.is_unused() {
+                                        vgaprintln!("        L1 Entry {}: {:?}", l, entry_l1);
+                                    }   //WHYYYYYYYY
+                                }   //AREEEE
+                            }   //THEEERE
+                        }   //SOOOO
+                    }   //MANYYYYYYYYY?!?!?!?!?!??!
+                }   //I CANT SEE THE END!!!!! :(((((((
+            }   //SOMEONEEEEEEEEEE PLEEEEASE HEEEEEEEEEEEEEEEEEEELP!!!
+        }   //AREE WEE DOOOONE?!?!?!?!?!
+    }   //THEY ARE STILL GOING  AKLSHJDLKASDJLKASDUOHWEUIFDHXCV,NMHOUW;EF793EE :(((((((((((((((
+}   //I THINK THIS'S THE LAST ONE
+//finally.

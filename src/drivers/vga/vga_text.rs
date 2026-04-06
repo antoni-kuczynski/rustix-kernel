@@ -7,7 +7,7 @@ use spin::Mutex;
 use lazy_static::lazy_static;
 // use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::drivers::vga::vga_fonts::*;
-use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, set_12h_mode_regs, write_fonts};
+use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, write_fonts};
 use crate::memory::P2V;
 /*
  * Created by Oskar Przybylski

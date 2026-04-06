@@ -1,5 +1,7 @@
-use core::ops::Add;
+#![allow(unused)]
 use core::fmt;
+use core::sync::atomic::{AtomicU8, Ordering};
+use lazy_static::lazy_static;
 use crate::boot::multiboot::{MemoryRegionType, MultibootInfoView, MultibootMemoryMapEntry, MultibootMemoryMapTag};
 use crate::{vgaprintln};
 use crate::memory::{ FRAME_SIZE };
@@ -47,7 +49,7 @@ impl PmmAllocError {
 }
 //==================================================================================================
 pub struct PmmBitmap {
-    ptr: *mut u8,
+    ptr: *mut AtomicU8,
     length: u64
 }
 //==================================================================================================
@@ -99,10 +101,10 @@ impl PmmBitmap {
                 vgaprintln!("base: {:#011x} size: {}", base_frame_addr, length_of_frames);
 
                 while base_frame_addr <= (last_frame - 8 * FRAME_SIZE) {
-                    let byte = base_frame_addr / 8;
-                    let bit = base_frame_addr & 0x07;
+                    // let byte = base_frame_addr / 8;
+                    // let bit = base_frame_addr & 0x07;
 
-                    *bitmap_ptr = 0x00u8; //free
+                    *bitmap_ptr = AtomicU8::from(0x00u8); //free
 
                     bitmap_ptr = bitmap_ptr.add(1);
                     base_frame_addr = base_frame_addr + FRAME_SIZE*8;
@@ -138,7 +140,7 @@ impl PmmBitmap {
         };
 
         unsafe {
-            let ptr = (self.ptr.add(target_byte as usize));
+            let ptr = self.ptr.add(target_byte as usize);
 
             return if alloc_mode {
                 alloc(ptr, target_bit, frame_addr)
@@ -146,31 +148,39 @@ impl PmmBitmap {
                 free(ptr, target_bit, frame_addr)
             };
 
-            unsafe fn alloc(ptr: *mut u8, target_bit: u64, frame_addr: u64) -> Result<(), PmmAllocError> {
-                if *ptr & (1 << (target_bit)) != FREE {
-                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAlreadyUsed));
-                }
+            unsafe fn alloc(ptr: *mut AtomicU8, target_bit: u64, frame_addr: u64) -> Result<(), PmmAllocError> {
+                unsafe {
+                    let mask = 1 << target_bit;
+                    if (*ptr).load(Ordering::Acquire) & (mask) != FREE {
+                        return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAlreadyUsed));
+                    }
 
-                *ptr |= 1 << (target_bit);
+                    (*ptr).fetch_or(mask, Ordering::Release);
+                    // *ptr |= 1 << (target_bit);
 
-                if *ptr | (1 << (target_bit)) == 0 {
-                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::BitmapWriteFailed));
+                    if (*ptr).load(Ordering::Acquire) | (mask) == 0 {
+                        return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::BitmapWriteFailed));
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
 
 
-            unsafe fn free(ptr: *mut u8, target_bit: u64, frame_addr: u64) -> Result<(), PmmAllocError> {
-                if *ptr & (1 << (target_bit)) == FREE {
-                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAlreadyFreed));
-                }
+            unsafe fn free(ptr: *mut AtomicU8, target_bit: u64, frame_addr: u64) -> Result<(), PmmAllocError> {
+                unsafe {
+                    let mask = 1 << target_bit;
+                    if (*ptr).load(Ordering::Acquire) & (mask) == FREE {
+                        return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::FrameAlreadyFreed));
+                    }
 
-                *ptr &= !(1 << (target_bit));
+                    (*ptr).fetch_and(!mask, Ordering::Release);
+                    // *ptr &= !(1 << (target_bit));
 
-                if *ptr | (1 << (target_bit)) == USED {
-                    return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::BitmapWriteFailed));
+                    if (*ptr).load(Ordering::Acquire) | (mask) == USED {
+                        return Err(PmmAllocError::new(frame_addr, PmmAllocErrorType::BitmapWriteFailed));
+                    }
+                    Ok(())
                 }
-                Ok(())
             }
         }
     }
@@ -179,13 +189,13 @@ impl PmmBitmap {
         unsafe {
             let mut arr = self.ptr;
             for i in 0..range {
-                vgaprintln!("{}:    {:#08b}", i, *arr);
+                vgaprintln!("{}:    {:#08b}", i, (*arr).load(Ordering::Acquire));
                 arr = arr.add(1);
             }
         }
     }
 
-    pub fn ptr(&self) -> *mut u8 {
+    pub fn ptr(&self) -> *mut AtomicU8 {
         self.ptr
     }
 
@@ -194,7 +204,7 @@ impl PmmBitmap {
     }
 }
 //==================================================================================================
-pub fn init(multiboot_info: &MultibootInfoView) -> Result<(PmmBitmap), PmmInitError> {
+pub fn init(multiboot_info: &MultibootInfoView) -> Result<PmmBitmap, PmmInitError> {
     let mem_map = match multiboot_info.get_memory_map_tag() {
         None => {
             return Err(NoMemorySizeProvided);
@@ -207,11 +217,12 @@ pub fn init(multiboot_info: &MultibootInfoView) -> Result<(PmmBitmap), PmmInitEr
         let mem_size = (*mem_map).get_high_usable_memory_address();
 
         let bitmap_size_bytes = mem_size / FRAME_SIZE / 8; //one bit per frame
-        let bitmap = multiboot_info.multiboot_end_logical() as *mut u8;
+        let bitmap = multiboot_info.multiboot_end_logical() as *mut AtomicU8;
 
         let mut p_bitmap = bitmap;
-        for i in 0..=bitmap_size_bytes {
-            *p_bitmap = 0xFFu8; //later we mark regions as free
+        for _i in 0..=bitmap_size_bytes {
+            (*p_bitmap).fetch_or(0xFF, Ordering::Release); //later we mark regions as free
+            // *p_bitmap = 0xFFu8;
             p_bitmap = p_bitmap.add(1);
         }
 
@@ -224,3 +235,4 @@ pub fn init(multiboot_info: &MultibootInfoView) -> Result<(PmmBitmap), PmmInitEr
         Ok(bitmap_data)
     }
 }
+//==================================================================================================

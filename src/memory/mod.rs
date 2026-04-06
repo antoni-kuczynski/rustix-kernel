@@ -1,3 +1,5 @@
+#![allow(unused)]
+#![allow(non_snake_case)]
 use core::arch::asm;
 use crate::endKernel;
 

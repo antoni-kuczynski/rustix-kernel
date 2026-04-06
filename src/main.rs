@@ -47,13 +47,10 @@ mod memory;
 //     }
 // }
 
-use core::arch::asm;
 use core::panic::PanicInfo;
-use core::ptr;
-use crate::boot::multiboot::{MultibootInfoView, MultibootModulesTag};
-use crate::drivers::vga::vga_text::{ColorTextMode, VgaTextMode, VGAWRITER};
-use crate::memory::{MemoryRange, SizeUnit, FRAME_SIZE, P2V, PHYS_BASE, VIRT_BASE};
-use crate::memory::early_heap::print_page_table_tree;
+use crate::boot::multiboot::{MultibootInfoView};
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
+use crate::memory::{MemoryRange, P2V, PHYS_BASE, VIRT_BASE};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -93,7 +90,7 @@ pub extern "C" fn rust_main() -> ! {
 
 
     unsafe {
-        let mut early_heap = memory::early_heap::init(
+        let early_heap = memory::early_heap::init(
             MemoryRange::new(P2V(earlyHeapStart), P2V(earlyHeapEnd))
         ).expect("early heap init failed");
 

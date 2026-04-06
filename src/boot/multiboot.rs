@@ -3,11 +3,10 @@ use crate::VGAWRITER;
 use crate::ColorTextMode;
 use core::arch::asm;
 use core::cmp::PartialEq;
-use core::ops::Add;
 use core::ptr;
 use core::ptr::read_volatile;
-use crate::{print_ok_msg, vgaprint, vgaprintln};
-use crate::memory::{kernel_end, SizeUnit, V2P};
+use crate::{print_ok_msg, vgaprintln};
+use crate::memory::{SizeUnit, V2P};
 use crate::memory::P2V;
 
 /*
@@ -64,7 +63,7 @@ This tag may not be provided by some boot loaders on EFI platforms if EFI boot s
 for the loaded image (EFI boot services not terminated tag exists in Multiboot2 information structure).
  */
 #[repr(C, packed)]
-pub(crate) struct MultibootMemoryMapEntry { //type = 6
+pub struct MultibootMemoryMapEntry { //type = 6
     base_addr: u64,
     length: u64,
     addr_range_type: u32,
@@ -90,7 +89,7 @@ pub struct MultibootModulesTag {
 
 //==================================================================================================
 #[repr(C, packed)]
-struct MultibootInfo {
+pub struct MultibootInfo {
     total_size: u32,
     _reserved: u32
 }
@@ -166,7 +165,7 @@ impl MultibootInfoView {
                 (*module).mod_start = V2P(copied_start_address as u64) as u32;
                 (*module).mod_end = V2P(copied_end_addr as u64) as u32;
 
-                for i in (*module).mod_start()..(*module).mod_end() {
+                for _i in (*module).mod_start()..(*module).mod_end() {
                     *copied_start_address = *original_address; // copy
                     *original_address = 0x00u8; // clear
 
@@ -379,7 +378,6 @@ impl MultibootMemoryMapTag {
             let last = entry1.byte_add(size_entries as usize);
 
             while entry1 < last {
-                let base_addr = (*entry1).base_addr;
                 let length = (*entry1).length;
 
                 let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
@@ -519,22 +517,19 @@ impl MultibootMemoryMapEntry {
 //==================================================================================================
 impl MultibootModulesTag {
     pub fn print(&self) {
-        unsafe {
-            let tag_type = self.header.tag_type;
-            let tag_size = self.header.size;
-            let mod_start = self.mod_start;
-            let mod_end = self.mod_end;
-            let mut str = self.string;
+        let tag_type = self.header.tag_type;
+        let tag_size = self.header.size;
+        let mod_start = self.mod_start;
+        let mod_end = self.mod_end;
 
-            vgaprintln!("===================================");
-            vgaprintln!("Multiboot modules tag:");
-            vgaprintln!("===================================");
-            vgaprintln!("Type: {:#02x}", tag_type);
-            vgaprintln!("Size: {}", tag_size);
-            vgaprintln!("Mod start: {:#011x}", mod_start);
-            vgaprintln!("Mod end: {:#011x}", mod_end);
-            vgaprintln!("===================================");
-        }
+        vgaprintln!("===================================");
+        vgaprintln!("Multiboot modules tag:");
+        vgaprintln!("===================================");
+        vgaprintln!("Type: {:#02x}", tag_type);
+        vgaprintln!("Size: {}", tag_size);
+        vgaprintln!("Mod start: {:#011x}", mod_start);
+        vgaprintln!("Mod end: {:#011x}", mod_end);
+        vgaprintln!("===================================");
     }
 
     pub fn header(&self) -> MultibootTagBase {
@@ -562,7 +557,7 @@ impl MemoryRegionType {
     const ADDR_RANGE_TYPE_RESERVED_HIBERNATION: u32 = 4;
     const ADDR_RANGE_TYPE_DEFECTIVE_RAM: u32 = 5;
 
-    pub(crate) fn from_u32(val: u32) -> Option<Self> {
+    pub fn from_u32(val: u32) -> Option<Self> {
         match val {
             Self::ADDR_RANGE_TYPE_AVAILABLE_RAM => {
                 Some(Self::AvailableRAM)
