@@ -48,9 +48,12 @@ mod memory;
 // }
 
 use core::panic::PanicInfo;
+use x86_64::{PhysAddr, VirtAddr};
 use crate::boot::multiboot::{MultibootInfoView};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{MemoryRange, P2V, PHYS_BASE, VIRT_BASE};
+use crate::memory::{P2V, PHYS_BASE, VIRT_BASE};
+use crate::memory::eba::{eba_kmalloc, print_page_table_tree, EARLY_BUMP_ALLOCATOR};
+use crate::memory::paging::map_2mb_page;
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -90,9 +93,24 @@ pub extern "C" fn rust_main() -> ! {
 
 
     unsafe {
-        let early_heap = memory::early_heap::init(
-            MemoryRange::new(P2V(earlyHeapStart), P2V(earlyHeapEnd))
-        ).expect("early heap init failed");
+        map_2mb_page(
+            VirtAddr::new(0xffff_ffff_deadbeefu64),
+            PhysAddr::new(0xA000_0000)
+        );
+
+        let addr = 0xffff_ffff_deadbeef as *mut u64;
+        *addr = 0xdeadc0de;
+
+        let a: *mut u32 = eba_kmalloc(size_of::<u32>(), 1).unwrap();
+        *a = 0xBEEFBABE;
+
+        vgaprintln!("==========================");
+        vgaprintln!("Addr: {:#011x}", *addr);
+        vgaprintln!("a: {:#011x}", *a);
+        vgaprintln!("==========================");
+
+        
+        // print_page_table_tree(kernel_offset as u64);
 
         // multiboot info struct is gonna be copied to a new address, right after temp heap region
         // let multiboot_copy_address = P2V(earlyHeapEnd);
@@ -149,7 +167,6 @@ pub extern "C" fn rust_main() -> ! {
 
 
     }
-    //
     // pmm.print(8);
     // memory::paging::init(&multiboot_info).expect("TODO: panic message");
 

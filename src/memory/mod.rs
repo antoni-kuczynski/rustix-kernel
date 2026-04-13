@@ -1,11 +1,13 @@
 #![allow(unused)]
 #![allow(non_snake_case)]
 use core::arch::asm;
+use x86_64::PhysAddr;
 use crate::endKernel;
 
 pub mod paging;
 pub mod pmm;
-pub mod early_heap;
+pub mod eba;
+mod memory_map;
 
 //==================================================================
 pub const PHYS_BASE: u32 = 0x00100000;
@@ -23,20 +25,6 @@ pub fn kernel_end() -> u64 {
     unsafe {&endKernel as *const u32 as u64}
 }
 //==================================================================
-
-
-pub struct PhysicalAddress(u64);
-
-impl PhysicalAddress {
-    pub fn new(val: u64) -> Self {
-        Self(val)
-    }
-    
-    pub fn as_u64(&self) -> u64 {
-        self.0
-    }
-}
-
 pub struct MemoryRange {
     pub start: u64,
     pub end: u64
@@ -65,8 +53,8 @@ impl Cr3 {
         }
     }
 
-    pub fn cr3_page_table_base() -> u64 {
-        Cr3::cr3_read() & 0x000FFFFFFFFFF000
+    pub fn cr3_page_table_base() -> PhysAddr {
+        PhysAddr::new(Cr3::cr3_read() & 0x000FFFFFFFFFF000)
     }
 }
 

@@ -1,48 +1,66 @@
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use core::sync::atomic::Ordering::Acquire;
+use lazy_static::lazy_static;
+use spin::Mutex;
 //==================================================================================================
-// This is a tem heap region to store early page tables
+// This is a tem heap region to store early page tables (Early bump allocator)
 // It's been already mapped during early init, so dont care about that
 //==================================================================================================
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PageTable;
-use crate::{vgaprintln};
-use crate::memory::{MemoryRange};
+use crate::{earlyHeapEnd, earlyHeapStart, memory, vgaprintln};
+use crate::memory::{MemoryRange, P2V};
 use crate::memory::paging::PagingSetupError;
 //==================================================================================================
-pub struct EarlyHeap {
+pub struct EarlyBumpAllocator {
     temp_range: MemoryRange,
-    temp_ptr: *mut u64
+    temp_ptr: AtomicPtr<u8>
 }
 //==================================================================================================
-impl EarlyHeap {
-    pub fn kmalloc_early<T>(&mut self, size: usize, align: usize) -> Option<*mut T> {
+impl EarlyBumpAllocator {
+    pub unsafe fn kmalloc_early<T>(&self, size: usize, align: usize) -> Option<*mut T> {
         unsafe {
-            let ptr = if align == 0 {
-                self.temp_ptr as *mut T
-            } else {
-                (self.temp_ptr.byte_add(align) as u64 & !(align - 1) as u64) as *mut T
-            };
+            let align_u64 = if align == 0 { 1 } else { align as u64 };
+            let mut current_ptr = self.temp_ptr.load(Acquire);
 
-            //region full
-            if ptr.byte_add(size) as u64 > self.temp_range.end {
-                return None;
+            loop {
+                let aligned_ptr = ((current_ptr.add((align_u64 - 1) as usize)) as u64 & !(align_u64 - 1)) as *mut u8;
+                let next_ptr = aligned_ptr.add(size);
+
+                if next_ptr as u64 > self.temp_range.end {
+                    return None;
+                }
+
+                match self.temp_ptr.compare_exchange_weak(
+                    current_ptr,
+                    next_ptr,
+                    Ordering::SeqCst,
+                    Acquire
+                ) {
+                    Ok(_) => {
+                        return Some(aligned_ptr as *mut T);
+                    }
+                    Err(actual_ptr) => {
+                        current_ptr = actual_ptr;
+                    }
+                }
             }
-
-            self.temp_ptr = self.temp_ptr.byte_add(size);
-
-            Some(ptr)
         }
     }
 }
 //==================================================================================================
-pub fn init(memory_range: MemoryRange) -> Result<EarlyHeap, PagingSetupError> {
-    let ptr_start = memory_range.start;
+pub fn eba_init() -> Result<EarlyBumpAllocator, PagingSetupError> {
+    unsafe {
+        let start = P2V(earlyHeapStart);
+        let end = P2V(earlyHeapEnd);
 
-    let view = EarlyHeap {
-        temp_range: memory_range,
-        temp_ptr: ptr_start as *mut u64
-    };
+        let view = EarlyBumpAllocator {
+            temp_range: MemoryRange::new(start, end),
+            temp_ptr: AtomicPtr::new(start as *mut u8)
+        };
 
-    Ok(view)
+        Ok(view)
+    }
 }
 
 //TODO: remove this garbage temp code :)
@@ -104,3 +122,12 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
     }   //THEY ARE STILL GOING  AKLSHJDLKASDJLKASDUOHWEUIFDHXCV,NMHOUW;EF793EE :(((((((((((((((
 }   //I THINK THIS'S THE LAST ONE
 //finally.
+
+lazy_static! {
+    pub static ref  EARLY_BUMP_ALLOCATOR: Mutex<EarlyBumpAllocator> = Mutex::new(eba_init().expect("early bump allocator init failed"));
+}
+
+/// Early kmalloc for early bump allocator region
+pub unsafe fn eba_kmalloc<T>(size: usize, align: usize) -> Option<*mut T> {
+    unsafe { EARLY_BUMP_ALLOCATOR.lock().kmalloc_early(size, align) }
+}
