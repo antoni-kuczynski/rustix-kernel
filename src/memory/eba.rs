@@ -10,7 +10,7 @@ use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PageTable;
 use crate::{earlyHeapEnd, earlyHeapStart, memory, vgaprintln};
 use crate::memory::{MemoryRange, P2V};
-use crate::memory::paging::PagingSetupError;
+use crate::memory::page_tables::PagingSetupError;
 //==================================================================================================
 pub struct EarlyBumpAllocator {
     temp_range: MemoryRange,

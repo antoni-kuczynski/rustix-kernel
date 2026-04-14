@@ -1,13 +1,13 @@
 #![allow(unused)]
 #![allow(non_snake_case)]
 use core::arch::asm;
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 use crate::endKernel;
 
 pub mod paging;
 pub mod pmm;
 pub mod eba;
-mod memory_map;
+pub mod page_tables;
 
 //==================================================================
 pub const PHYS_BASE: u32 = 0x00100000;
@@ -58,6 +58,11 @@ impl Cr3 {
     }
 }
 
+unsafe fn flush_tlb_single_page(virtual_address: VirtAddr) {
+    unsafe {
+        asm!("invlpg [{}]", in(reg) virtual_address.as_u64(), options(nostack, preserves_flags));
+    }
+}
 
 pub enum SizeUnit {
     Byte = 1,
@@ -75,7 +80,10 @@ impl SizeUnit {
             SizeUnit::Gigabyte => {1_073_741_824}
         }
     }
+    
+    pub fn as_u64(&self) -> u64 {
+        self.as_usize() as u64 //lol
+    }
 }
 
 pub const FRAME_SIZE: u64 = 4096;
-pub const PAGE_SIZE: u64 = 4096;

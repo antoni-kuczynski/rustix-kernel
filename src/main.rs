@@ -1,19 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
-/*
- * Created by Oskar Przybylski
- * 22/09/2025
- */
-
-// extern crate alloc;
-
-// use core::{panic::PanicInfo};
-// use crate::drivers::acpi::acpi::{acpi2_reset_command, enable_acpi};
-// use crate::drivers::acpi::acpi_tables::{get_acpi_tables};
-// use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-// use crate::interrupts::hardware::pic8259::sleep;
-// use crate::memory::pages;
 
 mod drivers;
 mod interrupts;
@@ -22,38 +9,10 @@ mod boot;
 mod memory;
 // mod graphics;
 
-// entry_point!(_start);
-// fn _start(boot_info: &'static BootInfo) -> ! {
-//     bootinfo::show_vitals(&boot_info);
-//
-//     interrupts::init_idt();
-//     interrupts::gdt::init_gdt();
-//     interrupts::hardware::pic8259::init_pics();
-//     interrupts::enable();
-//
-//     let mut _offset_page_table = pages::init(&boot_info);
-//     let mut _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
-//     memory::gallocator::init(&mut _offset_page_table,&mut _fa)
-//         .expect("heap init failed");
-//
-//     let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
-//     enable_acpi(&tables).expect("Enabling ACPI failed!");
-//
-//     sleep(2000);
-//     acpi2_reset_command(&tables).expect("failed to acpi reset the pc");
-//
-//     loop{
-//         x86_64::instructions::hlt();
-//     }
-// }
-
 use core::panic::PanicInfo;
-use x86_64::{PhysAddr, VirtAddr};
 use crate::boot::multiboot::{MultibootInfoView};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{P2V, PHYS_BASE, VIRT_BASE};
-use crate::memory::eba::{eba_kmalloc, print_page_table_tree, EARLY_BUMP_ALLOCATOR};
-use crate::memory::paging::map_2mb_page;
+use crate::memory::{SizeUnit, P2V, PHYS_BASE, VIRT_BASE};
 
 pub struct BootInfo {
     pub physical_memory_offset: u64
@@ -79,7 +38,7 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    let multiboot_addr: u64 = P2V(MultibootInfoView::get_multiboot_address_from_ebx() as u64);
+    let original_virt_address: u64 = P2V(MultibootInfoView::get_multiboot_address_from_ebx() as u64); //DO NOT MOVE THIS!!!
     let kernel_offset = VIRT_BASE;
     let phys_base = PHYS_BASE;
     let end_kernel = unsafe {&endKernel as *const u32 as u64};
@@ -89,38 +48,31 @@ pub extern "C" fn rust_main() -> ! {
     interrupts::hardware::pic8259::init_pics();
     interrupts::enable();
 
-    vgaprintln!("{:#011x}", multiboot_addr);
-
-
     unsafe {
-        map_2mb_page(
-            VirtAddr::new(0xffff_ffff_deadbeefu64),
-            PhysAddr::new(0xA000_0000)
-        );
+        // eba_map_2mb_page(
+        //     VirtAddr::new(0xffff_ffff_deadbeefu64),
+        //     PhysAddr::new(0xA000_0000)
+        // );
+        //
+        // let addr = 0xffff_ffff_deadbeef as *mut u64;
+        // *addr = 0xdeadc0de;
+        //
+        // let a: *mut u32 = eba_kmalloc(size_of::<u32>(), 1).unwrap();
+        // *a = 0xBEEFBABE;
+        //
+        // vgaprintln!("==========================");
+        // vgaprintln!("Addr: {:#011x}", *addr);
+        // vgaprintln!("a: {:#011x}", *a);
+        // vgaprintln!("==========================");
 
-        let addr = 0xffff_ffff_deadbeef as *mut u64;
-        *addr = 0xdeadc0de;
 
-        let a: *mut u32 = eba_kmalloc(size_of::<u32>(), 1).unwrap();
-        *a = 0xBEEFBABE;
-
-        vgaprintln!("==========================");
-        vgaprintln!("Addr: {:#011x}", *addr);
-        vgaprintln!("a: {:#011x}", *a);
-        vgaprintln!("==========================");
-
-        
         // print_page_table_tree(kernel_offset as u64);
 
         // multiboot info struct is gonna be copied to a new address, right after temp heap region
-        // let multiboot_copy_address = P2V(earlyHeapEnd);
-        // let multiboot_info = MultibootInfoView::init_multiboot_info_struct(
-        //     multiboot_addr,
-        //     multiboot_copy_address
-        // );
+        let multiboot_info = MultibootInfoView::init_multiboot_info_struct(original_virt_address);
 
 
-        // let memory_tag = multiboot_info.get_memory_map_tag().unwrap();
+        let memory_tag = multiboot_info.get_memory_map_tag().unwrap();
 
         vgaprintln!("=======KERNEL HEAP INFO=======");
         vgaprintln!("Kernel PHYSICAL end:       {:#011x}", end_kernel);
@@ -132,12 +84,12 @@ pub extern "C" fn rust_main() -> ! {
         vgaprintln!("EH VIRTUAL end:    {:#011x}", P2V(earlyHeapEnd));
         vgaprintln!();
         vgaprintln!("=========MEMORY INFO==========");
-        // vgaprintln!("Available memory:  {}mb", (*memory_tag).get_available_memory(SizeUnit::Megabyte));
-        // vgaprintln!("Bitmap size:   {}kb", ((*memory_tag).get_high_usable_memory_address() / 4096 / 8) / SizeUnit::Kilobyte.as_usize() as u64);
+        vgaprintln!("Available memory:  {}mb", (*memory_tag).get_available_memory(SizeUnit::Megabyte));
+        vgaprintln!("Bitmap size:   {}kb", ((*memory_tag).get_high_usable_memory_address() / 4096 / 8) / SizeUnit::Kilobyte.as_usize() as u64);
         vgaprintln!();
         vgaprintln!("=======MULTIBOOT INFO=========");
-        // vgaprintln!("Multiboot end VIRTUAL: {:#011x}", multiboot_info.multiboot_end_logical());
-        // vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
+        vgaprintln!("Multiboot end VIRTUAL: {:#011x}", multiboot_info.multiboot_end_logical());
+        vgaprintln!("Bootloader name: {}", multiboot_info.get_boot_loader_name().unwrap());
 
         // let mut modules = multiboot_info.get_modules_tag(multiboot_info.tags);
         //
@@ -163,35 +115,23 @@ pub extern "C" fn rust_main() -> ! {
 
         // let pmm = memory::pmm::init(&multiboot_info).expect("pmm init failed");
         // pmm.print(8);
-
-
-
-    }
-    // pmm.print(8);
-    // memory::paging::init(&multiboot_info).expect("TODO: panic message");
-
-
-
-    loop {
-        x86_64::instructions::hlt();
     }
 
-
-    //
-    // let mut _offset_page_table = pages::init(&boot_info);
-    // let mut _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
-    // memory::gallocator::init(&mut _offset_page_table,&mut _fa)
-    //     .expect("heap init failed");
-    //
     // let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
     // enable_acpi(&tables).expect("Enabling ACPI failed!");
     //
     // sleep(2000);
     // acpi2_reset_command(&tables).expect("failed to acpi reset the pc");
     //
+    // pci::pci_init();
+    //
     // loop{
     //     x86_64::instructions::hlt();
     // }
+
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
 #[panic_handler]
