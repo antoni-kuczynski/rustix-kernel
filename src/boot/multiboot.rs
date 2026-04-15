@@ -1,10 +1,10 @@
 #![allow(dead_code)]
-use crate::{earlyHeapEnd, vgaprint, VGAWRITER};
+use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint, VGAWRITER};
 use crate::ColorTextMode;
-use core::arch::asm;
 use core::cmp::PartialEq;
 use core::ptr;
 use core::ptr::read_volatile;
+use spin::{Once};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::{print_ok_msg, vgaprintln};
 use crate::memory::{SizeUnit, V2P};
@@ -105,9 +105,19 @@ pub struct MultibootInfoView {
 //==================================================================================================
 
 impl MultibootInfoView {
-    pub fn init_multiboot_info_struct(original_virt_address: u64) -> MultibootInfoView {
+    fn empty() -> Self {
+        Self {
+            base: &MultibootInfo { total_size: 0, _reserved: 0 },
+            tags_size_bytes: 0,
+            tags: Default::default(),
+            multiboot_end_logical: 0,
+        }
+    }
+
+    pub fn init_multiboot_info_struct() -> MultibootInfoView {
         unsafe {
-            let virt_address_to_copy_to = P2V(earlyHeapEnd + PageSize::SIZE_2MB);
+            let original_virt_address = P2V(__oldMultibootPhysAddr as u64);
+            let virt_address_to_copy_to = P2V((earlyHeapEnd + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1));
             let original_aligned = original_virt_address & !(SizeUnit::Megabyte.as_usize()*2 - 1) as u64;
             //---------------------------------------------------------
             // Map the original struct
@@ -117,12 +127,12 @@ impl MultibootInfoView {
                 PhysAddr::new_truncate(V2P(original_aligned))
             );
 
-            let length = *(original_virt_address as *const u32) as u64;
+            let length_bytes = *(original_virt_address as *const u32) as u64;
 
             eba_map_2mb_range(
                 VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB),
-                VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB + length),
-                PhysAddr::new_truncate(V2P(original_aligned + PageSize::SIZE_2MB))
+                PhysAddr::new_truncate(V2P(original_aligned + PageSize::SIZE_2MB)),
+                length_bytes
             );
 
             //---------------------------------------------------------
@@ -132,8 +142,8 @@ impl MultibootInfoView {
             let copied_addr_u64 = copied_addr as u64;
             eba_map_2mb_range(
                 VirtAddr::new_truncate(copied_addr_u64),
-                VirtAddr::new_truncate(copied_addr_u64 + length),
-                PhysAddr::new_truncate(V2P(copied_addr_u64))
+                PhysAddr::new_truncate(V2P(copied_addr_u64)),
+                length_bytes
             );
 
             //---------------------------------------------------------
@@ -164,14 +174,14 @@ impl MultibootInfoView {
             };
 
             vgaprint!("Copying kernel modules to address {:#011x}...", modules_start_address as u64);
-            let multiboot_end = Self::copy_modules(original_aligned, length, copied_base, modules_start_address, &mut view);
+            let multiboot_end = Self::copy_modules(original_aligned, length_bytes, copied_base, modules_start_address, &mut view);
             print_ok_msg!(); //copying kernel modules ok
             view.multiboot_end_logical = multiboot_end as u64;
 
             //---------------------------------------------------------
             // Unmap the original struct
             //---------------------------------------------------------
-            Self::unmap_original_mb_struct(original_aligned, length, copied_addr_u64);
+            Self::unmap_original_mb_struct(original_aligned, length_bytes, copied_addr_u64);
 
             view
         }
@@ -187,23 +197,23 @@ impl MultibootInfoView {
         while modules != None {
             let module = modules.unwrap() as *mut MultibootModulesTag;
             let mut original_address = P2V((*module).mod_start() as u64) as *mut u8;
-            let len = (*module).mod_end - (*module).mod_start;
+            let module_length_bytes = (*module).mod_end - (*module).mod_start;
             let mut copied_start_address = modules_start_address;
-            copied_end_addr = copied_start_address.add(len as usize);
+            copied_end_addr = copied_start_address.add(module_length_bytes as usize);
 
             // map the original modules region
             eba_map_2mb_range(
                 VirtAddr::new_truncate(original_address as u64),
-                VirtAddr::new_truncate(original_address as u64 + len as u64),
-                PhysAddr::new_truncate(V2P(original_address as u64))
+                PhysAddr::new_truncate(V2P(original_address as u64)),
+                module_length_bytes as u64
             );
 
 
             // map the copied modules region
             eba_map_2mb_range(
                 VirtAddr::new_truncate(copied_start_address as u64),
-                VirtAddr::new_truncate(copied_end_addr as u64),
-                PhysAddr::new_truncate(V2P(copied_start_address as u64))
+                PhysAddr::new_truncate(V2P(copied_start_address as u64)),
+                module_length_bytes as u64
             );
 
             //set the addresses in multiboot info struct
@@ -383,19 +393,12 @@ impl MultibootInfoView {
         }
     }
 //==================================================================================================
-    pub fn get_multiboot_address_from_ebx() -> u32 {
-        unsafe {
-            let addr: u32;
-            asm!(
-            "mov {0:e}, ebx",
-            out(reg) addr,
-            );
-            addr
-        }
-    }
-//==================================================================================================
     pub fn base(&self) -> &'static MultibootInfo {
         self.base
+    }
+
+    pub fn length(&self) -> u32 {
+        self.base().total_size
     }
 
     pub fn tags_size_bytes(&self) -> usize {
@@ -506,7 +509,7 @@ impl MultibootMemoryMapTag {
         }
     }
     //==================================================================================================
-    pub fn get_high_usable_memory_address(&self) -> u64 {
+    pub fn get_high_usable_memory_address(&self) -> PhysAddr {
         unsafe {
             let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
             let entry_length = self.entry_size;
@@ -528,7 +531,7 @@ impl MultibootMemoryMapTag {
 
                 entry1 = entry1.add(1);
             }
-            max
+            PhysAddr::new_truncate(max)
         }
     }
 //==================================================================================================
@@ -693,4 +696,38 @@ impl MemoryRegionType {
             Self::DefectiveRAM => Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM
         }
     }
+}
+//==================================================================================================
+// the struct is read only (well, except the init part at least)
+// so this is already thread safe so this should be fine i guess
+unsafe impl Send for MultibootInfoView {}
+
+unsafe impl Sync for MultibootInfoView {}
+
+pub static MULTIBOOT_INFO: Once<MultibootInfoView> = Once::new();
+
+pub fn multiboot2_init() {
+    let view = MultibootInfoView::init_multiboot_info_struct();
+
+    MULTIBOOT_INFO.call_once(|| view);
+}
+
+pub fn multiboot2_memory_map_tag() -> Option<*const MultibootMemoryMapTag> {
+    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    info.get_memory_map_tag()
+}
+
+pub fn multiboot2_modules_tag(search_start_addr: *const u32) -> Option<*const MultibootModulesTag> {
+    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    info.get_modules_tag(search_start_addr)
+}
+
+pub fn multiboot2_bootloader_name() -> Option<&'static str> {
+    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    info.get_boot_loader_name()
+}
+
+pub fn multiboot2_logical_end() -> VirtAddr {
+    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    VirtAddr::new(info.multiboot_end_logical)
 }

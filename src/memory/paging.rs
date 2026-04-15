@@ -18,7 +18,7 @@ pub unsafe fn eba_map_2mb_page(virt: VirtAddr, phys: PhysAddr) {
         let pml4 = PageTable::from_cr3();
         let pdpt3 = (*pml4).get_ptr_from_index_or_eba_kmalloc(indexes.pml4_index());
         let pd2 = (*pdpt3).get_ptr_from_index_or_eba_kmalloc(indexes.pdpt_index());
-    
+
         let mut entry = &mut (*pd2).get_entries()[indexes.pd_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_FFE0_0000);
         entry.set_flag(PageTableEntry::PRESENT, true);
@@ -29,17 +29,21 @@ pub unsafe fn eba_map_2mb_page(virt: VirtAddr, phys: PhysAddr) {
 
 
 /// Allocates a continuous page range using early bump as an allocator.
-pub unsafe fn eba_map_2mb_range(virt_start: VirtAddr, virt_end: VirtAddr, phys: PhysAddr) {
+pub fn eba_map_2mb_range(virt_start: VirtAddr, phys_start: PhysAddr, length: u64) {
     unsafe {
-        let mut temp_virt = virt_start.as_u64();
-        let mut temp_phys = phys.as_u64();
-        while temp_virt <= virt_end.as_u64() {
+        let mut mapped_bytes = 0;
+        let mut current_virt = virt_start.as_u64();
+        let mut current_phys = phys_start.as_u64();
+
+        while mapped_bytes < length {
             eba_map_2mb_page(
-                VirtAddr::new_truncate(temp_virt),
-                PhysAddr::new_truncate(V2P(temp_phys))
+                VirtAddr::new_truncate(current_virt),
+                PhysAddr::new_truncate(current_phys)
             );
-            temp_virt += 0x200000;
-            temp_phys += 0x200000;
+
+            current_virt += 0x200000;
+            current_phys += 0x200000;
+            mapped_bytes += 0x200000;
         }
     }
 }
@@ -61,14 +65,53 @@ pub unsafe fn early_unmap_2mb_page(virt: VirtAddr) {
 
 
 /// Frees a continuous page range using early bump as an allocator.
-pub unsafe fn early_unmap_2mb_range(virt_start: VirtAddr, virt_end: VirtAddr) {
+pub fn early_unmap_2mb_range(virt_start: VirtAddr, length: u64) {
     unsafe {
-        let mut temp = virt_start.as_u64();
-        while temp <= virt_end.as_u64() {
+        let mut unmapped_bytes = 0;
+        let mut current_virt = virt_start.as_u64();
+
+        while unmapped_bytes < length {
             early_unmap_2mb_page(
-                VirtAddr::new_truncate(virt_start.as_u64() + temp),
+                VirtAddr::new_truncate(current_virt)
             );
-            temp += 0x200000;
+
+            current_virt += 0x200000;
+            unmapped_bytes += 0x200000;
         }
     }
 }
+
+
+// Translates virtual address to a physical address
+// pub fn virtual_to_physical(virt: VirtAddr) -> Option<PhysAddr> {
+//     unsafe {
+//         let indexes = PageIndexes::get_from_virt(virt);
+//
+//         let get_entry = |table_ptr: *mut PageTable, index| {
+//             let entry: &PageTableEntry = &(*table_ptr).get_entries()[index];
+//             if entry.is_present() { Some(entry) } else { None }
+//         };
+//
+//         let calc_phys = |entry_addr: u64, mask: u64| {
+//             let offset = virt.as_u64() & mask;
+//             PhysAddr::new(entry_addr + offset)
+//         };
+//
+//         let pml4 = PageTable::from_cr3();
+//         let pml4_entry = get_entry(pml4, indexes.pml4_index())?;
+//
+//         let pdpt_entry = get_entry(pml4_entry.as_pt_address(), indexes.pdpt_index())?;
+//         if pdpt_entry.is_huge() {
+//             return Some(calc_phys(pdpt_entry.address(), 0x3FFF_FFFF));
+//         }
+//
+//         let pd_entry = get_entry(pdpt_entry.as_pt_address(), indexes.pd_index())?;
+//         if pd_entry.is_huge() {
+//             return Some(calc_phys(pd_entry.address(), 0x1F_FFFF));
+//         }
+//
+//         let pt_entry = get_entry(pd_entry.as_pt_address(), indexes.pt_index())?;
+//
+//         Some(calc_phys(pt_entry.address(), 0xFFF))
+//     }
+// }

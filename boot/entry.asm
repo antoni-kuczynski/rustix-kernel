@@ -240,7 +240,7 @@ higherHalfMemory:
     mov rax, cr3
     mov cr3, rax
 
-    mov ebx, esi    ; restore the multiboot struct address
+    mov [__oldMultibootPhysAddr], esi   ; restore the multiboot struct address
 
     call vgaInit
 
@@ -374,12 +374,16 @@ l1_pt_low:
 ; ====================================================
 global earlyHeapStart
 global earlyHeapEnd
+global __oldMultibootPhysAddr
 ; ====================================================
 earlyHeapStart:
     RESQ 1
 ; ====================================================
 earlyHeapEnd:
     RESQ 1
+; ====================================================
+__oldMultibootPhysAddr:
+    RESD 1  ; 4 bytes
 ; ====================================================
 
 stack_bottom:

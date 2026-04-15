@@ -33,7 +33,7 @@ const PAGE_TABLE_ENTRIES: usize = 512;
 pub const PHYS_ADDR_MASK: u64 = 0x000F_FFFF_FFE0_0000;
 #[repr(align(4096))]
 pub struct PageTable {
-    entries: [PageTableEntry; PAGE_TABLE_ENTRIES]
+    pub entries: [PageTableEntry; PAGE_TABLE_ENTRIES]
 }
 
 impl PageTable {
@@ -167,7 +167,7 @@ impl PageIndexes {
         self.0[2]
     }
 
-    fn pt_index(&self) -> usize {
+    pub fn pt_index(&self) -> usize {
         self.0[3]
     }
 }

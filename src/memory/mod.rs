@@ -8,6 +8,7 @@ pub mod paging;
 pub mod pmm;
 pub mod eba;
 pub mod page_tables;
+mod dir_mapping;
 
 //==================================================================
 pub const PHYS_BASE: u32 = 0x00100000;
@@ -68,7 +69,8 @@ pub enum SizeUnit {
     Byte = 1,
     Kilobyte = 1024,
     Megabyte = 1_048_576,
-    Gigabyte = 1_073_741_824
+    Gigabyte = 1_073_741_824,
+    Terabyte = 1_099_511_627_776
 }
 
 impl SizeUnit {
@@ -78,6 +80,7 @@ impl SizeUnit {
             SizeUnit::Kilobyte => {1024}
             SizeUnit::Megabyte => {1_048_576}
             SizeUnit::Gigabyte => {1_073_741_824}
+            SizeUnit::Terabyte => {1_099_511_627_776}
         }
     }
     
