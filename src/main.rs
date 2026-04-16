@@ -46,8 +46,8 @@ pub extern "C" fn rust_main() -> ! {
 
     boot::cpuid::cpuid_init();
     boot::multiboot::multiboot2_init();
-    memory::pmm::pmm_init().expect("pmm init failed");
-    memory::dir_mapping::dir_mapping_init();
+    // memory::pmm::pmm_init().expect("pmm init failed");
+    // memory::dir_mapping::dir_mapping_init();
 
 
     unsafe {

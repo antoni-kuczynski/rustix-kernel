@@ -290,7 +290,7 @@ setupPageTablesLongMode:
     tempHeapPageTables:
         lea rdi, [earlyHeapStart]   ; set early heap start
         lea rax, [endKernel]    ; end kernel address
-        add rax, 0x200000   ; add size of page
+        add rax, 0x200000 - 1   ; add size of page - 1
         and rax, ~(0x200000 - 1) ; align to page
         mov [rdi], rax          ; put in .bss
 

@@ -117,8 +117,8 @@ impl MultibootInfoView {
     pub fn init_multiboot_info_struct() -> MultibootInfoView {
         unsafe {
             let original_virt_address = _P2V_kernel(__oldMultibootPhysAddr as u64);
-            let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1));
-            let original_aligned = original_virt_address & !(SizeUnit::Megabyte.as_usize()*2 - 1) as u64;
+            let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB - 1) & !(PageSize::SIZE_2MB - 1));
+            let original_aligned = original_virt_address & !(PageSize::SIZE_2MB - 1);
             //---------------------------------------------------------
             // Map the original struct
             //---------------------------------------------------------
@@ -178,7 +178,7 @@ impl MultibootInfoView {
             //---------------------------------------------------------
             // Unmap the original struct
             //---------------------------------------------------------
-            Self::unmap_original_mb_struct(original_aligned, length_bytes, copied_addr_u64);
+            // Self::unmap_original_mb_struct(original_aligned, length_bytes, copied_addr_u64);
 
             print_ok_msg!();
             view
@@ -186,6 +186,7 @@ impl MultibootInfoView {
     }
 
     // This code is pure horror!!!
+    //TODO: this garbage causes undefined behaviour when debug flag's turned off, so better rewrite this pile oh horse shit
     unsafe fn copy_modules(original_aligned: u64, length: u64, copied_base: &MultibootInfo, start: *mut u8, view: &mut MultibootInfoView) -> *const u8 {
         unsafe {
         let mut modules = view.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES, view.tags);
@@ -193,6 +194,7 @@ impl MultibootInfoView {
 
         let mut copied_end_addr = (copied_base as *const MultibootInfo as *const u8).add((*copied_base).total_size as usize);
         while modules != None {
+            //TODO: fuck load of variables - get rid of them!
             let module = modules.unwrap() as *mut MultibootModulesTag;
             let mut original_address = _P2V_kernel((*module).mod_start() as u64) as *mut u8;
             let module_length_bytes = (*module).mod_end - (*module).mod_start;
@@ -226,6 +228,7 @@ impl MultibootInfoView {
                 copied_start_address = copied_start_address.add(1);
             }
 
+            //TODO: stinky pointer casts and arithmetics!!! I'd rather go smell skunk's farts than this!
             modules_start_address = ((modules_start_address as u64 +
                 (*module).header().size() as u64 + 0xFFF) & !0xFFF
             ) as *mut u8;
@@ -239,6 +242,7 @@ impl MultibootInfoView {
             );
 
             //unmap the module
+            //TODO: when commented out there's no page fault / triple fault even
             Self::unamp_module_original_addr(
                 original_aligned,
                 length,
@@ -250,6 +254,7 @@ impl MultibootInfoView {
             }
     }
 
+    //TODO: what the fuck are these varaibles??? i probably farted at the keyboard and they came out like this
     fn unamp_module_original_addr(original_aligned: u64, length: u64, original_address: *mut u8, copied_start_address: *mut u8) {
         unsafe {
             let mut temp = 0;
