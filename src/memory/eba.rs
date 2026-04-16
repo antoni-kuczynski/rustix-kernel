@@ -9,7 +9,7 @@ use spin::Mutex;
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PageTable;
 use crate::{earlyHeapEnd, earlyHeapStart, memory, vgaprintln};
-use crate::memory::{MemoryRange, P2V};
+use crate::memory::{MemoryRange, _P2V_kernel};
 use crate::memory::page_tables::PagingSetupError;
 //==================================================================================================
 pub struct EarlyBumpAllocator {
@@ -51,8 +51,8 @@ impl EarlyBumpAllocator {
 //==================================================================================================
 pub fn eba_init() -> Result<EarlyBumpAllocator, PagingSetupError> {
     unsafe {
-        let start = P2V(earlyHeapStart);
-        let end = P2V(earlyHeapEnd);
+        let start = _P2V_kernel(earlyHeapStart);
+        let end = _P2V_kernel(earlyHeapEnd);
 
         let view = EarlyBumpAllocator {
             temp_range: MemoryRange::new(start, end),

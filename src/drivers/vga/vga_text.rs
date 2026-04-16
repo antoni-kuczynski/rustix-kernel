@@ -8,7 +8,7 @@ use lazy_static::lazy_static;
 // use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::drivers::vga::vga_fonts::*;
 use crate::drivers::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, write_fonts};
-use crate::memory::P2V;
+use crate::memory::_P2V_kernel;
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -147,9 +147,9 @@ impl VgaTextMode {
             column_position: 0,
             row_position: 0,
             color_code: ColorCodeTextMode::new(ColorTextMode::White, ColorTextMode::Black),
-            buffer: unsafe { &mut *(P2V(0xb8000) as *mut VgaBuffer) },
-            buf_start_p: P2V(0xB8000),
-            buf_end_p: P2V(0xBBFFF)
+            buffer: unsafe { &mut *(_P2V_kernel(0xb8000) as *mut VgaBuffer) },
+            buf_start_p: _P2V_kernel(0xB8000),
+            buf_end_p: _P2V_kernel(0xBBFFF)
         }
     }
 
@@ -305,7 +305,7 @@ macro_rules! print_ok_msg {
     () => {
         let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
         VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
-        vgaprintln!(" OK!");
+        $crate::vgaprintln!(" OK!");
         VGAWRITER.lock().change_foreground_color(prev_fg_color);
     }
 }
@@ -315,7 +315,7 @@ macro_rules! print_fail_msg {
     () => {
         let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
         VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
-        vgaprintln!(" FAIL!");
+        $crate::vgaprintln!(" FAIL!");
         VGAWRITER.lock().change_foreground_color(prev_fg_color);
     }
 }

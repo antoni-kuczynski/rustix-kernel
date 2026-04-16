@@ -4,7 +4,7 @@
  */
 use core::ptr;
 use x86_64::VirtAddr;
-use crate::memory::{Cr3, SizeUnit, P2V, V2P};
+use crate::memory::{Cr3, SizeUnit, _P2V_kernel, _V2P_kernel};
 use crate::memory::eba::eba_kmalloc;
 use crate::vgaprintln;
 
@@ -44,16 +44,16 @@ impl PageTable {
         // no page table - need to allocate
         if !entry.is_present() {
             let new_table = early_page_alloc();
-            entry.set_address(V2P(new_table as u64));
+            entry.set_address(_V2P_kernel(new_table as u64));
             entry.set_flag(PageTableEntry::PRESENT, true);
             entry.set_flag(PageTableEntry::WRITABLE, true);
             return new_table;
         }
-        P2V(entry.address()) as *mut PageTable
+        _P2V_kernel(entry.address()) as *mut PageTable
     }
 
     pub fn from_cr3() -> *mut PageTable {
-        P2V(Cr3::cr3_page_table_base().as_u64()) as *mut PageTable
+        _P2V_kernel(Cr3::cr3_page_table_base().as_u64()) as *mut PageTable
     }
 
     pub fn get_entries(&mut self) -> &mut [PageTableEntry; 512] {

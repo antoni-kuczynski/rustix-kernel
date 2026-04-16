@@ -10,9 +10,12 @@ mod memory;
 // mod graphics;
 
 use core::panic::PanicInfo;
+use x86_64::PhysAddr;
 use crate::boot::multiboot::{multiboot2_bootloader_name, multiboot2_logical_end, multiboot2_memory_map_tag, MULTIBOOT_INFO};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{SizeUnit, P2V, PHYS_BASE, VIRT_BASE};
+use crate::memory::{SizeUnit, _P2V_kernel, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
+use crate::memory::dir_mapping::physical_to_virtual;
+use crate::memory::paging::virtual_to_physical;
 use crate::memory::pmm::{PMM_BITMAP};
 
 #[unsafe(no_mangle)]
@@ -41,13 +44,26 @@ pub extern "C" fn rust_main() -> ! {
     interrupts::hardware::pic8259::init_pics();
     interrupts::enable();
 
+    boot::cpuid::cpuid_init();
     boot::multiboot::multiboot2_init();
-    memory::pmm::init().expect("pmm init failed");
+    memory::pmm::pmm_init().expect("pmm init failed");
+    memory::dir_mapping::dir_mapping_init();
+
 
     unsafe {
-        let kernel_offset = VIRT_BASE;
-        let phys_base = PHYS_BASE;
+        let kernel_offset = KERNEL_VIRT_BASE;
+        let phys_base = KERNEL_PHYS_BASE;
         let end_kernel = &endKernel as *const u32 as u64;
+
+        let a = PhysAddr::new(0xdeadbeef);
+        let virt = physical_to_virtual(a);
+        let phys = virtual_to_physical(virt);
+
+        vgaprintln!("Original: {:#011x}", a);
+        vgaprintln!("Virt: {:#011x}", virt.as_u64());
+        vgaprintln!("Phys: {:#011x}", phys.unwrap().as_u64());
+
+
 
         // eba_map_2mb_page(
         //     VirtAddr::new(0xffff_ffff_deadbeefu64),
@@ -79,8 +95,8 @@ pub extern "C" fn rust_main() -> ! {
         vgaprintln!("Kernel PHYS2VIRT offset:   {:#011x}", kernel_offset);
         vgaprintln!();
         vgaprintln!("=======EARLY HEAP INFO========");
-        vgaprintln!("EH VIRTUAL start:  {:#011x}", P2V(earlyHeapStart));
-        vgaprintln!("EH VIRTUAL end:    {:#011x}", P2V(earlyHeapEnd));
+        vgaprintln!("EH VIRTUAL start:  {:#011x}", _P2V_kernel(earlyHeapStart));
+        vgaprintln!("EH VIRTUAL end:    {:#011x}", _P2V_kernel(earlyHeapEnd));
         vgaprintln!();
         vgaprintln!("=========MEMORY INFO==========");
         vgaprintln!("Available memory:  {}mb", (*memory_tag).get_available_memory(SizeUnit::Megabyte));

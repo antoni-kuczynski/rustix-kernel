@@ -6,7 +6,7 @@ use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::boot::multiboot::{multiboot2_logical_end, multiboot2_memory_map_tag, MemoryRegionType, MultibootInfoView, MultibootMemoryMapEntry, MultibootMemoryMapTag, MULTIBOOT_INFO};
 use crate::{vgaprintln};
-use crate::memory::{Cr3, SizeUnit, FRAME_SIZE, P2V, V2P};
+use crate::memory::{Cr3, SizeUnit, FRAME_SIZE, _P2V_kernel, _V2P_kernel};
 use crate::memory::page_tables::{PageSize, PageTable};
 use crate::memory::paging::eba_map_2mb_range;
 use crate::memory::pmm::PmmInitError::NoMemorySizeProvided;
@@ -79,7 +79,7 @@ impl PmmBitmap {
             let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
             let last = entry1.byte_add(size_entries as usize);
 
-            vgaprintln!("entry 1: {:#011x}, last: {:#011x}", entry1 as *const u64 as u64, last as *const u64 as u64);
+            // vgaprintln!("entry 1: {:#011x}, last: {:#011x}", entry1 as *const u64 as u64, last as *const u64 as u64);
 
             while entry1 < last {
                 let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type()) {
@@ -90,7 +90,7 @@ impl PmmBitmap {
                     Some(x) => { x }
                 };
 
-                vgaprintln!("base_addr: {:#011x}, length: {}", (*entry1).base_addr(), (*entry1).length());
+                // vgaprintln!("base_addr: {:#011x}, length: {}", (*entry1).base_addr(), (*entry1).length());
 
                 if region_type != MemoryRegionType::AvailableRAM {
                     entry1 = entry1.add(1);
@@ -122,12 +122,12 @@ impl PmmBitmap {
         //==========================================================================================
         self.sync_allocator_with_page_tables();
 
-        vgaprintln!("Length total: {}", (V2P(self.ptr.load(Ordering::Acquire) as u64) + self.length) / FRAME_SIZE / 8);
+        // vgaprintln!("Length total: {}", (V2P(self.ptr.load(Ordering::Acquire) as u64) + self.length) / FRAME_SIZE / 8);
         //also reserve the unmapped guard holes
         //basically, everything til the end of this bitmap is marked as used
         self.reserve_range(
             PhysAddr::new(0x00000),
-            V2P(self.ptr.load(Ordering::Acquire) as u64) + self.length //we know that the pointer is the beginning of the bitmap right now
+            _V2P_kernel(self.ptr.load(Ordering::Acquire) as u64) + self.length //we know that the pointer is the beginning of the bitmap right now
         );
 
     }
@@ -153,7 +153,7 @@ impl PmmBitmap {
 
                 self1.reserve_range(PhysAddr::new(pdpt_phys), PageSize::SIZE_4KB);
 
-                let pdpt = unsafe { &*(P2V(pdpt_phys) as *const PageTable) };
+                let pdpt = unsafe { &*(_P2V_kernel(pdpt_phys) as *const PageTable) };
                 unsafe { do_pdpt3(self1, &pdpt); }
             }
         }
@@ -172,7 +172,7 @@ impl PmmBitmap {
 
                 let pd_phys = pdpt_entry.address();
 
-                let pd = unsafe { &*(P2V(pd_phys) as *const PageTable) };
+                let pd = unsafe { &*(_P2V_kernel(pd_phys) as *const PageTable) };
                 do_pd2(self1, &pd);
             }
         }
@@ -191,7 +191,7 @@ impl PmmBitmap {
 
                 let pt_phys = pd_entry.address();
 
-                let pt = unsafe { &*(P2V(pt_phys) as *const PageTable) };
+                let pt = unsafe { &*(_P2V_kernel(pt_phys) as *const PageTable) };
                 do_pt1(&pt);
             }
         }
@@ -304,7 +304,7 @@ impl PmmBitmap {
     }
 }
 //==================================================================================================
-pub fn init() -> Result<(), PmmInitError> {
+pub fn pmm_init() -> Result<(), PmmInitError> {
     let mem_map = match multiboot2_memory_map_tag() {
         None => {
             return Err(NoMemorySizeProvided);
@@ -321,7 +321,7 @@ pub fn init() -> Result<(), PmmInitError> {
 
         eba_map_2mb_range(
             VirtAddr::new_truncate(bitmap_start_ptr.load(Ordering::Acquire) as u64),
-            PhysAddr::new_truncate(V2P(bitmap_start_ptr.load(Ordering::Acquire) as u64)),
+            PhysAddr::new_truncate(_V2P_kernel(bitmap_start_ptr.load(Ordering::Acquire) as u64)),
             bitmap_size_bytes
         );
 

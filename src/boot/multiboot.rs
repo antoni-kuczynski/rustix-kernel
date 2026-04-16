@@ -7,8 +7,8 @@ use core::ptr::read_volatile;
 use spin::{Once};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::{print_ok_msg, vgaprintln};
-use crate::memory::{SizeUnit, V2P};
-use crate::memory::P2V;
+use crate::memory::{SizeUnit, _V2P_kernel};
+use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::{PageSize};
 use crate::memory::paging::{early_unmap_2mb_page, eba_map_2mb_page, eba_map_2mb_range};
 /*
@@ -116,22 +116,22 @@ impl MultibootInfoView {
 
     pub fn init_multiboot_info_struct() -> MultibootInfoView {
         unsafe {
-            let original_virt_address = P2V(__oldMultibootPhysAddr as u64);
-            let virt_address_to_copy_to = P2V((earlyHeapEnd + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1));
+            let original_virt_address = _P2V_kernel(__oldMultibootPhysAddr as u64);
+            let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1));
             let original_aligned = original_virt_address & !(SizeUnit::Megabyte.as_usize()*2 - 1) as u64;
             //---------------------------------------------------------
             // Map the original struct
             //---------------------------------------------------------
             eba_map_2mb_page(
                 VirtAddr::new_truncate(original_aligned),
-                PhysAddr::new_truncate(V2P(original_aligned))
+                PhysAddr::new_truncate(_V2P_kernel(original_aligned))
             );
 
             let length_bytes = *(original_virt_address as *const u32) as u64;
 
             eba_map_2mb_range(
                 VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB),
-                PhysAddr::new_truncate(V2P(original_aligned + PageSize::SIZE_2MB)),
+                PhysAddr::new_truncate(_V2P_kernel(original_aligned + PageSize::SIZE_2MB)),
                 length_bytes
             );
 
@@ -142,17 +142,16 @@ impl MultibootInfoView {
             let copied_addr_u64 = copied_addr as u64;
             eba_map_2mb_range(
                 VirtAddr::new_truncate(copied_addr_u64),
-                PhysAddr::new_truncate(V2P(copied_addr_u64)),
+                PhysAddr::new_truncate(_V2P_kernel(copied_addr_u64)),
                 length_bytes
             );
 
             //---------------------------------------------------------
             //copy multiboot info struct to right after early bump allocator region
             //---------------------------------------------------------
-            vgaprint!("Copying multiboot2 info struct to address {:#011x}...", copied_addr as u64);
+            vgaprint!("Initializing multiboot2 and modules...");
             Self::copy_mb_struct(original_virt_address, copied_addr);
             let copied_base = MultibootInfo::new(copied_addr as u64);
-            print_ok_msg!(); // finished copying
 
             //---------------------------------------------------------
             // copy kernel modules right after multiboot info end
@@ -173,9 +172,7 @@ impl MultibootInfoView {
                 multiboot_end_logical: 0 //temp value
             };
 
-            vgaprint!("Copying kernel modules to address {:#011x}...", modules_start_address as u64);
             let multiboot_end = Self::copy_modules(original_aligned, length_bytes, copied_base, modules_start_address, &mut view);
-            print_ok_msg!(); //copying kernel modules ok
             view.multiboot_end_logical = multiboot_end as u64;
 
             //---------------------------------------------------------
@@ -183,6 +180,7 @@ impl MultibootInfoView {
             //---------------------------------------------------------
             Self::unmap_original_mb_struct(original_aligned, length_bytes, copied_addr_u64);
 
+            print_ok_msg!();
             view
         }
     }
@@ -196,7 +194,7 @@ impl MultibootInfoView {
         let mut copied_end_addr = (copied_base as *const MultibootInfo as *const u8).add((*copied_base).total_size as usize);
         while modules != None {
             let module = modules.unwrap() as *mut MultibootModulesTag;
-            let mut original_address = P2V((*module).mod_start() as u64) as *mut u8;
+            let mut original_address = _P2V_kernel((*module).mod_start() as u64) as *mut u8;
             let module_length_bytes = (*module).mod_end - (*module).mod_start;
             let mut copied_start_address = modules_start_address;
             copied_end_addr = copied_start_address.add(module_length_bytes as usize);
@@ -204,7 +202,7 @@ impl MultibootInfoView {
             // map the original modules region
             eba_map_2mb_range(
                 VirtAddr::new_truncate(original_address as u64),
-                PhysAddr::new_truncate(V2P(original_address as u64)),
+                PhysAddr::new_truncate(_V2P_kernel(original_address as u64)),
                 module_length_bytes as u64
             );
 
@@ -212,13 +210,13 @@ impl MultibootInfoView {
             // map the copied modules region
             eba_map_2mb_range(
                 VirtAddr::new_truncate(copied_start_address as u64),
-                PhysAddr::new_truncate(V2P(copied_start_address as u64)),
+                PhysAddr::new_truncate(_V2P_kernel(copied_start_address as u64)),
                 module_length_bytes as u64
             );
 
             //set the addresses in multiboot info struct
-            (*module).mod_start = V2P(copied_start_address as u64) as u32;
-            (*module).mod_end = V2P(copied_end_addr as u64) as u32;
+            (*module).mod_start = _V2P_kernel(copied_start_address as u64) as u32;
+            (*module).mod_end = _V2P_kernel(copied_end_addr as u64) as u32;
 
             for _i in (*module).mod_start()..(*module).mod_end() {
                 *copied_start_address = *original_address; // copy

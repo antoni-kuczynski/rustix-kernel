@@ -8,18 +8,18 @@ pub mod paging;
 pub mod pmm;
 pub mod eba;
 pub mod page_tables;
-mod dir_mapping;
+pub mod dir_mapping;
 
 //==================================================================
-pub const PHYS_BASE: u32 = 0x00100000;
-pub const VIRT_BASE: u64 = 0xFFFFFFFF80000000;
+pub const KERNEL_PHYS_BASE: u32 = 0x00100000;
+pub const KERNEL_VIRT_BASE: u64 = 0xFFFFFFFF80000000;
 
-pub fn V2P(virt_address: u64) -> u64 {
-    virt_address - VIRT_BASE
+pub fn _V2P_kernel(virt_address: u64) -> u64 {
+    virt_address - KERNEL_VIRT_BASE
 }
 
-pub fn P2V(phys_address: u64) -> u64 {
-    phys_address + VIRT_BASE
+pub fn _P2V_kernel(phys_address: u64) -> u64 {
+    phys_address + KERNEL_VIRT_BASE
 }
 
 pub fn kernel_end() -> u64 {

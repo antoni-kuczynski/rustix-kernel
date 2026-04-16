@@ -21,7 +21,7 @@ use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
 use x86_64::{structures::idt::InterruptStackFrame};
 
-use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, vgaprint, vgaprintln};
+use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, print_ok_msg, vgaprint, vgaprintln};
 
 // indexes of pic interrupts handlers in IDT
 // Primary
@@ -45,9 +45,7 @@ pub fn init_pics(){
 
     unsafe { PICS.lock().initialize(); }
 
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
-    vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
+    print_ok_msg!();
 }
 
 #[derive(Debug,Clone,Copy)]
