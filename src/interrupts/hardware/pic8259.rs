@@ -40,8 +40,8 @@ fn end_of_interrupt(id: u8) {
     }
 }
 
-pub fn init_pics(){
-    vgaprint!("Initlializing pic8259 hardware interrupts...");
+pub fn pics_init(){
+    vgaprint!("Initializing pic8259 hardware interrupts...");
 
     unsafe { PICS.lock().initialize(); }
 

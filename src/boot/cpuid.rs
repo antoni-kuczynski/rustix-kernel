@@ -1,9 +1,14 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
 /*
  * Created by Antoni Kuczyński
  * 16/04/2026
  */
+use crate::{vgaprint, VGAWRITER};
+use crate::ColorTextMode;
 use core::arch::x86_64::{CpuidResult, __cpuid};
 use spin::Once;
+use crate::{print_ok_msg, vgaprintln};
 
 pub struct CpuId {
     base: CpuidResult,
@@ -165,15 +170,17 @@ impl CpuId {
 }
 
 pub fn cpuid_init() {
+    vgaprint!("Initializing CPUID...");
     unsafe {
-        let base_result = __cpuid(0x01); // Podstawowe flagi
-        let extended_result = __cpuid(0x8000_0001); // Rozszerzone flagi (w tym pdpe1gb)
+        let base_result = __cpuid(0x01);
+        let extended_result = __cpuid(0x8000_0001);
 
         CPU_ID.call_once(|| CpuId {
             base: base_result,
             extended: extended_result,
         });
     }
+    print_ok_msg!();
 }
 
 pub static CPU_ID: Once<CpuId> = Once::new();

@@ -15,11 +15,13 @@ features = ["spin_no_std"]
 
 [profile.dev]
 panic = "abort"
+opt-level = 1
 debug = true
 
 [profile.release]
 panic = "abort"
-debug = false
+opt-level = 3
+debug = true
 
 [[bin]]
 name = "rustix"

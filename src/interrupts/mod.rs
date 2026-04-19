@@ -34,8 +34,8 @@ lazy_static!{
     };
 }
 
-pub fn init_idt() {
-    vgaprint!("Initlializing interrupt descriptor table...");
+pub fn idt_init() {
+    vgaprint!("Initializing interrupt descriptor table...");
 
     IDT.load();
 

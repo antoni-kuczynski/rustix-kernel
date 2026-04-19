@@ -1,4 +1,6 @@
 #![allow(unused)]
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
 use core::{fmt, ptr};
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 use lazy_static::lazy_static;
@@ -8,7 +10,7 @@ use crate::boot::multiboot::{multiboot2_logical_end, multiboot2_memory_map_tag, 
 use crate::{vgaprintln};
 use crate::memory::{Cr3, SizeUnit, FRAME_SIZE, _P2V_kernel, _V2P_kernel};
 use crate::memory::page_tables::{PageSize, PageTable};
-use crate::memory::paging::eba_map_2mb_range;
+use crate::memory::paging::eba_map_range;
 use crate::memory::pmm::PmmInitError::NoMemorySizeProvided;
 //==================================================================================================
 const USED: u8 = 1;
@@ -58,7 +60,7 @@ pub struct PmmBitmap {
 }
 //==================================================================================================
 impl PmmBitmap {
-    fn alloc_used_memory_regions(&self) {
+    unsafe fn alloc_used_memory_regions(&self) {
         /*
         Marks memory frames as used:
         - kernel code, multiboot info, modules
@@ -70,52 +72,50 @@ impl PmmBitmap {
         //==========================================================================================
         // 1. MARK USABLE MEMORY REGIONS AS FREE
         //==========================================================================================
-        unsafe {
-            //we already know that memory map tag exists, checked earlier
-            let memory_map = multiboot2_memory_map_tag().unwrap();
+        //we already know that memory map tag exists, checked earlier
+        let memory_map = multiboot2_memory_map_tag().unwrap();
 
 
-            let size_entries = (*memory_map).header().size() - size_of::<MultibootMemoryMapTag>() as u32;
-            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
-            let last = entry1.byte_add(size_entries as usize);
+        let size_entries = (*memory_map).header().size() - size_of::<MultibootMemoryMapTag>() as u32;
+        let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+        let last = entry1.byte_add(size_entries as usize);
 
-            // vgaprintln!("entry 1: {:#011x}, last: {:#011x}", entry1 as *const u64 as u64, last as *const u64 as u64);
+        // vgaprintln!("entry 1: {:#011x}, last: {:#011x}", entry1 as *const u64 as u64, last as *const u64 as u64);
 
-            while entry1 < last {
-                let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type()) {
-                    None => {
-                        entry1 = entry1.add(1);
-                        continue
-                    },   //invalid memory region so skip it
-                    Some(x) => { x }
-                };
-
-                // vgaprintln!("base_addr: {:#011x}, length: {}", (*entry1).base_addr(), (*entry1).length());
-
-                if region_type != MemoryRegionType::AvailableRAM {
+        while entry1 < last {
+            let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type()) {
+                None => {
                     entry1 = entry1.add(1);
                     continue
-                }
+                },   //invalid memory region so skip it
+                Some(x) => { x }
+            };
 
-                let mut base_frame_addr = ((*entry1).base_addr() / 4096) & !(FRAME_SIZE - 1);
-                let length_of_frames = ((*entry1).length() / 4096) & !(FRAME_SIZE - 1);
-                let last_frame = base_frame_addr + length_of_frames;
-                let mut bitmap_ptr = &self.ptr;
+            // vgaprintln!("base_addr: {:#011x}, length: {}", (*entry1).base_addr(), (*entry1).length());
 
-                vgaprintln!("base: {:#011x} size: {}", base_frame_addr, length_of_frames);
-
-                while base_frame_addr <= (last_frame - 8 * FRAME_SIZE) {
-                    // let byte = base_frame_addr / 8;
-                    // let bit = base_frame_addr & 0x07;
-
-                    ptr::write_volatile(bitmap_ptr.load(Ordering::Acquire), FREE);
-
-                    bitmap_ptr.fetch_ptr_add(1, Ordering::AcqRel);
-                    base_frame_addr = base_frame_addr + FRAME_SIZE*8;
-                }
-
+            if region_type != MemoryRegionType::AvailableRAM {
                 entry1 = entry1.add(1);
+                continue
             }
+
+            let mut base_frame_addr = ((*entry1).base_addr() / 4096) & !(FRAME_SIZE - 1);
+            let length_of_frames = ((*entry1).length() / 4096) & !(FRAME_SIZE - 1);
+            let last_frame = base_frame_addr + length_of_frames;
+            let mut bitmap_ptr = &self.ptr;
+
+            vgaprintln!("base: {:#011x} size: {}", base_frame_addr, length_of_frames);
+
+            while base_frame_addr <= (last_frame - 8 * FRAME_SIZE) {
+                // let byte = base_frame_addr / 8;
+                // let bit = base_frame_addr & 0x07;
+
+                ptr::write_volatile(bitmap_ptr.load(Ordering::Acquire), FREE);
+
+                bitmap_ptr.fetch_ptr_add(1, Ordering::AcqRel);
+                base_frame_addr = base_frame_addr + FRAME_SIZE*8;
+            }
+
+            entry1 = entry1.add(1);
         }
         //==========================================================================================
         // 2. MARK PAGED REGIONS AS USED
@@ -133,11 +133,9 @@ impl PmmBitmap {
     }
 
 
-    fn sync_allocator_with_page_tables(&self) {
-        unsafe {
-            let pml4 = &*PageTable::from_cr3();
-            do_pml4(&self, Cr3::cr3_page_table_base().as_u64(), &pml4);
-        }
+    unsafe fn sync_allocator_with_page_tables(&self) {
+        let pml4 = &*PageTable::from_cr3();
+        do_pml4(&self, Cr3::cr3_page_table_base().as_u64(), &pml4);
 
         unsafe fn do_pml4(self1: &PmmBitmap, pml4_phys: u64, pml4: &&PageTable) {
             for pml4_idx in 0..512 {
@@ -289,13 +287,11 @@ impl PmmBitmap {
         }
     }
 //==================================================================================================
-    pub fn print(&self, range: usize) {
-        unsafe {
-            let mut arr = &self.ptr;
-            for i in 0..range {
-                vgaprintln!("{}:    {:#08b}", i, *(arr.load(Ordering::Acquire)));
-                arr.fetch_ptr_add(1, Ordering::AcqRel);
-            }
+    pub unsafe fn print(&self, range: usize) {
+        let mut arr = &self.ptr;
+        for i in 0..range {
+            vgaprintln!("{}:    {:#08b}", i, *(arr.load(Ordering::Acquire)));
+            arr.fetch_ptr_add(1, Ordering::AcqRel);
         }
     }
 
@@ -304,10 +300,10 @@ impl PmmBitmap {
     }
 }
 //==================================================================================================
-pub fn pmm_init() -> Result<(), PmmInitError> {
+pub fn pmm_init() {
     let mem_map = match multiboot2_memory_map_tag() {
         None => {
-            return Err(NoMemorySizeProvided);
+            panic!("Pmm init: Mb2 memory map tag doesn't exist!")
         },
         Some(x) => {
             x
@@ -319,10 +315,11 @@ pub fn pmm_init() -> Result<(), PmmInitError> {
         let bitmap_size_bytes = mem_size.as_u64() / FRAME_SIZE / 8; //one bit per frame
         let bitmap_start_ptr = AtomicPtr::new(((multiboot2_logical_end().as_u64() + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1)) as *mut u8);
 
-        eba_map_2mb_range(
+        eba_map_range(
             VirtAddr::new_truncate(bitmap_start_ptr.load(Ordering::Acquire) as u64),
             PhysAddr::new_truncate(_V2P_kernel(bitmap_start_ptr.load(Ordering::Acquire) as u64)),
-            bitmap_size_bytes
+            bitmap_size_bytes,
+            &PageSize::Size2Mb
         );
 
         let mut p_bitmap = &bitmap_start_ptr;
@@ -334,8 +331,6 @@ pub fn pmm_init() -> Result<(), PmmInitError> {
         PMM_BITMAP.lock().ptr = bitmap_start_ptr;
         PMM_BITMAP.lock().length = bitmap_size_bytes;
         PMM_BITMAP.lock().alloc_used_memory_regions();
-
-        Ok(())
     }
 }
 //==================================================================================================

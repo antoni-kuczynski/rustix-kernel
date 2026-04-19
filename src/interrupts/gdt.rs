@@ -30,8 +30,8 @@ use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, print_ok_msg, vg
 
 pub const DOUBLE_FAULT_IST_INDEX : u16 = 0;
 
-pub fn init_gdt() {
-    vgaprint!("Initlializing global descriptor table...");
+pub fn gdt_init() {
+    vgaprint!("Initializing global descriptor table...");
 
     GDT.0.load(); // load gdt 
 

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
 use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint, VGAWRITER};
 use crate::ColorTextMode;
 use core::cmp::PartialEq;
@@ -7,10 +8,10 @@ use core::ptr::read_volatile;
 use spin::{Once};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::{print_ok_msg, vgaprintln};
-use crate::memory::{SizeUnit, _V2P_kernel};
+use crate::memory::{SizeUnit, _V2P_kernel, KERNEL_VIRT_BASE};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::{PageSize};
-use crate::memory::paging::{early_unmap_2mb_page, eba_map_2mb_page, eba_map_2mb_range};
+use crate::memory::paging::{early_unmap_page, eba_map_page, eba_map_range};
 /*
 ==============================================
 SOURCES:
@@ -114,201 +115,152 @@ impl MultibootInfoView {
         }
     }
 
-    pub fn init_multiboot_info_struct() -> MultibootInfoView {
-        unsafe {
-            let original_virt_address = _P2V_kernel(__oldMultibootPhysAddr as u64);
-            let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB - 1) & !(PageSize::SIZE_2MB - 1));
-            let original_aligned = original_virt_address & !(PageSize::SIZE_2MB - 1);
-            //---------------------------------------------------------
-            // Map the original struct
-            //---------------------------------------------------------
-            eba_map_2mb_page(
-                VirtAddr::new_truncate(original_aligned),
-                PhysAddr::new_truncate(_V2P_kernel(original_aligned))
-            );
+    pub unsafe fn init_multiboot_info_struct() -> MultibootInfoView {
+        let original_virt_address = _P2V_kernel(__oldMultibootPhysAddr as u64);
+        let original_aligned = original_virt_address & !(PageSize::SIZE_2MB - 1);
+        let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB - 1) & !(PageSize::SIZE_2MB - 1));
 
-            let length_bytes = *(original_virt_address as *const u32) as u64;
+        //map original struct
+        eba_map_page(
+            VirtAddr::new_truncate(original_aligned),
+            PhysAddr::new_truncate(_V2P_kernel(original_aligned)),
+            &PageSize::Size2Mb
+        );
 
-            eba_map_2mb_range(
-                VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB),
-                PhysAddr::new_truncate(_V2P_kernel(original_aligned + PageSize::SIZE_2MB)),
-                length_bytes
-            );
+        let length_bytes = read_volatile(original_virt_address as *const u32) as u64;
 
-            //---------------------------------------------------------
-            // Map copied struct
-            //---------------------------------------------------------
-            let copied_addr = virt_address_to_copy_to as *const u32; // address already guarenteed to be 8byte aligned
-            let copied_addr_u64 = copied_addr as u64;
-            eba_map_2mb_range(
-                VirtAddr::new_truncate(copied_addr_u64),
-                PhysAddr::new_truncate(_V2P_kernel(copied_addr_u64)),
-                length_bytes
-            );
+        eba_map_range(
+            VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB),
+            PhysAddr::new_truncate(_V2P_kernel(original_aligned + PageSize::SIZE_2MB)),
+            length_bytes,
+            &PageSize::Size2Mb
+        );
+        eba_map_range(
+            VirtAddr::new_truncate(virt_address_to_copy_to),
+            PhysAddr::new_truncate(_V2P_kernel(virt_address_to_copy_to)),
+            length_bytes,
+            &PageSize::Size2Mb
+        );
 
-            //---------------------------------------------------------
-            //copy multiboot info struct to right after early bump allocator region
-            //---------------------------------------------------------
-            vgaprint!("Initializing multiboot2 and modules...");
-            Self::copy_mb_struct(original_virt_address, copied_addr);
-            let copied_base = MultibootInfo::new(copied_addr as u64);
+        //copy mb struct
+        vgaprint!("Initializing multiboot2 and modules...");
+        Self::copy_mb_struct(original_virt_address, virt_address_to_copy_to);
 
-            //---------------------------------------------------------
-            // copy kernel modules right after multiboot info end
-            //---------------------------------------------------------
-            let modules_start_address = ((copied_base as *const MultibootInfo)
-                    .byte_add(copied_base.total_size as usize)
-                    .byte_add(PageSize::SIZE_2MB as usize) as u64
-                    & !(PageSize::SIZE_2MB - 1))
-                as *mut u8; // page aligned start address
+        let copied_base = &*(virt_address_to_copy_to as *const MultibootInfo);
 
+        //copy modules
+        let modules_start_address = ((virt_address_to_copy_to + copied_base.total_size as u64 + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1)) as *mut u8;
+        let tags = (virt_address_to_copy_to as *const u32).add(2);
 
-            let tags_size_bytes = copied_base.total_size as usize - (2 * size_of::<u32>());
-            let tags = copied_addr.add(2);
-            let mut view = Self {
-                base: copied_base,
-                tags_size_bytes,
-                tags,
-                multiboot_end_logical: 0 //temp value
-            };
+        let mut view = Self {
+            base: &*copied_base,
+            tags_size_bytes: copied_base.total_size as usize - (2 * size_of::<u32>()),
+            tags,
+            multiboot_end_logical: 0,
+        };
 
-            let multiboot_end = Self::copy_modules(original_aligned, length_bytes, copied_base, modules_start_address, &mut view);
-            view.multiboot_end_logical = multiboot_end as u64;
+        let multiboot_end = Self::copy_modules(copied_base, modules_start_address, &mut view);
+        view.multiboot_end_logical = multiboot_end as u64;
 
-            //---------------------------------------------------------
-            // Unmap the original struct
-            //---------------------------------------------------------
-            // Self::unmap_original_mb_struct(original_aligned, length_bytes, copied_addr_u64);
+        //unmap original
+        Self::unmap_mb_region(original_aligned, virt_address_to_copy_to, length_bytes);
 
-            print_ok_msg!();
-            view
-        }
+        print_ok_msg!();
+        view
     }
 
-    // This code is pure horror!!!
-    //TODO: this garbage causes undefined behaviour when debug flag's turned off, so better rewrite this pile oh horse shit
-    unsafe fn copy_modules(original_aligned: u64, length: u64, copied_base: &MultibootInfo, start: *mut u8, view: &mut MultibootInfoView) -> *const u8 {
-        unsafe {
+    unsafe fn copy_modules(
+        copied_base: &MultibootInfo,
+        start_dst: *mut u8,
+        view: &mut MultibootInfoView
+    ) -> *const u8 {
         let mut modules = view.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES, view.tags);
-        let mut modules_start_address = start;
 
-        let mut copied_end_addr = (copied_base as *const MultibootInfo as *const u8).add((*copied_base).total_size as usize);
-        while modules != None {
-            //TODO: fuck load of variables - get rid of them!
-            let module = modules.unwrap() as *mut MultibootModulesTag;
-            let mut original_address = _P2V_kernel((*module).mod_start() as u64) as *mut u8;
-            let module_length_bytes = (*module).mod_end - (*module).mod_start;
-            let mut copied_start_address = modules_start_address;
-            copied_end_addr = copied_start_address.add(module_length_bytes as usize);
+        let mut current_dst = start_dst;
+        let mut final_end_addr = (copied_base as *const _ as *const u8).add(copied_base.total_size as usize);
 
-            // map the original modules region
-            eba_map_2mb_range(
-                VirtAddr::new_truncate(original_address as u64),
-                PhysAddr::new_truncate(_V2P_kernel(original_address as u64)),
-                module_length_bytes as u64
+        while let Some(module_ptr) = modules {
+            let module = &mut *(module_ptr as *mut MultibootModulesTag);
+
+            let original_src = _P2V_kernel(module.mod_start() as u64) as *mut u8;
+            let module_len = (module.mod_end - module.mod_start) as u64;
+
+            //map src and destination regions
+            eba_map_range(
+                VirtAddr::new_truncate(original_src as u64),
+                PhysAddr::new_truncate(_V2P_kernel(original_src as u64)),
+                module_len,
+                &PageSize::Size2Mb
+            );
+            eba_map_range(
+                VirtAddr::new_truncate(current_dst as u64),
+                PhysAddr::new_truncate(_V2P_kernel(current_dst as u64)),
+                module_len,
+                &PageSize::Size2Mb
             );
 
+            let copied_end = current_dst.add(module_len as usize);
 
-            // map the copied modules region
-            eba_map_2mb_range(
-                VirtAddr::new_truncate(copied_start_address as u64),
-                PhysAddr::new_truncate(_V2P_kernel(copied_start_address as u64)),
-                module_length_bytes as u64
-            );
+            //update mod addresses in mb struct
+            module.mod_start = _V2P_kernel(current_dst as u64) as u32;
+            module.mod_end = _V2P_kernel(copied_end as u64) as u32;
 
-            //set the addresses in multiboot info struct
-            (*module).mod_start = _V2P_kernel(copied_start_address as u64) as u32;
-            (*module).mod_end = _V2P_kernel(copied_end_addr as u64) as u32;
-
-            for _i in (*module).mod_start()..(*module).mod_end() {
-                *copied_start_address = *original_address; // copy
-                *original_address = 0x00u8; // clear
-
-                original_address = original_address.add(1);
-                copied_start_address = copied_start_address.add(1);
+            //copy and clear original
+            for i in 0..module_len as usize {
+                ptr::write_volatile(current_dst.add(i), read_volatile(original_src.add(i)));
+                ptr::write_volatile(original_src.add(i), 0);
             }
-
-            //TODO: stinky pointer casts and arithmetics!!! I'd rather go smell skunk's farts than this!
-            modules_start_address = ((modules_start_address as u64 +
-                (*module).header().size() as u64 + 0xFFF) & !0xFFF
-            ) as *mut u8;
-
-            let start_ptr = module.byte_add(
-                (((*module).header().size() + 7) & !0x7) as usize
-            );
-            modules = view.get_tag_addr_by_type(
-                MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES,
-                start_ptr as *const u32
-            );
 
             //unmap the module
-            //TODO: when commented out there's no page fault / triple fault even
-            Self::unamp_module_original_addr(
-                original_aligned,
-                length,
-                original_address,
-                copied_start_address
-            );
+            Self::unmap_mb_region(original_src as u64, current_dst as u64, module_len);
+
+            final_end_addr = copied_end;
+            current_dst = ((copied_end as u64 + 0xFFF) & !0xFFF) as *mut u8; // Wyrównanie do 4KB
+
+            //next tag
+            let next_tag_ptr = (module as *const _ as *const u8).add(((module.header().size() + 7) & !0x7) as usize);
+            modules = view.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES, next_tag_ptr as *const u32);
         }
-        copied_end_addr
-            }
+
+        final_end_addr
     }
 
-    //TODO: what the fuck are these varaibles??? i probably farted at the keyboard and they came out like this
-    fn unamp_module_original_addr(original_aligned: u64, length: u64, original_address: *mut u8, copied_start_address: *mut u8) {
-        unsafe {
-            let mut temp = 0;
-            while temp <= length {
-                let original = original_address;
-                let copied = copied_start_address;
+    unsafe fn copy_mb_struct(original_virt: u64, copied_virt: u64) {
+        let base = &*(original_virt as *const MultibootInfo);
+        if base._reserved != 0x00 {
+            panic!("Multiboot info reserved value is not zero!");
+        }
 
-                // only unmap if the the addresses dont overlap
-                if original != copied {
-                    early_unmap_2mb_page(
-                        VirtAddr::new_truncate(original_aligned + temp),
-                    );
-                }
-                temp += 0x200000;
-            }
+        let src = original_virt as *mut u8;
+        let dst = copied_virt as *mut u8;
+
+        for i in 0..base.total_size as usize {
+            ptr::write_volatile(dst.add(i), read_volatile(src.add(i)));
+            ptr::write_volatile(src.add(i), 0);
         }
     }
 
-    unsafe fn unmap_original_mb_struct(original_aligned: u64, length: u64, copied_addr_u64: u64) {
-        unsafe {
-            let mut temp = 0;
-            while temp <= length {
-                let original = original_aligned + temp;
-                let copied = copied_addr_u64 + temp;
 
-                // only unmap if the the addresses dont overlap
-                if original != copied {
-                    early_unmap_2mb_page(
-                        VirtAddr::new_truncate(original_aligned + temp),
-                    );
-                }
-                temp += 0x200000;
+    unsafe fn unmap_mb_region(original_virt: u64, copied_virt: u64, length: u64) {
+        let mut offset = 0;
+        while offset <= length {
+            let original = original_virt + offset;
+            let copied = copied_virt + offset;
+
+            //unmap only if the addresses are not the same and they do not cover kernel / eba region
+            if original != copied && !Self::is_page_inside_kernel_or_eba_regions(original) {
+                early_unmap_page(VirtAddr::new_truncate(original), &PageSize::Size2Mb);
             }
+            offset += PageSize::SIZE_2MB;
         }
     }
 
-    fn copy_mb_struct(original_virt_address: u64, copied_addr: *const u32) {
-        unsafe {
-            let base = MultibootInfo::new(original_virt_address);
 
-            if base._reserved != 0x00 {
-                panic!("Multiboot info reserved value is not zero!");
-            }
-
-            let mut src_addr = base as *const MultibootInfo as *mut u8;
-            let size = base.total_size;
-            let mut target = copied_addr as *mut u8;
-            for _i in 0..size {
-                *target = *src_addr;
-                *src_addr = 0x00u8;
-                src_addr = src_addr.add(1);
-                target = target.add(1);
-            }
+    fn is_page_inside_kernel_or_eba_regions(virt_addr: u64) -> bool {
+        if virt_addr >= KERNEL_VIRT_BASE && virt_addr <= unsafe { _P2V_kernel(earlyHeapEnd) } {
+            return true;
         }
+        false
     }
 
     //==================================================================================================
@@ -321,8 +273,6 @@ impl MultibootInfoView {
                 let tag_base = read_volatile(tags);
                 let current_tag_type = tag_base.tag_type;
                 let length = (tag_base.size as usize + 7) & !7;
-
-                // vgaprintln!("{:#06x}", current_tag_type);
 
                 if current_tag_type == 0x00 {
                     break;
@@ -710,9 +660,11 @@ unsafe impl Sync for MultibootInfoView {}
 pub static MULTIBOOT_INFO: Once<MultibootInfoView> = Once::new();
 
 pub fn multiboot2_init() {
-    let view = MultibootInfoView::init_multiboot_info_struct();
+    unsafe {
+        let view = MultibootInfoView::init_multiboot_info_struct();
 
-    MULTIBOOT_INFO.call_once(|| view);
+        MULTIBOOT_INFO.call_once(|| view);
+    }
 }
 
 pub fn multiboot2_memory_map_tag() -> Option<*const MultibootMemoryMapTag> {

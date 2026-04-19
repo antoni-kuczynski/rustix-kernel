@@ -388,4 +388,4 @@ __oldMultibootPhysAddr:
 
 stack_bottom:
     RESB 16384   ; 16kb stack space
-stack_top:
+stack_top: ; TODO: stack overflow protection

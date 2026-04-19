@@ -2,6 +2,7 @@
  * Created by Antoni Kuczyński
  * 14/04/2026
  */
+use core::ops::AddAssign;
 use core::ptr;
 use x86_64::VirtAddr;
 use crate::memory::{Cr3, SizeUnit, _P2V_kernel, _V2P_kernel};
@@ -173,13 +174,55 @@ impl PageIndexes {
 }
 //==================================================================================================
 //==================================================================================================
-pub struct PageSize();
+pub enum PageSize {
+    Size4Kb,
+    Size2Mb,
+    Size1Gb
+}
 
 impl PageSize {
     pub const PAGE_TABLE_SIZE: usize = 0x1000;
     pub const SIZE_4KB: u64 = 0x1000;
     pub const SIZE_2MB: u64 = 0x200000;
     pub const SIZE_1GB: u64 = 1_073_741_824;
+    
+    pub fn as_u64(&self) -> u64 {
+        match self {
+            PageSize::Size4Kb => {
+                Self::SIZE_4KB
+            },
+            PageSize::Size2Mb => {
+                Self::SIZE_2MB
+            },
+            PageSize::Size1Gb => {
+                Self::SIZE_1GB
+            }
+        }
+    }
+}
+
+impl PartialEq<u64> for PageSize {
+    fn eq(&self, other: &u64) -> bool {
+        self.as_u64() == *other
+    }
+}
+
+impl PartialEq<u64> for &PageSize {
+    fn eq(&self, other: &u64) -> bool {
+        self.as_u64() == *other
+    }
+}
+
+impl AddAssign<PageSize> for u64 {
+    fn add_assign(&mut self, rhs: PageSize) {
+        *self += rhs.as_u64()
+    }
+}
+
+impl AddAssign<&PageSize> for u64 {
+    fn add_assign(&mut self, rhs: &PageSize) {
+        *self += rhs.as_u64()
+    }
 }
 //==================================================================================================
 //==================================================================================================

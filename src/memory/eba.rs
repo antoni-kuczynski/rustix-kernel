@@ -1,3 +1,7 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+use crate::VGAWRITER;
+use crate::ColorTextMode;
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 use core::sync::atomic::Ordering::Acquire;
 use lazy_static::lazy_static;
@@ -8,7 +12,7 @@ use spin::Mutex;
 //==================================================================================================
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PageTable;
-use crate::{earlyHeapEnd, earlyHeapStart, memory, vgaprintln};
+use crate::{earlyHeapEnd, earlyHeapStart, memory, print_ok_msg, vgaprint, vgaprintln};
 use crate::memory::{MemoryRange, _P2V_kernel};
 use crate::memory::page_tables::PagingSetupError;
 //==================================================================================================
@@ -18,50 +22,42 @@ pub struct EarlyBumpAllocator {
 }
 //==================================================================================================
 impl EarlyBumpAllocator {
-    pub unsafe fn kmalloc_early<T>(&self, size: usize, align: usize) -> Option<*mut T> {
-        unsafe {
-            let align_u64 = if align == 0 { 1 } else { align as u64 };
-            let mut current_ptr = self.temp_ptr.load(Acquire);
+    fn empty() -> Self {
+        Self {
+            temp_range: MemoryRange { start: 0, end: 0 },
+            temp_ptr: Default::default(),
+        }
+    }
 
-            loop {
-                let aligned_ptr = ((current_ptr.add((align_u64 - 1) as usize)) as u64 & !(align_u64 - 1)) as *mut u8;
-                let next_ptr = aligned_ptr.add(size);
+    unsafe fn kmalloc_early<T>(&self, size: usize, align: usize) -> Option<*mut T> {
+        let align_u64 = if align == 0 { 1 } else { align as u64 };
+        let mut current_ptr = self.temp_ptr.load(Acquire);
 
-                if next_ptr as u64 > self.temp_range.end {
-                    return None;
+        loop {
+            let aligned_ptr = ((current_ptr.add((align_u64 - 1) as usize)) as u64 & !(align_u64 - 1)) as *mut u8;
+            let next_ptr = aligned_ptr.add(size);
+
+            if next_ptr as u64 > self.temp_range.end {
+                return None;
+            }
+
+            match self.temp_ptr.compare_exchange_weak(
+                current_ptr,
+                next_ptr,
+                Ordering::SeqCst,
+                Acquire
+            ) {
+                Ok(_) => {
+                    return Some(aligned_ptr as *mut T);
                 }
-
-                match self.temp_ptr.compare_exchange_weak(
-                    current_ptr,
-                    next_ptr,
-                    Ordering::SeqCst,
-                    Acquire
-                ) {
-                    Ok(_) => {
-                        return Some(aligned_ptr as *mut T);
-                    }
-                    Err(actual_ptr) => {
-                        current_ptr = actual_ptr;
-                    }
+                Err(actual_ptr) => {
+                    current_ptr = actual_ptr;
                 }
             }
         }
     }
 }
 //==================================================================================================
-pub fn eba_init() -> Result<EarlyBumpAllocator, PagingSetupError> {
-    unsafe {
-        let start = _P2V_kernel(earlyHeapStart);
-        let end = _P2V_kernel(earlyHeapEnd);
-
-        let view = EarlyBumpAllocator {
-            temp_range: MemoryRange::new(start, end),
-            temp_ptr: AtomicPtr::new(start as *mut u8)
-        };
-
-        Ok(view)
-    }
-}
 
 //TODO: remove this garbage temp code :)
 pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
@@ -123,8 +119,20 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
 }   //I THINK THIS'S THE LAST ONE
 //finally.
 
+
+pub fn eba_init() {
+    vgaprint!("Initializing early bumb allocator...");
+    let start = _P2V_kernel(unsafe { earlyHeapStart });
+    let end = _P2V_kernel(unsafe { earlyHeapEnd });
+
+    let mut eba = EARLY_BUMP_ALLOCATOR.lock();
+    eba.temp_range = MemoryRange::new(start, end);
+    eba.temp_ptr = AtomicPtr::new(start as *mut u8);
+    print_ok_msg!();
+}
+
 lazy_static! {
-    pub static ref  EARLY_BUMP_ALLOCATOR: Mutex<EarlyBumpAllocator> = Mutex::new(eba_init().expect("early bump allocator init failed"));
+    pub static ref EARLY_BUMP_ALLOCATOR: Mutex<EarlyBumpAllocator> = Mutex::new(EarlyBumpAllocator::empty());
 }
 
 /// Early kmalloc for early bump allocator region
