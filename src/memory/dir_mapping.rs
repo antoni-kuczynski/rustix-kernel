@@ -12,7 +12,7 @@ use crate::boot::multiboot::{multiboot2_memory_map_tag, MULTIBOOT_INFO};
 use crate::memory::SizeUnit;
 use crate::{print_ok_msg, vgaprint};
 use crate::memory::page_tables::PageSize;
-use crate::memory::paging::{eba_map_page};
+use crate::memory::paging::{vmm_eba_map_page};
 
 const DIR_MAP_TOTAL_SIZE: u64 = 64 * 1_099_511_627_776; //64 terabytes
 const DIR_MAP_START: VirtAddr = VirtAddr::new(0xffff_8080_0000_0000);
@@ -21,7 +21,7 @@ const PHYS_MEMORY_OFFSET: u64 = DIR_MAP_START.as_u64();
 
 unsafe fn do_4kb_pages(total: u64, mut mapped: u64) -> u64 {
     while mapped  <= total - PageSize::SIZE_4KB {
-        eba_map_page(
+        vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
             &PageSize::Size4Kb
@@ -33,7 +33,7 @@ unsafe fn do_4kb_pages(total: u64, mut mapped: u64) -> u64 {
 
 unsafe fn do_2mb_pages(total: u64, mut mapped: u64) -> u64 {
     while mapped  <= total - PageSize::SIZE_2MB {
-        eba_map_page(
+        vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
             &PageSize::Size2Mb
@@ -45,7 +45,7 @@ unsafe fn do_2mb_pages(total: u64, mut mapped: u64) -> u64 {
 
 unsafe fn do_1gb_pages(total: u64, mut mapped: u64) -> u64 {
     while mapped  <= total - PageSize::SIZE_1GB {
-        eba_map_page(
+        vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
             &PageSize::Size1Gb

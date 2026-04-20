@@ -11,7 +11,7 @@ use crate::{print_ok_msg, vgaprintln};
 use crate::memory::{SizeUnit, _V2P_kernel, KERNEL_VIRT_BASE};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::{PageSize};
-use crate::memory::paging::{early_unmap_page, eba_map_page, eba_map_range};
+use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
 /*
 ==============================================
 SOURCES:
@@ -121,7 +121,7 @@ impl MultibootInfoView {
         let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB - 1) & !(PageSize::SIZE_2MB - 1));
 
         //map original struct
-        eba_map_page(
+        vmm_eba_map_page(
             VirtAddr::new_truncate(original_aligned),
             PhysAddr::new_truncate(_V2P_kernel(original_aligned)),
             &PageSize::Size2Mb
@@ -129,13 +129,13 @@ impl MultibootInfoView {
 
         let length_bytes = read_volatile(original_virt_address as *const u32) as u64;
 
-        eba_map_range(
+        vmm_eba_map_range(
             VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB),
             PhysAddr::new_truncate(_V2P_kernel(original_aligned + PageSize::SIZE_2MB)),
             length_bytes,
             &PageSize::Size2Mb
         );
-        eba_map_range(
+        vmm_eba_map_range(
             VirtAddr::new_truncate(virt_address_to_copy_to),
             PhysAddr::new_truncate(_V2P_kernel(virt_address_to_copy_to)),
             length_bytes,
@@ -186,13 +186,13 @@ impl MultibootInfoView {
             let module_len = (module.mod_end - module.mod_start) as u64;
 
             //map src and destination regions
-            eba_map_range(
+            vmm_eba_map_range(
                 VirtAddr::new_truncate(original_src as u64),
                 PhysAddr::new_truncate(_V2P_kernel(original_src as u64)),
                 module_len,
                 &PageSize::Size2Mb
             );
-            eba_map_range(
+            vmm_eba_map_range(
                 VirtAddr::new_truncate(current_dst as u64),
                 PhysAddr::new_truncate(_V2P_kernel(current_dst as u64)),
                 module_len,
@@ -249,7 +249,7 @@ impl MultibootInfoView {
 
             //unmap only if the addresses are not the same and they do not cover kernel / eba region
             if original != copied && !Self::is_page_inside_kernel_or_eba_regions(original) {
-                early_unmap_page(VirtAddr::new_truncate(original), &PageSize::Size2Mb);
+                vmm_early_unmap_page(VirtAddr::new_truncate(original), PhysAddr::new_truncate(_V2P_kernel(original_virt)), &PageSize::Size2Mb);
             }
             offset += PageSize::SIZE_2MB;
         }

@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 use core::{fmt, ptr};
-use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
@@ -10,7 +10,7 @@ use crate::boot::multiboot::{multiboot2_logical_end, multiboot2_memory_map_tag, 
 use crate::{vgaprintln};
 use crate::memory::{Cr3, SizeUnit, FRAME_SIZE, _P2V_kernel, _V2P_kernel};
 use crate::memory::page_tables::{PageSize, PageTable};
-use crate::memory::paging::eba_map_range;
+use crate::memory::paging::vmm_eba_map_range;
 use crate::memory::pmm::PmmInitError::NoMemorySizeProvided;
 //==================================================================================================
 const USED: u8 = 1;
@@ -206,84 +206,84 @@ impl PmmBitmap {
 
     //==================================================================================================
     fn reserve_frame(&self, frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
-        //mark as used = true
-        self.modify_frame(frame_addr, true)
-    }
-
-
-    fn reserve_range(&self, start_addr: PhysAddr, length_bytes: u64) -> Result<(), PmmAllocError> {
-        if length_bytes == 0 {
-            return Ok(());
-        }
-
-        let start_aligned = start_addr.as_u64() & !(FRAME_SIZE - 1); //round down
-
-        let end_addr = start_addr.as_u64() + length_bytes;
-        let end_aligned = (end_addr + FRAME_SIZE - 1) & !(FRAME_SIZE - 1); //round up
-
-        let mut current = start_aligned;
-        while current < end_aligned {
-            self.reserve_frame(PhysAddr::new(current)).expect("alloc error");
-            current += FRAME_SIZE;
-        }
-
+        let start_frame = frame_addr.as_u64() / 4096;
+        self.modify_bit_range(start_frame, 1, true);
         Ok(())
     }
 
-
-
-    fn free_frame(&self, frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
-        //mark as used = false
-        self.modify_frame(frame_addr, false)
-    }
-
-    fn free_range(&self, start_addr: PhysAddr, length_bytes: u64) -> Result<(), PmmAllocError> {
+    fn reserve_range(&self, start_addr_inside_page: PhysAddr, length_bytes: u64) -> Result<(), PmmAllocError> {
         if length_bytes == 0 {
             return Ok(());
         }
 
-        let start_aligned = start_addr.as_u64() & !(FRAME_SIZE - 1);
-        let end_addr = start_addr.as_u64() + length_bytes;
-        let end_aligned = (end_addr + FRAME_SIZE - 1) & !(FRAME_SIZE - 1);
+        let start_aligned = start_addr_inside_page.as_u64() & !0xFFF;
+        let end_aligned = (start_addr_inside_page.as_u64() + length_bytes + 0xFFF) & !0xFFF;
+        let frame_count = (end_aligned - start_aligned) / 4096;
 
-        let mut current = start_aligned;
-        while current < end_aligned {
-            self.free_frame(PhysAddr::new(current))?;
-            current += FRAME_SIZE;
+        self.modify_bit_range(start_aligned / 4096, frame_count, true);
+        Ok(())
+    }
+
+    fn free_frame(&self, frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
+        let start_frame = frame_addr.as_u64() / 4096;
+        self.modify_bit_range(start_frame, 1, false);
+        Ok(())
+    }
+
+    fn free_range(&self, start_addr_inside_page: PhysAddr, length_bytes: u64) -> Result<(), PmmAllocError> {
+        if length_bytes == 0 {
+            return Ok(());
         }
 
+        let start_aligned = start_addr_inside_page.as_u64() & !0xFFF;
+        let end_aligned = (start_addr_inside_page.as_u64() + length_bytes + 0xFFF) & !0xFFF;
+        let frame_count = (end_aligned - start_aligned) / 4096;
+
+        self.modify_bit_range(start_aligned / 4096, frame_count, false);
         Ok(())
     }
 //==================================================================================================
-    fn modify_frame(&self, frame_addr: PhysAddr, alloc_mode: bool) -> Result<(), PmmAllocError> {
-        let frame_idx = frame_addr.as_u64() / 4096;
-        let byte_idx = (frame_idx / 8) as usize;
-        let bit_idx = (frame_idx % 8) as u8;
-        let mask: u8 = 1 << bit_idx;
+    fn modify_bit_range(&self, start_frame: u64, frame_count: u64, alloc_mode: bool) {
+        if frame_count == 0 {
+            return;
+        }
 
-        let base_ptr = self.ptr.load(Ordering::Acquire);
+        let base_ptr = self.ptr.load(Ordering::Acquire) as *const AtomicU64;
+        let mut current_frame = start_frame;
+        let mut frames_left = frame_count;
 
-        unsafe {
-            let target_byte_ptr = base_ptr.add(byte_idx) as *const AtomicU8;
-            let atomic_byte = &*target_byte_ptr;
+        while frames_left > 0 {
+            let u64_idx = (current_frame / 64) as usize;
+            let bit_offset = current_frame % 64;
 
-            return if alloc_mode {
-                alloc_fetch(atomic_byte, mask, frame_addr)
+            //how many frames there are in this u64 value
+            let frames_in_this_u64 = core::cmp::min(64 - bit_offset, frames_left);
+
+            let mask = if frames_in_this_u64 == 64 {
+                u64::MAX //overflow safety check
             } else {
-                free_fetch(atomic_byte, mask, frame_addr)
+                ((1u64 << frames_in_this_u64) - 1) << bit_offset
             };
-        }
 
-        fn alloc_fetch(atomic_byte: &AtomicU8, mask: u8, frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
-            let prev = atomic_byte.fetch_or(mask, Ordering::AcqRel);
+            unsafe {
+                let atomic_val = &*base_ptr.add(u64_idx);
+                if alloc_mode { //alloc
+                    if mask == u64::MAX {
+                        atomic_val.store(u64::MAX, Ordering::Release);
+                    } else {
+                        atomic_val.fetch_or(mask, Ordering::AcqRel);
+                    }
+                } else { //free
+                    if mask == u64::MAX {
+                        atomic_val.store(0, Ordering::Release);
+                    } else {
+                        atomic_val.fetch_and(!mask, Ordering::AcqRel);
+                    }
+                }
+            }
 
-            Ok(())
-        }
-
-        fn free_fetch(atomic_byte: &AtomicU8, mask: u8, frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
-            let prev = atomic_byte.fetch_and(!mask, Ordering::AcqRel);
-
-            Ok(())
+            current_frame += frames_in_this_u64;
+            frames_left -= frames_in_this_u64;
         }
     }
 //==================================================================================================
@@ -315,7 +315,7 @@ pub fn pmm_init() {
         let bitmap_size_bytes = mem_size.as_u64() / FRAME_SIZE / 8; //one bit per frame
         let bitmap_start_ptr = AtomicPtr::new(((multiboot2_logical_end().as_u64() + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1)) as *mut u8);
 
-        eba_map_range(
+        vmm_eba_map_range(
             VirtAddr::new_truncate(bitmap_start_ptr.load(Ordering::Acquire) as u64),
             PhysAddr::new_truncate(_V2P_kernel(bitmap_start_ptr.load(Ordering::Acquire) as u64)),
             bitmap_size_bytes,
@@ -359,3 +359,6 @@ pub fn pmm_free_range(start_addr: PhysAddr, length_bytes: u64) -> Result<(), Pmm
     PMM_BITMAP.lock().free_range(start_addr, length_bytes)
 }
 
+pub fn pmm_is_enabled() -> bool {
+    !(PMM_BITMAP.lock().ptr.load(Ordering::Acquire) == 0 as *mut u8)
+}

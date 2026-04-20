@@ -10,10 +10,13 @@ mod memory;
 // mod graphics;
 
 use core::panic::PanicInfo;
+use x86_64::PhysAddr;
 use crate::boot::multiboot::{multiboot2_bootloader_name, multiboot2_logical_end, multiboot2_memory_map_tag, MultibootInfo, MULTIBOOT_INFO};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{SizeUnit, _P2V_kernel, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
-use crate::memory::pmm::{PMM_BITMAP};
+use crate::memory::{SizeUnit, _P2V_kernel, FRAME_SIZE, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
+use crate::memory::kheap::KHEAP_END;
+use crate::memory::page_tables::PageSize;
+use crate::memory::pmm::{pmm_free_frame, pmm_free_range, PMM_BITMAP};
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -45,8 +48,8 @@ pub extern "C" fn rust_main() -> ! {
     boot::multiboot::multiboot2_init();
     memory::pmm::pmm_init();
     memory::dir_mapping::dir_mapping_init();
-
-
+    memory::kheap::kheap_init();
+    
     interrupts::enable();
 
     unsafe {
@@ -90,7 +93,6 @@ pub extern "C" fn rust_main() -> ! {
         vgaprintln!("Multiboot start VIRTUAL: {:#011x}", MULTIBOOT_INFO.get().unwrap().base() as *const MultibootInfo as u64);
         vgaprintln!("Multiboot end VIRTUAL: {:#011x}", multiboot2_logical_end().as_u64());
         vgaprintln!("Bootloader name: {}", multiboot2_bootloader_name().unwrap());
-
 
         // vgaprintln!("0 = free | 1 = used");
         // PMM_BITMAP.lock().print(540);

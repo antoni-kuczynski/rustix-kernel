@@ -13,11 +13,12 @@ use crate::memory::{flush_tlb_single_page, Cr3, SizeUnit, _P2V_kernel, _V2P_kern
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::eba::eba_kmalloc;
 use crate::memory::page_tables::{PageIndexes, PageSize, PageTable, PageTableEntry};
+use crate::memory::pmm::{pmm_free_range, pmm_is_enabled, pmm_reserve_range};
 use crate::vgaprintln;
 
 /// Maps page and uses early bump as allocator
 /// Used for building early paging structure
-pub unsafe fn eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize) {
+pub unsafe fn vmm_eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize) {
     let indexes = PageIndexes::get_from_virt(virt);
     let pml4 = PageTable::from_cr3();
     let pdpt3 = (*pml4).get_ptr_from_index_or_eba_kmalloc(indexes.pml4_index());
@@ -28,6 +29,9 @@ pub unsafe fn eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize)
         entry.set_flag(PageTableEntry::PRESENT, true);
         entry.set_flag(PageTableEntry::HUGE, true);
         flush_tlb_single_page(virt);
+        if pmm_is_enabled() {
+            pmm_reserve_range(phys, page_size.as_u64());
+        }
         return;
     }
 
@@ -39,6 +43,9 @@ pub unsafe fn eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize)
         entry.set_flag(PageTableEntry::PRESENT, true);
         entry.set_flag(PageTableEntry::HUGE, true);
         flush_tlb_single_page(virt);
+        if pmm_is_enabled() {
+            pmm_reserve_range(phys, page_size.as_u64());
+        }
         return;
     }
 
@@ -50,11 +57,14 @@ pub unsafe fn eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize)
         entry.set_flag(PageTableEntry::PRESENT, true);
         entry.set_flag(PageTableEntry::HUGE, false);
         flush_tlb_single_page(virt);
+        if pmm_is_enabled() {
+            pmm_reserve_range(phys, page_size.as_u64());
+        }
     }
 }
 
 /// Allocates a continuous page range using early bump as an allocator.
-pub unsafe fn eba_map_range(virt_start: VirtAddr, phys_start: PhysAddr, length: u64, page_size: &PageSize) {
+pub unsafe fn vmm_eba_map_range(virt_start: VirtAddr, phys_start: PhysAddr, length: u64, page_size: &PageSize) {
     let mut mapped_bytes = 0;
     let mut current_virt = virt_start.as_u64();
     let mut current_phys = phys_start.as_u64();
@@ -66,7 +76,7 @@ pub unsafe fn eba_map_range(virt_start: VirtAddr, phys_start: PhysAddr, length: 
     };
 
     while mapped_bytes < length {
-        eba_map_page(
+        vmm_eba_map_page(
             VirtAddr::new_truncate(current_virt),
             PhysAddr::new_truncate(current_phys),
             page_size
@@ -79,7 +89,7 @@ pub unsafe fn eba_map_range(virt_start: VirtAddr, phys_start: PhysAddr, length: 
 }
 
 /// Unamps a 2mb page - it doesn't free the page table, as it does nothing on a bump allocator!
-pub unsafe fn early_unmap_page(virt: VirtAddr, page_size: &PageSize) {
+pub unsafe fn vmm_early_unmap_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize) {
     let indexes = PageIndexes::get_from_virt(virt);
     let pml4 = PageTable::from_cr3();
     let pdpt3 = (*pml4).get_ptr_from_index_or_eba_kmalloc(indexes.pml4_index());
@@ -88,6 +98,9 @@ pub unsafe fn early_unmap_page(virt: VirtAddr, page_size: &PageSize) {
         let mut entry = &mut (*pdpt3).get_entries()[indexes.pdpt_index()];
         entry.set_flag(PageTableEntry::PRESENT, false);
         flush_tlb_single_page(virt);
+        if pmm_is_enabled() {
+            pmm_free_range(phys, page_size.as_u64());
+        }
         return;
     }
 
@@ -110,9 +123,10 @@ pub unsafe fn early_unmap_page(virt: VirtAddr, page_size: &PageSize) {
 }
 
 /// Frees a continuous page range using early bump as an allocator.
-pub unsafe fn early_unmap_range(virt_start: VirtAddr, length: u64, page_size: &PageSize) {
+pub unsafe fn early_unmap_range(virt_start: VirtAddr, phys: PhysAddr, length: u64, page_size: &PageSize) {
     let mut unmapped_bytes = 0;
     let mut current_virt = virt_start.as_u64();
+    let mut current_phys = phys.as_u64();
 
     let step = match page_size {
         PageSize::Size1Gb => 0x4000_0000,
@@ -121,18 +135,19 @@ pub unsafe fn early_unmap_range(virt_start: VirtAddr, length: u64, page_size: &P
     };
 
     while unmapped_bytes < length {
-        early_unmap_page(
+        vmm_early_unmap_page(
             VirtAddr::new_truncate(current_virt),
+            PhysAddr::new_truncate(current_phys),
             page_size
         );
 
         current_virt += step;
+        current_phys += step;
         unmapped_bytes += step;
     }
 }
 
-
-// Translates virtual address to a physical address
+/// Translates virtual address to a physical address
 pub fn virtual_to_physical(virt: VirtAddr) -> Option<PhysAddr> {
     let indexes = PageIndexes::get_from_virt(virt);
 
@@ -141,7 +156,6 @@ pub fn virtual_to_physical(virt: VirtAddr) -> Option<PhysAddr> {
         if entry.is_present() { Some(entry) } else { None }
     };
 
-    // Nowy helper: bierze adres fizyczny, dodaje offset HHDM i rzutuje na wskaźnik
     let phys_to_table_ptr = |phys_addr: u64| {
         physical_to_virtual(PhysAddr::new(phys_addr)).as_u64() as *mut PageTable
     };
@@ -151,27 +165,21 @@ pub fn virtual_to_physical(virt: VirtAddr) -> Option<PhysAddr> {
         PhysAddr::new(entry_addr + offset)
     };
 
-    // UWAGA: Jeśli Twoje `PageTable::from_cr3()` zwraca goły adres fizyczny
-    // (bez dodanego offsetu HHDM), upewnij się, że poprawisz to w jego
-    // implementacji, albo użyj tutaj `phys_to_table_ptr(cr3_phys)`.
     let pml4 = PageTable::from_cr3();
     let pml4_entry = get_entry(pml4, indexes.pml4_index())?;
 
-    // Tłumaczymy adres fizyczny PDPT na wskaźnik wirtualny
     let pdpt_ptr = phys_to_table_ptr(pml4_entry.as_pt_address() as u64);
     let pdpt_entry = get_entry(pdpt_ptr, indexes.pdpt_index())?;
     if pdpt_entry.is_huge() {
         return Some(calc_phys(pdpt_entry.address(), 0x3FFF_FFFF));
     }
 
-    // Tłumaczymy adres fizyczny PD na wskaźnik wirtualny
     let pd_ptr = phys_to_table_ptr(pdpt_entry.as_pt_address() as u64);
     let pd_entry = get_entry(pd_ptr, indexes.pd_index())?;
     if pd_entry.is_huge() {
         return Some(calc_phys(pd_entry.address(), 0x1F_FFFF));
     }
 
-    // Tłumaczymy adres fizyczny PT na wskaźnik wirtualny
     let pt_ptr = phys_to_table_ptr(pd_entry.as_pt_address() as u64);
     let pt_entry = get_entry(pt_ptr, indexes.pt_index())?;
 

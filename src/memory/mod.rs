@@ -9,6 +9,8 @@ pub mod pmm;
 pub mod eba;
 pub mod page_tables;
 pub mod dir_mapping;
+pub mod kheap;
+mod ll_allocator;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;
