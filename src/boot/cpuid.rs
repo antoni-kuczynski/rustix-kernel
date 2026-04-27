@@ -8,7 +8,7 @@ use crate::{vgaprint, VGAWRITER};
 use crate::ColorTextMode;
 use core::arch::x86_64::{CpuidResult, __cpuid};
 use spin::Once;
-use crate::{print_ok_msg, vgaprintln};
+use crate::{print_ok_msg};
 
 pub struct CpuId {
     base: CpuidResult,

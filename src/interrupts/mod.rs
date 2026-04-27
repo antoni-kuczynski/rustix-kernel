@@ -1,7 +1,10 @@
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX, hardware::pic8259::{timer_interrupt_handler, PicInterruptIndex}}, print_ok_msg, vgaprint, vgaprintln};
+use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
+            interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX,
+         hardware::pic8259::{timer_interrupt_handler, PicInterruptIndex}},
+            print_ok_msg, vgaprint};
 use crate::interrupts::hardware::pic8259::keyboard_interrupt_handler;
 
 pub mod exceptions;
@@ -43,7 +46,7 @@ pub fn idt_init() {
 }
 
 
-pub fn enable(){
+pub fn interrupts_enable(){
     vgaprint!("Enabling interrupts...");
 
     x86_64::instructions::interrupts::enable();

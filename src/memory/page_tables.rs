@@ -2,11 +2,15 @@
  * Created by Antoni Kuczyński
  * 14/04/2026
  */
+use alloc::alloc::{alloc, Layout};
 use core::ops::AddAssign;
 use core::ptr;
+use x86_64::PhysAddr;
 use x86_64::VirtAddr;
 use crate::memory::{Cr3, SizeUnit, _P2V_kernel, _V2P_kernel};
+use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::eba::eba_kmalloc;
+use crate::memory::pmm::pmm_allocate_frame;
 use crate::vgaprintln;
 
 
@@ -41,7 +45,6 @@ impl PageTable {
     pub fn get_ptr_from_index_or_eba_kmalloc(&mut self, index: usize) -> *mut PageTable {
         let mut entry = &mut self.entries[index];
 
-        // vgaprintln!("{:#011x}", entry as *const PageTableEntry as *const u64 as u64);
         // no page table - need to allocate
         if !entry.is_present() {
             let new_table = early_page_alloc();
@@ -51,6 +54,24 @@ impl PageTable {
             return new_table;
         }
         _P2V_kernel(entry.address()) as *mut PageTable
+    }
+
+    pub fn get_ptr_from_index_or_alloc(&mut self, index: usize) -> *mut PageTable {
+        let entry = &mut self.entries[index];
+
+        if !entry.is_present() {
+            let new_table_phys = pmm_allocate_frame().expect("No more physical frames for page table!");
+            let new_table_virt = physical_to_virtual(new_table_phys).as_u64() as *mut PageTable;
+            unsafe {
+                ptr::write_bytes(new_table_virt as *mut u8, 0, 4096);
+            }
+            entry.set_address(new_table_phys.as_u64());
+            entry.set_flag(PageTableEntry::PRESENT, true);
+            entry.set_flag(PageTableEntry::WRITABLE, true);
+            return new_table_virt;
+        }
+
+        physical_to_virtual(PhysAddr::new(entry.address())).as_u64() as *mut PageTable
     }
 
     pub fn from_cr3() -> *mut PageTable {

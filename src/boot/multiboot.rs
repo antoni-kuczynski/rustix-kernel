@@ -1,96 +1,23 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint, VGAWRITER};
+pub(crate) use crate::boot::multiboot_tag::{mb_tag_as_u32, MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag, MultibootModulesTag, MultibootTagBase, MultibootTagStruct};
+use crate::memory::_P2V_kernel;
+use crate::memory::page_tables::PageSize;
+use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
+use crate::memory::{SizeUnit, _V2P_kernel, KERNEL_VIRT_BASE};
 use crate::ColorTextMode;
-use core::cmp::PartialEq;
+use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint, VGAWRITER};
+use crate::{print_ok_msg, vgaprintln};
 use core::ptr;
 use core::ptr::read_volatile;
-use spin::{Once};
+use spin::Once;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::{print_ok_msg, vgaprintln};
-use crate::memory::{SizeUnit, _V2P_kernel, KERNEL_VIRT_BASE};
-use crate::memory::_P2V_kernel;
-use crate::memory::page_tables::{PageSize};
-use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
 /*
 ==============================================
 SOURCES:
 https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html
 ==============================================
  */
-
-//==================================================================================================
-//Multiboot information structures
-//==================================================================================================
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
-pub struct MultibootTagBase {
-    tag_type: u32,
-    size: u32
-}
-//==================================================================================================
-//  MEMORY MAP
-//==================================================================================================
-/*
-‘entry_size’ contains the size of one entry so that in future new fields may be added to it.
-It’s guaranteed to be a multiple of 8. ‘entry_version’ is currently set at ‘0’.
-Future versions will increment this field. Future version are guranteed to be backward compatible with older format.
- */
-#[repr(C, packed)]
-pub struct MultibootMemoryMapTag { //type = 6
-    header: MultibootTagBase,
-    entry_size: u32,
-    entry_version: u32,
-    entries: MultibootMemoryMapEntry
-}
-
-/*
-‘size’ contains the size of current entry including this field itself.
-It may be bigger than 24 bytes in future versions but is guaranteed to be ‘base_addr’ is the starting physical address.
-
-‘length’ is the size of the memory region in bytes.
-
-‘type’ is the variety of address range represented, where a
-    value of 1 indicates available RAM,
-    value of 3 indicates usable memory holding ACPI information,
-    value of 4 indicates reserved memory which needs to be preserved on hibernation,
-    value of 5 indicates a memory which is occupied by defective RAM modules and all other values currently indicated a reserved area.
-
-‘reserved’ is set to ‘0’ by bootloader and must be ignored by the OS image.
-
-The map provided is guaranteed to list all standard RAM that should be available for normal use.
-This type however includes the regions occupied by kernel, mbi, segments and modules.
-Kernel must take care not to overwrite these regions.
-
-This tag may not be provided by some boot loaders on EFI platforms if EFI boot services are enabled and available
-for the loaded image (EFI boot services not terminated tag exists in Multiboot2 information structure).
- */
-#[repr(C, packed)]
-pub struct MultibootMemoryMapEntry { //type = 6
-    base_addr: u64,
-    length: u64,
-    addr_range_type: u32,
-    _reserved: u32
-}
-
-#[derive(PartialEq)]
-pub enum MemoryRegionType {
-    AvailableRAM = 1,
-    UsableAcpi = 3,
-    HibernationPreserved = 4,
-    DefectiveRAM = 5
-}
-//==================================================================================================
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
-pub struct MultibootModulesTag {
-    header: MultibootTagBase, //type = 3
-    mod_start: u32,
-    mod_end: u32,
-    string: *const u8
-}
-
-//==================================================================================================
 #[repr(C, packed)]
 pub struct MultibootInfo {
     total_size: u32,
@@ -124,7 +51,8 @@ impl MultibootInfoView {
         vmm_eba_map_page(
             VirtAddr::new_truncate(original_aligned),
             PhysAddr::new_truncate(_V2P_kernel(original_aligned)),
-            &PageSize::Size2Mb
+            &PageSize::Size2Mb,
+            false
         );
 
         let length_bytes = read_volatile(original_virt_address as *const u32) as u64;
@@ -133,13 +61,15 @@ impl MultibootInfoView {
             VirtAddr::new_truncate(original_aligned + PageSize::SIZE_2MB),
             PhysAddr::new_truncate(_V2P_kernel(original_aligned + PageSize::SIZE_2MB)),
             length_bytes,
-            &PageSize::Size2Mb
+            &PageSize::Size2Mb,
+            false
         );
         vmm_eba_map_range(
             VirtAddr::new_truncate(virt_address_to_copy_to),
             PhysAddr::new_truncate(_V2P_kernel(virt_address_to_copy_to)),
             length_bytes,
-            &PageSize::Size2Mb
+            &PageSize::Size2Mb,
+            false
         );
 
         //copy mb struct
@@ -174,14 +104,12 @@ impl MultibootInfoView {
         start_dst: *mut u8,
         view: &mut MultibootInfoView
     ) -> *const u8 {
-        let mut modules = view.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES, view.tags);
+        let mut modules = view.get_tag_addr_by_type::<MultibootModulesTag>(view.tags);
 
         let mut current_dst = start_dst;
         let mut final_end_addr = (copied_base as *const _ as *const u8).add(copied_base.total_size as usize);
 
-        while let Some(module_ptr) = modules {
-            let module = &mut *(module_ptr as *mut MultibootModulesTag);
-
+        while let Some(module) = modules {
             let original_src = _P2V_kernel(module.mod_start() as u64) as *mut u8;
             let module_len = (module.mod_end - module.mod_start) as u64;
 
@@ -190,13 +118,15 @@ impl MultibootInfoView {
                 VirtAddr::new_truncate(original_src as u64),
                 PhysAddr::new_truncate(_V2P_kernel(original_src as u64)),
                 module_len,
-                &PageSize::Size2Mb
+                &PageSize::Size2Mb,
+                false
             );
             vmm_eba_map_range(
                 VirtAddr::new_truncate(current_dst as u64),
                 PhysAddr::new_truncate(_V2P_kernel(current_dst as u64)),
                 module_len,
-                &PageSize::Size2Mb
+                &PageSize::Size2Mb,
+                false
             );
 
             let copied_end = current_dst.add(module_len as usize);
@@ -215,11 +145,11 @@ impl MultibootInfoView {
             Self::unmap_mb_region(original_src as u64, current_dst as u64, module_len);
 
             final_end_addr = copied_end;
-            current_dst = ((copied_end as u64 + 0xFFF) & !0xFFF) as *mut u8; // Wyrównanie do 4KB
+            current_dst = ((copied_end as u64 + 0xFFF) & !0xFFF) as *mut u8;
 
             //next tag
-            let next_tag_ptr = (module as *const _ as *const u8).add(((module.header().size() + 7) & !0x7) as usize);
-            modules = view.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES, next_tag_ptr as *const u32);
+            let next_tag_ptr = (module as *const _ as *const u8).add(((module.header().size + 7) & !0x7) as usize);
+            modules = view.get_tag_addr_by_type::<MultibootModulesTag>(next_tag_ptr as *const u32);
         }
 
         final_end_addr
@@ -249,7 +179,7 @@ impl MultibootInfoView {
 
             //unmap only if the addresses are not the same and they do not cover kernel / eba region
             if original != copied && !Self::is_page_inside_kernel_or_eba_regions(original) {
-                vmm_early_unmap_page(VirtAddr::new_truncate(original), PhysAddr::new_truncate(_V2P_kernel(original_virt)), &PageSize::Size2Mb);
+                vmm_early_unmap_page(VirtAddr::new_truncate(original), PhysAddr::new_truncate(_V2P_kernel(original_virt)), &PageSize::Size2Mb, false);
             }
             offset += PageSize::SIZE_2MB;
         }
@@ -264,7 +194,7 @@ impl MultibootInfoView {
     }
 
     //==================================================================================================
-    pub fn get_tag_addr_by_type(&self, tag_type: u32, start_tag_addr: *const u32) -> Option<*const u32> {
+    pub fn get_tag_addr_by_type<T: MultibootTagStruct>(&self, start_tag_addr: *const u32) -> Option<&'static mut T> {
         unsafe {
             let mut tags = start_tag_addr as *const MultibootTagBase;
             let tags_end = self.tags.byte_add(self.tags_size_bytes) as *const MultibootTagBase;
@@ -278,8 +208,8 @@ impl MultibootInfoView {
                     break;
                 }
 
-                if current_tag_type == tag_type {
-                    return Some(tags as *const u32);
+                if current_tag_type == mb_tag_as_u32::<T>() {
+                    return Some(&mut *(tags as *mut T));
                 }
 
                 tags = tags.byte_add(length);
@@ -290,8 +220,8 @@ impl MultibootInfoView {
 //==================================================================================================
     pub fn get_boot_loader_name(&self) -> Option<&str> {
         unsafe {
-            let addr = match self.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_BOOTLOADER_NAME, self.tags) {
-                Some(x) => x,
+            let addr = match self.get_tag_addr_by_type::<MultibootBootloaderName>(self.tags) {
+                Some(x) => &x.0 as *const u8 as *const u32,
                 None => return None
             };
 
@@ -306,19 +236,12 @@ impl MultibootInfoView {
         }
     }
 //==================================================================================================
-    pub fn get_memory_map_tag(&self) -> Option<*const MultibootMemoryMapTag> {
-        match self.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MEMORY_MAP, self.tags) {
-            Some(x) => Some(x as *const MultibootMemoryMapTag),
-            None => None
-        }
+    fn get_memory_map_tag(&self) -> Option<&'static mut MultibootMemoryMapTag> {
+        self.get_tag_addr_by_type::<MultibootMemoryMapTag>(self.tags)
     }
 
-    pub fn get_modules_tag(&self, search_start_addr: *const u32) -> Option<*const MultibootModulesTag> {
-        let tag = self.get_tag_addr_by_type(MultibootTagBase::MULTIBOOT_TAG_TYPE_MODULES, search_start_addr);
-        match tag {
-            None => {None}
-            Some(x) => {Some(x as *const MultibootModulesTag)}
-        }
+    fn get_modules_tag(&self, search_start_addr: *const u32) -> Option<&'static mut MultibootModulesTag> {
+        self.get_tag_addr_by_type::<MultibootModulesTag>(search_start_addr)
     }
 //==================================================================================================
     pub fn print(&self) {
@@ -379,39 +302,6 @@ impl MultibootInfo {
         }
     }
 }
-//==================================================================================================
-impl MultibootTagBase {
-    pub const MULTIBOOT_TAG_TYPE_BOOT_COMMAND_LINE: u32 = 1;
-    pub const MULTIBOOT_TAG_TYPE_BOOTLOADER_NAME: u32 = 2;
-    pub const MULTIBOOT_TAG_TYPE_MODULES: u32 = 3;
-    pub const MULTIBOOT_TAG_TYPE_FLAGS: u32 = 4;
-    pub const MULTIBOOT_TAG_TYPE_FRAMEBUFFER: u32 = 5;
-    pub const MULTIBOOT_TAG_TYPE_MEMORY_MAP: u32 = 6;
-    pub const MULTIBOOT_TAG_TYPE_VBE_INFO: u32 = 7;
-    pub const MULTIBOOT_TAG_TYPE_FRAMEBUFFER_INFO: u32 = 8;
-    pub const MULTIBOOT_TAG_TYPE_ELF_SYMBOLS: u32 = 9;
-    pub const MULTIBOOT_TAG_TYPE_APM_TABLE: u32 = 10;
-    pub const MULTIBOOT_TAG_TYPE_EFI_32_BIT_SYSTEM_TABLE_POINTER: u32 = 11;
-    pub const MULTIBOOT_TAG_TYPE_EFI_64_BIT_SYSTEM_TABLE_POINTER: u32 = 12;
-    pub const MULTIBOOT_TAG_TYPE_SMBIOS_TABLES: u32 = 13;
-    pub const MULTIBOOT_TAG_TYPE_ACPI_OLD_RSDP: u32 = 14;
-    pub const MULTIBOOT_TAG_TYPE_ACPI_NEW_RSDP: u32 = 15;
-    pub const MULTIBOOT_TAG_TYPE_NETWORKING_INFORMATION: u32 = 16;
-    pub const MULTIBOOT_TAG_TYPE_EFI_MEMORY_MAP: u32 = 17;
-    pub const MULTIBOOT_TAG_TYPE_EFI_BOOT_SERVICES_NOT_TERMINATED: u32 = 18;
-    pub const MULTIBOOT_TAG_TYPE_EFI_32_BIT_IMAGE_HANDLE_POINTER: u32 = 19;
-    pub const MULTIBOOT_TAG_TYPE_EFI_64_BIT_IMAGE_HANDLE_POINTER: u32 = 20;
-    pub const MULTIBOOT_TAG_TYPE_IMAGE_LOAD_BASE_PHYSICAL_ADDRESS: u32 = 21;
-
-    pub fn tag_type(&self) -> u32 {
-        self.tag_type
-    }
-
-    pub fn size(&self) -> u32 {
-        self.size
-    }
-}
-
 //==================================================================================================
 //TODO: I absolutely despise of the code repetition here, it's so extremely disgusting it makes me wanna reconsider my life choices.
 // For now it works so all is good, but for the love of god and all human beings looking at this abomination, change this!!!
@@ -573,10 +463,6 @@ impl MultibootMemoryMapEntry {
     pub fn addr_range_type(&self) -> u32 {
         self.addr_range_type
     }
-
-    pub fn _reserved(&self) -> u32 {
-        self._reserved
-    }
 }
 //==================================================================================================
 impl MultibootModulesTag {
@@ -667,14 +553,22 @@ pub fn multiboot2_init() {
     }
 }
 
-pub fn multiboot2_memory_map_tag() -> Option<*const MultibootMemoryMapTag> {
+pub fn multiboot2_memory_map_tag() -> Option<&'static MultibootMemoryMapTag> {
     let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
-    info.get_memory_map_tag()
+    let memory_map = info.get_memory_map_tag();
+    if memory_map.is_some() {
+        return Some(memory_map.unwrap() as &'static MultibootMemoryMapTag);
+    }
+    None
 }
 
-pub fn multiboot2_modules_tag(search_start_addr: *const u32) -> Option<*const MultibootModulesTag> {
+pub fn multiboot2_modules_tag(search_start_addr: *const u32) -> Option<&'static MultibootModulesTag> {
     let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
-    info.get_modules_tag(search_start_addr)
+    let modules = info.get_modules_tag(search_start_addr);
+    if modules.is_some() {
+        return Some(modules.unwrap() as &'static MultibootModulesTag);
+    }
+    None
 }
 
 pub fn multiboot2_bootloader_name() -> Option<&'static str> {

@@ -1,6 +1,7 @@
 #![allow(unused)]
 #![allow(non_snake_case)]
 use core::arch::asm;
+use core::ops::{Div, Mul};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::endKernel;
 
@@ -11,6 +12,7 @@ pub mod page_tables;
 pub mod dir_mapping;
 pub mod kheap;
 mod ll_allocator;
+pub mod kheap_test;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;
@@ -88,6 +90,30 @@ impl SizeUnit {
     
     pub fn as_u64(&self) -> u64 {
         self.as_usize() as u64 //lol
+    }
+}
+
+impl Mul<i32> for SizeUnit {
+    type Output = u64;
+
+    fn mul(self, rhs: i32) -> Self::Output {
+        self.as_u64() * rhs as u64
+    }
+}
+
+impl Div<i32> for SizeUnit {
+    type Output = u64;
+
+    fn div(self, rhs: i32) -> Self::Output {
+        self.as_u64() / rhs as u64
+    }
+}
+
+impl Div<i32> for &SizeUnit {
+    type Output = u64;
+
+    fn div(self, rhs: i32) -> Self::Output {
+        self.as_u64() / rhs as u64
     }
 }
 

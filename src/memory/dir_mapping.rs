@@ -24,7 +24,8 @@ unsafe fn do_4kb_pages(total: u64, mut mapped: u64) -> u64 {
         vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
-            &PageSize::Size4Kb
+            &PageSize::Size4Kb,
+            false
         );
         mapped += PageSize::SIZE_4KB;
     }
@@ -36,7 +37,8 @@ unsafe fn do_2mb_pages(total: u64, mut mapped: u64) -> u64 {
         vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
-            &PageSize::Size2Mb
+            &PageSize::Size2Mb,
+            false
         );
         mapped += PageSize::SIZE_2MB;
     }
@@ -48,7 +50,8 @@ unsafe fn do_1gb_pages(total: u64, mut mapped: u64) -> u64 {
         vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
-            &PageSize::Size1Gb
+            &PageSize::Size1Gb,
+            false
         );
         mapped += PageSize::SIZE_1GB;
     }
@@ -108,9 +111,7 @@ pub fn dir_mapping_init() {
         if has_1gb_pages {
             init_1gb(high_addr);
         } else {
-            let mapped_bytes = init_2mb(high_addr); // old CPUs don't support 1gb pages, so use 2mb ones instead
-            vgaprintln!("High addr: {}", high_addr.as_u64());
-            vgaprintln!("Mapped bytes: {}", mapped_bytes);
+            init_2mb(high_addr); // old CPUs don't support 1gb pages, so use 2mb ones instead
         }
     }
 }

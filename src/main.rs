@@ -1,22 +1,21 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
+#![feature(alloc_error_handler)]
+
+extern crate alloc;
 
 mod drivers;
 mod interrupts;
 pub mod asm;
 mod boot;
 mod memory;
-// mod graphics;
 
+use alloc::vec::Vec;
 use core::panic::PanicInfo;
-use x86_64::PhysAddr;
-use crate::boot::multiboot::{multiboot2_bootloader_name, multiboot2_logical_end, multiboot2_memory_map_tag, MultibootInfo, MULTIBOOT_INFO};
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{SizeUnit, _P2V_kernel, FRAME_SIZE, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
-use crate::memory::kheap::KHEAP_END;
-use crate::memory::page_tables::PageSize;
-use crate::memory::pmm::{pmm_free_frame, pmm_free_range, PMM_BITMAP};
+use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
+use crate::memory::kheap::ALLOCATOR;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -48,9 +47,15 @@ pub extern "C" fn rust_main() -> ! {
     boot::multiboot::multiboot2_init();
     memory::pmm::pmm_init();
     memory::dir_mapping::dir_mapping_init();
+
     memory::kheap::kheap_init();
-    
-    interrupts::enable();
+
+    interrupts::interrupts_enable();
+
+    // let a: Vec<u8> = Vec::with_capacity(1024*1024*2);
+    memory::kheap_test::run_all_tests(&mut *ALLOCATOR.lock());
+
+
 
     unsafe {
         let kernel_offset = KERNEL_VIRT_BASE;
@@ -73,26 +78,27 @@ pub extern "C" fn rust_main() -> ! {
 
         // print_page_table_tree(kernel_offset as u64);
 
-        let memory_tag = multiboot2_memory_map_tag().unwrap();
+        // let memory_tag = multiboot2_memory_map_tag().unwrap();
+        //
+        // vgaprintln!("=========KERNEL INFO==========");
+        // vgaprintln!("Kernel LOGICAL end:       {:#011x}", _P2V_kernel(end_kernel));
+        // vgaprintln!("Kernel PHYSICAL base:      {:#06x}", phys_base);
+        // vgaprintln!("Kernel PHYS2VIRT offset:   {:#011x}", kernel_offset);
+        // vgaprintln!();
+        // vgaprintln!("=======EARLY HEAP INFO========");
+        // vgaprintln!("EH VIRTUAL start:  {:#011x}", _P2V_kernel(earlyHeapStart));
+        // vgaprintln!("EH VIRTUAL end:    {:#011x}", _P2V_kernel(earlyHeapEnd));
+        // vgaprintln!();
+        // vgaprintln!("=========MEMORY INFO==========");
+        // vgaprintln!("Available memory:  {}mb", memory_tag.get_available_memory(SizeUnit::Megabyte));
+        // vgaprintln!("Bitmap size:   {}kb", PMM_BITMAP.lock().length() / SizeUnit::Kilobyte.as_u64());
+        // vgaprintln!();
+        // vgaprintln!("=======MULTIBOOT INFO=========");
+        // vgaprintln!("Multiboot length: {}b", MULTIBOOT_INFO.get().unwrap().length());
+        // vgaprintln!("Multiboot start VIRTUAL: {:#011x}", MULTIBOOT_INFO.get().unwrap().base() as *const MultibootInfo as u64);
+        // vgaprintln!("Multiboot end VIRTUAL: {:#011x}", multiboot2_logical_end().as_u64());
+        // vgaprintln!("Bootloader name: {}", multiboot2_bootloader_name().unwrap());
 
-        vgaprintln!("=========KERNEL INFO==========");
-        vgaprintln!("Kernel LOGICAL end:       {:#011x}", _P2V_kernel(end_kernel));
-        vgaprintln!("Kernel PHYSICAL base:      {:#06x}", phys_base);
-        vgaprintln!("Kernel PHYS2VIRT offset:   {:#011x}", kernel_offset);
-        vgaprintln!();
-        vgaprintln!("=======EARLY HEAP INFO========");
-        vgaprintln!("EH VIRTUAL start:  {:#011x}", _P2V_kernel(earlyHeapStart));
-        vgaprintln!("EH VIRTUAL end:    {:#011x}", _P2V_kernel(earlyHeapEnd));
-        vgaprintln!();
-        vgaprintln!("=========MEMORY INFO==========");
-        vgaprintln!("Available memory:  {}mb", (*memory_tag).get_available_memory(SizeUnit::Megabyte));
-        vgaprintln!("Bitmap size:   {}kb", PMM_BITMAP.lock().length() / SizeUnit::Kilobyte.as_u64());
-        vgaprintln!();
-        vgaprintln!("=======MULTIBOOT INFO=========");
-        vgaprintln!("Multiboot length: {}b", MULTIBOOT_INFO.get().unwrap().length());
-        vgaprintln!("Multiboot start VIRTUAL: {:#011x}", MULTIBOOT_INFO.get().unwrap().base() as *const MultibootInfo as u64);
-        vgaprintln!("Multiboot end VIRTUAL: {:#011x}", multiboot2_logical_end().as_u64());
-        vgaprintln!("Bootloader name: {}", multiboot2_bootloader_name().unwrap());
 
         // vgaprintln!("0 = free | 1 = used");
         // PMM_BITMAP.lock().print(540);

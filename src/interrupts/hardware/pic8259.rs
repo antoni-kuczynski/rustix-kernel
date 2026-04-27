@@ -21,7 +21,7 @@ use pic8259::ChainedPics;
 use spin::{mutex::Mutex};
 use x86_64::{structures::idt::InterruptStackFrame};
 
-use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, print_ok_msg, vgaprint, vgaprintln};
+use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, print_ok_msg, vgaprint};
 
 // indexes of pic interrupts handlers in IDT
 // Primary
