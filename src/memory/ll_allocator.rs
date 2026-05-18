@@ -8,6 +8,12 @@
 use core::alloc::Layout;
 use core::cmp::PartialEq;
 use core::{mem, ptr};
+use core::ptr::null_mut;
+use x86_64::VirtAddr;
+use crate::memory::{SizeUnit, FRAME_SIZE};
+use crate::memory::page_tables::PageSize;
+use crate::memory::paging::{vmm_map_page, vmm_unmap_page};
+use crate::memory::pmm::{pmm_allocate_frame, pmm_free_frame};
 use crate::vgaprintln;
 
 pub struct ListNode {
@@ -20,11 +26,11 @@ impl ListNode {
         ListNode { size, next: None }
     }
 
-    fn start_addr(&self) -> usize {
+    pub(crate) fn start_addr(&self) -> usize {
         self as *const Self as usize
     }
 
-    fn end_addr(&self) -> usize {
+    pub(crate) fn end_addr(&self) -> usize {
         self.start_addr() + self.size
     }
 }
@@ -37,73 +43,181 @@ impl PartialEq for ListNode {
 
 pub struct LinkedListAllocator {
     pub(crate) head: ListNode,
+    pub(crate) heap_end: usize,     //4kb aligned current end of heap
+
+    //the top region is the last region if its start+size is equal to heap_end, otherwise its 0,0
+    pub(crate) top_start: usize,
+    pub(crate) top_size: usize,
+
+    //the whole region allocator works in
+    pub(crate) region_start: usize,
+    pub(crate) region_length: usize
+
 }
 
 impl LinkedListAllocator {
     pub const fn new() -> Self {
         Self {
             head: ListNode::new(0),
+            heap_end: 0,
+            top_start: 0,
+            top_size: 0,
+            region_start: 0,
+            region_length: 0
         }
     }
 
     pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
         self.add_free_region(heap_start, heap_size);
+        self.heap_end = heap_start + heap_size;
+        self.region_start = heap_start;
+        self.region_length = heap_size;
+        self.top_start = heap_start;
+        self.top_size = heap_size;
+    }
+
+    fn update_top_if_needed(&mut self, region_start: usize, region_size: usize) {
+        let region_end = region_start + region_size;
+
+        if region_end == self.heap_end {
+            self.top_start = region_start;
+            self.top_size = region_size;
+        }
+    }
+
+    fn clear_top(&mut self) {
+        self.top_start = 0;
+        self.top_size = 0;
+    }
+
+    fn top_end(&self) -> usize {
+        self.top_start + self.top_size
+    }
+
+    fn region_contains_top(&self, region_start: usize, region_size: usize) -> bool {
+        if self.top_size == 0 {
+            return false;
+        }
+
+        let region_end = region_start + region_size;
+        let top_end = self.top_end();
+
+        region_start <= self.top_start && region_end >= top_end
     }
 
     /// Adds a free region with the given address and size to the front of the list
     pub unsafe fn add_free_region(&mut self, addr: usize, size: usize) {
-        let addr = align_up(addr, align_of::<ListNode>());
-        let size = size & !(size_of::<ListNode>() - 1);
+        let aligned_addr = align_up(addr, align_of::<ListNode>());
+        let padding = aligned_addr - addr;
+
+        let Some(size) = size.checked_sub(padding) else {
+            return;
+        };
+
+        let size = size & !(align_of::<ListNode>() - 1);
+
+        if size < size_of::<ListNode>() {
+            return;
+        }
+
+        let addr = aligned_addr;
         assert!(size >= size_of::<ListNode>());
 
-        let mut current = &mut self.head;
+        let mut previous_node = &mut self.head;
 
         //find correct place inside list
-        while let Some(ref next) = current.next {
+        while let Some(ref next) = previous_node.next {
             if next.start_addr() > addr {
                 break;
             }
-            current = current.next.as_mut().unwrap();
+            previous_node = previous_node.next.as_mut().unwrap();
         }
 
         let mut new_node = ListNode::new(size);
-        new_node.next = current.next.take();
+        let old_next = previous_node.next.take();
+
+        new_node.next = old_next;
         let new_node_ptr = addr as *mut ListNode;
         new_node_ptr.write_volatile(new_node);
         let new_node_ref = &mut *new_node_ptr;
 
         //merge forwards
-        let new_node_end = new_node_ref.end_addr();
-
-        if let Some(ref mut next_node) = new_node_ref.next {
-            if new_node_end == next_node.start_addr() {
-                new_node_ref.size += next_node.size;
-                new_node_ref.next = next_node.next.take();
+        while let Some(mut next_node) = new_node_ref.next.take() {
+            if new_node_ref.end_addr() != next_node.start_addr() {
+                new_node_ref.next = Some(next_node);
+                break;
             }
+
+            new_node_ref.size += next_node.size;
+            new_node_ref.next = next_node.next.take();
         }
+
+        let final_region_start;
+        let final_region_size;
 
         //merge backwards
-        if current.size != 0 && current.end_addr() == addr {
-            current.size += new_node_ref.size;
-            current.next = new_node_ref.next.take();
+        if previous_node.size != 0 && previous_node.end_addr() == new_node_ref.start_addr() {
+            previous_node.size += new_node_ref.size;
+            previous_node.next = new_node_ref.next.take();
+
+            final_region_start = previous_node.start_addr();
+            final_region_size = previous_node.size;
         } else {
-            current.next = Some(new_node_ref);
+            final_region_start = new_node_ref.start_addr();
+            final_region_size = new_node_ref.size;
+
+            previous_node.next = Some(new_node_ref);
         }
+
+        self.update_top_if_needed(final_region_start, final_region_size);
     }
 
     /// Looks for a free region with the given size and alignment and removes it from the list
     fn find_region(&mut self, size: usize, align: usize) -> Option<(&'static mut ListNode, usize)> {
-        let mut current = &mut self.head;
-        while let Some(ref mut next) = current.next {
-            if let Ok(alloc_start) = Self::alloc_from_region(next, size, align) {
-                let next = current.next.take().unwrap();
-                current.next = next.next.take();
-                return Some((next, alloc_start));
-            } else {
-                current = current.next.as_mut().unwrap();
+        loop {
+            let mut current = &mut self.head;
+            while let Some(ref mut next) = current.next {
+                if let Ok(alloc_start) = Self::alloc_from_region(next, size, align) {
+                    let region_start = next.start_addr();
+                    let region_size = next.size;
+
+                    let mut region = current.next.take().unwrap();
+                    current.next = region.next.take();
+
+                    if self.region_contains_top(region_start, region_size) {
+                        self.clear_top();
+                    }
+
+                    return Some((region, alloc_start));
+                } else {
+                    current = current.next.as_mut().unwrap();
+                }
+            }
+
+            // we didnt find a region, so allocate new pages to make room for that
+            unsafe {
+                let map_start = align_up(self.heap_end, PageSize::SIZE_4KB as usize);
+
+                let alloc_start = align_up(map_start, align);
+                let alloc_end = alloc_start
+                    .checked_add(size)
+                    .expect("allocation overflow");
+
+                let map_end = align_up(alloc_end, PageSize::SIZE_4KB as usize);
+
+                let mut page_addr = map_start;
+                while page_addr < map_end {
+                    let frame_addr = pmm_allocate_frame()?; //out of physical frames
+                    vmm_map_page(VirtAddr::new(page_addr as u64), frame_addr, &PageSize::Size4Kb);
+
+                    page_addr += PageSize::SIZE_4KB as usize;
+                }
+
+                let new_region_size = map_end - map_start;
+                self.heap_end = map_end;
+                self.add_free_region(map_start, new_region_size);
             }
         }
-        None
     }
 
     /// Try to use the given region for an allocation with given size and alignment
@@ -115,12 +229,91 @@ impl LinkedListAllocator {
             return Err(());
         }
 
-        let excess_size = region.end_addr() - alloc_end;
-        if excess_size > 0 && excess_size < size_of::<ListNode>() {
-            return Err(()); // no space left for list node
+        let front_excess_size = alloc_start - region.start_addr();
+        let back_excess_size = region.end_addr() - alloc_end;
+
+        if front_excess_size > 0 && front_excess_size < size_of::<ListNode>() {
+            return Err(());
+        }
+
+        if back_excess_size > 0 && back_excess_size < size_of::<ListNode>() {
+            return Err(());
         }
 
         Ok(alloc_start)
+    }
+
+    unsafe fn remove_free_region_by_start(&mut self, region_start: usize) {
+        let mut current = &mut self.head;
+
+        //some O(n) garbage, but it's for an edge case so it's fine
+        while let Some(ref mut next) = current.next {
+            if next.start_addr() == region_start {
+                let mut removed = current.next.take().unwrap();
+                current.next = removed.next.take();
+                return;
+            }
+
+            current = current.next.as_mut().unwrap();
+        }
+    }
+
+    unsafe fn try_shrink_top(&mut self) {
+        if self.top_size == 0 {
+            return;
+        }
+
+        let page_size = PageSize::SIZE_4KB as usize;
+
+        let top_start = self.top_start;
+        let top_end = self.top_start + self.top_size;
+
+        if top_end != self.heap_end {
+            // invalid top
+            self.top_start = 0;
+            self.top_size = 0;
+            return;
+        }
+
+        let protected_size = SizeUnit::Megabyte.as_usize() * 2;
+        let protected_end = align_up(self.region_start + protected_size, page_size);
+
+        let mut unmap_start = align_up(top_start, page_size);
+
+        //first 2mb cant be unmapped
+        if unmap_start < protected_end {
+            unmap_start = protected_end;
+        }
+
+        if unmap_start >= self.heap_end {
+            return;
+        }
+
+        let old_heap_end = self.heap_end;
+        let remaining_size = unmap_start - top_start;
+
+        //region smaller than listnode's size cant exist
+        if remaining_size < size_of::<ListNode>() {
+            self.remove_free_region_by_start(top_start);
+            self.top_start = 0;
+            self.top_size = 0;
+        } else {
+            let top_node = &mut *(top_start as *mut ListNode);
+            top_node.size = remaining_size;
+
+            self.top_size = remaining_size;
+        }
+
+        let mut addr = unmap_start;
+
+        while addr < old_heap_end {
+            let frame = vmm_unmap_page(VirtAddr::new(addr as u64));
+            pmm_free_frame(frame);
+
+            addr += page_size;
+        }
+
+        self.heap_end = unmap_start;
     }
 
     /// Adjusts the layout so that it can also store listnode
@@ -150,7 +343,8 @@ impl LinkedListAllocator {
 
     pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         let (size, _align) = Self::size_align(layout);
-        self.add_free_region(ptr as usize, size)
+        self.add_free_region(ptr as usize, size);
+        self.try_shrink_top();
     }
 }
 
@@ -158,3 +352,5 @@ impl LinkedListAllocator {
 pub fn align_up(addr: usize, align: usize) -> usize {
     (addr + align - 1) & !(align - 1)
 }
+
+unsafe impl Send for LinkedListAllocator {}

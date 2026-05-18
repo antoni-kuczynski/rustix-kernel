@@ -1,7 +1,6 @@
 [unstable]
 build-std-features = ["compiler-builtins-mem"]
 build-std = ["core", "compiler_builtins", "alloc"]
-json-target-spec = true
 [build]
 target = "x86_64-rustix.json"
 [target.'cfg(target_os = "none")']
@@ -10,5 +9,3 @@ rustflags = [
     "-C", "link-arg=boot/o/entry.o",
     "-C", "link-arg=-Tlinker.ld"
 ]
-
-#runner = "bootimage runner"

@@ -3,6 +3,9 @@
 #![feature(abi_x86_interrupt)]
 #![feature(alloc_error_handler)]
 
+#![allow(dead_code)]
+#![allow(unused_variables)]
+
 extern crate alloc;
 
 mod drivers;
@@ -11,7 +14,6 @@ pub mod asm;
 mod boot;
 mod memory;
 
-use alloc::vec::Vec;
 use core::panic::PanicInfo;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
@@ -52,7 +54,6 @@ pub extern "C" fn rust_main() -> ! {
 
     interrupts::interrupts_enable();
 
-    // let a: Vec<u8> = Vec::with_capacity(1024*1024*2);
     memory::kheap_test::run_all_tests(&mut *ALLOCATOR.lock());
 
 

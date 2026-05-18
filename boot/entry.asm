@@ -208,7 +208,7 @@ GDT:
 
 ALIGN 4
 .Pointer:
-    dw V2P($ - GDT - 1)
+    dw $ - GDT - 1
     dd V2P(GDT)
 ; ====================================================
 [BITS 64]
@@ -234,13 +234,15 @@ higherHalfMemory:
 
     ; remove the idendity mapping
     mov rax, 0
-    mov qword [V2P(l4_pml4)], rax
+    mov rdi, V2P(l4_pml4)
+    mov [rdi], rax
 
     ; flush page table
     mov rax, cr3
     mov cr3, rax
 
-    mov [__oldMultibootPhysAddr], esi   ; restore the multiboot struct address
+    mov rdi, __oldMultibootPhysAddr
+    mov [rdi], esi   ; restore the multiboot struct address
 
     call vgaInit
 
@@ -254,15 +256,17 @@ setupPageTablesLongMode:
     ; higher half kernel page tables
     ; --------------------------------------------
     ; map kernel l3 pdpt
+    mov rdi, V2P(l4_pml4) + 511*8
     mov rax, V2P(l3_pdpt_kernel)
     or rax, 0b11
-    mov qword [V2P(l4_pml4) + 511*8], rax ; 9 bits equal to 1 = 511
+    mov [rdi], rax ; 9 bits equal to 1 = 511
     ; ===========================
 
     ; map kernel l2 pd
+    mov rdi, V2P(l3_pdpt_kernel) + 510*8
     mov rax, V2P(l2_pd_kernel)
     or rax, 0b11
-    mov [V2P(l3_pdpt_kernel) + 510*8], rax ; 8 msb bits 1, lsb=0, = 510
+    mov [rdi], rax ; 8 msb bits 1, lsb=0, = 510
     ; ===========================
 
     ; --------------------------------------------
@@ -270,13 +274,16 @@ setupPageTablesLongMode:
         xor rcx, rcx
         mov rdi, 0x00000000
 
-        lea rbx, [endKernel]
+        mov rbx, endKernel
         ; ===========================
         .kernelMapLoop:
             mov rax, rdi
             or rax, 0b11    ; present, writeable flags
             or rax, (1 << 7)    ; huge page flag
-            mov qword [V2P(l2_pd_kernel) + rcx*8], rax
+            mov r8, rcx
+            shl r8, 3   ; rcx * 8
+            add r8, V2P(l2_pd_kernel) ; + V2P(l2_pd_kernel)
+            mov [r8], rax
 
 
             add rdi, 0x200000   ; add 2mb
@@ -288,13 +295,13 @@ setupPageTablesLongMode:
 
     ; --------------------------------------------
     tempHeapPageTables:
-        lea rdi, [earlyHeapStart]   ; set early heap start
-        lea rax, [endKernel]    ; end kernel address
+        lea rdi, earlyHeapStart   ; set early heap start
+        mov rax, endKernel    ; end kernel address
         add rax, 0x200000 - 1   ; add size of page - 1
         and rax, ~(0x200000 - 1) ; align to page
         mov [rdi], rax          ; put in .bss
 
-        lea rdi, [earlyHeapEnd] ; end of temp heap
+        mov rdi, earlyHeapEnd ; end of temp heap
         add rax, 0x800000       ; size of temp heap = 8mb
         mov [rdi], rax          ; put in .bss
 
@@ -302,14 +309,20 @@ setupPageTablesLongMode:
         ; counter is rcx, which is left at value of last allocated page for the kernel
         ; from previous loop
         ; here we map a temp heap memory region of 8mb, right after kernel end
-        mov rdi, [earlyHeapStart] ; start address - already page aligned
-        mov rbx, [earlyHeapEnd] ; end address - already page aligned
+        mov rax, earlyHeapStart
+        mov rdi, [rax] ; start address - already page aligned
+        mov rax, earlyHeapEnd
+        mov rbx, [rax] ; end address - already page aligned
         ; ===========================
         .earlyHeapMapLoop:
             mov rax, rdi
             or rax, 0b11    ; present, writeable flags
             or rax, (1 << 7)    ; huge page flag
-            mov qword [V2P(l2_pd_kernel) + rcx*8], rax
+
+            mov r8, rcx
+            shl r8, 3   ; rcx * 8
+            add r8, V2P(l2_pd_kernel) ; + V2P(l2_pd_kernel)
+            mov [r8], rax
 
             add rdi, 0x200000   ; still using 2mb pages
             inc rcx

@@ -216,8 +216,9 @@ pub unsafe fn vmm_map_range(virt_start: VirtAddr, phys_start: PhysAddr, length: 
     }
 }
 
-/// Unmaps a page - it doesn't free the page table.
-pub unsafe fn vmm_unmap_page(virt: VirtAddr) {
+/// Unmaps a page
+/// Returns it's physical frame address
+pub unsafe fn vmm_unmap_page(virt: VirtAddr) -> PhysAddr {
     let indexes = PageIndexes::get_from_virt(virt);
     let pml4 = PageTable::from_cr3();
 
@@ -231,23 +232,27 @@ pub unsafe fn vmm_unmap_page(virt: VirtAddr) {
     let pdpt_ptr = physical_to_virtual(PhysAddr::new(pml4_entry.address())).as_u64() as *mut PageTable;
     let pdpt_entry = get_entry(pdpt_ptr, indexes.pdpt_index()).expect("PDPT entry not present during unmap");
     if pdpt_entry.is_huge() {
+        let phys_addr = PhysAddr::new(pdpt_entry.address());
         pdpt_entry.set_flag(PageTableEntry::PRESENT, false);
         flush_tlb_single_page(virt);
-        return;
+        return phys_addr;
     }
 
     let pd_ptr = physical_to_virtual(PhysAddr::new(pdpt_entry.address())).as_u64() as *mut PageTable;
     let pd_entry = get_entry(pd_ptr, indexes.pd_index()).expect("PD entry not present during unmap");
     if pd_entry.is_huge() {
+        let phys_addr = PhysAddr::new(pd_entry.address());
         pd_entry.set_flag(PageTableEntry::PRESENT, false);
         flush_tlb_single_page(virt);
-        return;
+        return phys_addr;
     }
 
     let pt_ptr = physical_to_virtual(PhysAddr::new(pd_entry.address())).as_u64() as *mut PageTable;
     let pt_entry = get_entry(pt_ptr, indexes.pt_index()).expect("PT entry not present during unmap");
+    let phys_addr = PhysAddr::new(pt_entry.address());
     pt_entry.set_flag(PageTableEntry::PRESENT, false);
     flush_tlb_single_page(virt);
+    phys_addr
 }
 
 /// Unmaps a continuous page range.
