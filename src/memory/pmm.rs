@@ -222,6 +222,10 @@ impl PmmBitmap {
         }
         None
     }
+
+    pub fn ptr(&self) -> &AtomicPtr<u8> {
+        &self.ptr
+    }
 }
 //==================================================================================================
 /// Initializes the PMM

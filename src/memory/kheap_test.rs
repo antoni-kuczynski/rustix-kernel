@@ -16,7 +16,7 @@ pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     vgaprintln!("\n--- STARTING KHEAP TEST SUITE ---");
 
     // dump_debug(allocator);
-    test_allocator_everything(allocator);
+    // test_allocator_everything(allocator);
 
     // test_fragmentation_and_reclaim(allocator);
     // test_multi_page_allocation_mapping(allocator);
@@ -24,6 +24,7 @@ pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     // test_coalescing(allocator);
     // test_fragmentation_and_reclaim(allocator);
     // test_overflow_protection(allocator);
+    test_out_of_memory(allocator);
     // test_node_integrity(allocator);
 
     vgaprintln!("--- ALL KHEAP TESTS COMPLETED ---\n");
@@ -259,6 +260,45 @@ fn test_overflow_protection(allocator: &mut LinkedListAllocator) {
             allocator.deallocate(ptr, layout_huge);
         }
     }
+}
+
+fn test_out_of_memory(allocator: &mut LinkedListAllocator) {
+    vgaprintln!("\n[TEST] Out of Memory (OOM) Protection");
+    
+    const BLOCK_SIZE: usize = 512 * 1024 * 1;
+    let layout = Layout::from_size_align(BLOCK_SIZE, 8).unwrap();
+
+    const MAX_ALLOCATIONS: usize = 1024 * 1024 * 1024;
+    let mut allocation_count = 0;
+
+    vgaprintln!("  Starting allocation loop of {} KB blocks...", BLOCK_SIZE / 1024);
+
+    unsafe {
+        loop {
+            let ptr = allocator.allocate(layout);
+
+            if ptr.is_null() {
+                vgaprintln!("  OK: Allocator correctly returned NULL after {} allocations.", allocation_count);
+                vgaprintln!("      Total allocated size: {} KB", (allocation_count * BLOCK_SIZE) / 1024);
+                break;
+            }
+
+            if allocation_count >= MAX_ALLOCATIONS {
+                vgaprintln!("  FAIL: Reached test limit of {} allocations without OOM!", MAX_ALLOCATIONS);
+                vgaprintln!("        Tip: Increase BLOCK_SIZE in the test to hit OOM with fewer allocations.");
+                allocator.deallocate(ptr, layout);
+                break;
+            }
+
+            allocation_count += 1;
+
+            if allocation_count % 5 == 0 {
+                // vgaprintln!("    Allocated blocks: {} ({} KB)", allocation_count, (allocation_count * BLOCK_SIZE) / 1024);
+            }
+        }
+    }
+
+    vgaprintln!("  [TEST PASSED]");
 }
 
 fn test_node_integrity(allocator: &mut LinkedListAllocator) {

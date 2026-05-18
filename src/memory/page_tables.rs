@@ -53,14 +53,16 @@ impl PageTable {
             entry.set_flag(PageTableEntry::WRITABLE, true);
             return new_table;
         }
+
+        entry.set_flag(PageTableEntry::WRITABLE, true);
         _P2V_kernel(entry.address()) as *mut PageTable
     }
 
-    pub fn get_ptr_from_index_or_alloc(&mut self, index: usize) -> *mut PageTable {
+    pub fn get_ptr_from_index_or_alloc(&mut self, index: usize) -> Option<*mut PageTable> {
         let entry = &mut self.entries[index];
 
         if !entry.is_present() {
-            let new_table_phys = pmm_allocate_frame().expect("No more physical frames for page table!");
+            let new_table_phys = pmm_allocate_frame()?;
             let new_table_virt = physical_to_virtual(new_table_phys).as_u64() as *mut PageTable;
             unsafe {
                 ptr::write_bytes(new_table_virt as *mut u8, 0, 4096);
@@ -68,14 +70,16 @@ impl PageTable {
             entry.set_address(new_table_phys.as_u64());
             entry.set_flag(PageTableEntry::PRESENT, true);
             entry.set_flag(PageTableEntry::WRITABLE, true);
-            return new_table_virt;
+            return Some(new_table_virt);
         }
 
-        physical_to_virtual(PhysAddr::new(entry.address())).as_u64() as *mut PageTable
+        entry.set_flag(PageTableEntry::WRITABLE, true);
+        Some(physical_to_virtual(PhysAddr::new(entry.address())).as_u64() as *mut PageTable)
     }
 
     pub fn from_cr3() -> *mut PageTable {
-        _P2V_kernel(Cr3::cr3_page_table_base().as_u64()) as *mut PageTable
+        let phys = Cr3::cr3_page_table_base();
+        _P2V_kernel(phys.as_u64()) as *mut PageTable
     }
 
     pub fn get_entries(&mut self) -> &mut [PageTableEntry; 512] {

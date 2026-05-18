@@ -15,9 +15,12 @@ mod boot;
 mod memory;
 
 use core::panic::PanicInfo;
+use core::sync::atomic::Ordering;
+use x86_64::VirtAddr;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
+use crate::memory::{kheap_test, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
 use crate::memory::kheap::ALLOCATOR;
+use crate::memory::pmm::PMM_BITMAP;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -38,25 +41,10 @@ unsafe extern "C" {
     static __oldMultibootPhysAddr: u32;
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn rust_main() -> ! {
-    interrupts::idt_init();
-    interrupts::gdt::gdt_init();
-    interrupts::hardware::pic8259::pics_init();
-
-    memory::eba::eba_init();
-    boot::cpuid::cpuid_init();
-    boot::multiboot::multiboot2_init();
-    memory::pmm::pmm_init();
-    memory::dir_mapping::dir_mapping_init();
-
-    memory::kheap::kheap_init();
-
+fn kernel_main_post_stack() -> ! {
     interrupts::interrupts_enable();
 
-    memory::kheap_test::run_all_tests(&mut *ALLOCATOR.lock());
-
-
+    kheap_test::run_all_tests(&mut *ALLOCATOR.lock());
 
     unsafe {
         let kernel_offset = KERNEL_VIRT_BASE;
@@ -123,13 +111,32 @@ pub extern "C" fn rust_main() -> ! {
     // acpi2_reset_command(&tables).expect("failed to acpi reset the pc");
     //
     // pci::pci_init();
-    //
-    // loop{
-    //     x86_64::instructions::hlt();
-    // }
 
-    loop {
+    loop{
         x86_64::instructions::hlt();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_main() -> ! {
+    interrupts::idt_init();
+    interrupts::gdt::gdt_init();
+    interrupts::hardware::pic8259::pics_init();
+
+    memory::eba::eba_init();
+    boot::cpuid::cpuid_init();
+    boot::multiboot::multiboot2_init();
+    memory::pmm::pmm_init();
+    memory::dir_mapping::dir_mapping_init();
+
+    memory::kheap::kheap_init();
+
+    unsafe {
+        let pmm = PMM_BITMAP.lock();
+        let pmm_end = pmm.ptr().load(Ordering::Relaxed).add(pmm.length() as usize);
+        PMM_BITMAP.force_unlock(); //todo
+        vgaprintln!("{:#011x}", pmm_end as u64);
+        memory::secure_stack::switch_to_secure_stack(VirtAddr::new(pmm_end as u64), 4)
     }
 }
 

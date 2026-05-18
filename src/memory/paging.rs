@@ -27,6 +27,7 @@ pub unsafe fn vmm_eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageS
         let mut entry = &mut (*pdpt3).get_entries()[indexes.pdpt_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_C000_0000);
         entry.set_flag(PageTableEntry::PRESENT, true);
+        entry.set_flag(PageTableEntry::WRITABLE, true);
         entry.set_flag(PageTableEntry::HUGE, true);
         flush_tlb_single_page(virt);
         if alloc_in_pmm {
@@ -41,6 +42,7 @@ pub unsafe fn vmm_eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageS
         let mut entry = &mut (*pd2).get_entries()[indexes.pd_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_FFE0_0000);
         entry.set_flag(PageTableEntry::PRESENT, true);
+        entry.set_flag(PageTableEntry::WRITABLE, true);
         entry.set_flag(PageTableEntry::HUGE, true);
         flush_tlb_single_page(virt);
         if alloc_in_pmm {
@@ -55,6 +57,7 @@ pub unsafe fn vmm_eba_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageS
         let mut entry = &mut (*pt1).get_entries()[indexes.pt_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_FFFF_F000);
         entry.set_flag(PageTableEntry::PRESENT, true);
+        entry.set_flag(PageTableEntry::WRITABLE, true);
         entry.set_flag(PageTableEntry::HUGE, false);
         flush_tlb_single_page(virt);
         if alloc_in_pmm {
@@ -156,43 +159,56 @@ pub unsafe fn early_unmap_range(virt_start: VirtAddr, phys: PhysAddr, length: u6
 }
 
 /// Maps page and uses PMM for allocating page tables if needed
-pub unsafe fn vmm_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize) {
+pub unsafe fn vmm_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize) -> bool {
     let indexes = PageIndexes::get_from_virt(virt);
     let pml4 = PageTable::from_cr3();
     let pdpt3 = (*pml4).get_ptr_from_index_or_alloc(indexes.pml4_index());
 
+    if pdpt3.is_none() {
+        return false;
+    }
+
     if let PageSize::Size1Gb = page_size {
-        let mut entry = &mut (*pdpt3).get_entries()[indexes.pdpt_index()];
+        let mut entry = &mut (*pdpt3.unwrap()).get_entries()[indexes.pdpt_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_C000_0000);
         entry.set_flag(PageTableEntry::PRESENT, true);
         entry.set_flag(PageTableEntry::WRITABLE, true);
         entry.set_flag(PageTableEntry::HUGE, true);
         flush_tlb_single_page(virt);
-        return;
+        return true;
     }
 
-    let pd2 = (*pdpt3).get_ptr_from_index_or_alloc(indexes.pdpt_index());
+    let pd2 = (*pdpt3.unwrap()).get_ptr_from_index_or_alloc(indexes.pdpt_index());
+
+    if pd2.is_none() {
+        return false;
+    }
 
     if let PageSize::Size2Mb = page_size {
-        let mut entry = &mut (*pd2).get_entries()[indexes.pd_index()];
+        let mut entry = &mut (*pd2.unwrap()).get_entries()[indexes.pd_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_FFE0_0000);
         entry.set_flag(PageTableEntry::PRESENT, true);
         entry.set_flag(PageTableEntry::WRITABLE, true);
         entry.set_flag(PageTableEntry::HUGE, true);
         flush_tlb_single_page(virt);
-        return;
+        return true;
     }
 
-    let pt1 = (*pd2).get_ptr_from_index_or_alloc(indexes.pd_index());
+    let pt1 = (*pd2.unwrap()).get_ptr_from_index_or_alloc(indexes.pd_index());
+
+    if pt1.is_none() {
+        return false;
+    }
 
     if let PageSize::Size4Kb = page_size {
-        let mut entry = &mut (*pt1).get_entries()[indexes.pt_index()];
+        let mut entry = &mut (*pt1.unwrap()).get_entries()[indexes.pt_index()];
         entry.set_address(phys.as_u64() & 0x000F_FFFF_FFFF_F000);
         entry.set_flag(PageTableEntry::PRESENT, true);
         entry.set_flag(PageTableEntry::WRITABLE, true);
         entry.set_flag(PageTableEntry::HUGE, false);
         flush_tlb_single_page(virt);
     }
+    return true;
 }
 
 /// Allocates a continuous page range using PMM for page tables.

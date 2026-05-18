@@ -205,10 +205,18 @@ impl LinkedListAllocator {
 
                 let map_end = align_up(alloc_end, PageSize::SIZE_4KB as usize);
 
+                vgaprintln!("start: {:#011x}, end: {:#011x}", map_start, map_end);
                 let mut page_addr = map_start;
                 while page_addr < map_end {
-                    let frame_addr = pmm_allocate_frame()?; //out of physical frames
-                    vmm_map_page(VirtAddr::new(page_addr as u64), frame_addr, &PageSize::Size4Kb);
+                    let frame_addr = pmm_allocate_frame();
+
+                    if frame_addr.is_none() {
+                        return None;
+                    }
+
+                    if !vmm_map_page(VirtAddr::new(page_addr as u64), frame_addr.unwrap(), &PageSize::Size4Kb) {
+                        return None;
+                    }
 
                     page_addr += PageSize::SIZE_4KB as usize;
                 }

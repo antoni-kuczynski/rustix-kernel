@@ -72,8 +72,3 @@ unsafe impl GlobalAlloc for Locked<LinkedListAllocator> {
         self.lock().deallocate(ptr, layout)
     }
 }
-
-
-fn alloc_error_handler(layout: Layout) -> ! {
-    panic!("allocation error: {:?}", layout)
-}
