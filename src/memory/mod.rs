@@ -14,6 +14,7 @@ pub mod kheap;
 mod ll_allocator;
 pub mod kheap_test;
 pub mod secure_stack;
+pub mod dma;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;

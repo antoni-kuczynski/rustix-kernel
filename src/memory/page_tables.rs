@@ -89,12 +89,14 @@ impl PageTable {
 //==================================================================================================
 //==================================================================================================
 #[repr(C)]
-pub struct PageTableEntry(u64);
+pub struct PageTableEntry(pub u64);
 
 impl PageTableEntry {
     pub const PRESENT: u64         = 1 << 0;
     pub const WRITABLE: u64        = 1 << 1;
     pub const USER_ACCESSIBLE: u64 = 1 << 2;
+    pub const WRITE_THROUGH: u64   = 1 << 3;
+    pub const CACHE_DISABLE: u64   = 1 << 4;
     pub const ACCESSED: u64        = 1 << 5;
     pub const DIRTY: u64           = 1 << 6;
     pub const HUGE: u64            = 1 << 7;

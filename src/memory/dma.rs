@@ -1,0 +1,129 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+/*
+ * Created by Antoni Kuczyński
+ * 19/05/2026
+ */
+use x86_64::{PhysAddr, VirtAddr};
+use crate::{vgaprint, VGAWRITER, print_ok_msg, vgaprintln};
+use crate::ColorTextMode;
+use crate::memory::paging::{vmm_map_page_ext, virtual_to_physical};
+use crate::memory::ll_allocator::LinkedListAllocator;
+use core::alloc::Layout;
+use crate::memory::page_tables::{PageSize, PageTableEntry};
+use crate::memory::pmm::{pmm_allocate_contiguous};
+use crate::memory::SizeUnit;
+use spin::Mutex;
+use lazy_static::lazy_static;
+
+const DMA_START: u64 = 0xffff_d300_0000_0000;
+const DMA_SIZE: u64 = 16 * 1_099_511_627_776; // 16tb
+
+pub struct DmaManager {
+    allocator: LinkedListAllocator,
+}
+
+impl DmaManager {
+    pub const fn new() -> Self {
+        Self {
+            allocator: LinkedListAllocator::new(),
+        }
+    }
+
+    pub unsafe fn init(&mut self) {
+        let heap_start = DMA_START;
+        let heap_size = SizeUnit::Megabyte.as_u64() * 2; // 2mb initial size
+
+        // Allocate contiguous frames for the initial part of DMA heap
+        let frame_count = heap_size / 4096;
+        let phys = pmm_allocate_contiguous(frame_count).expect("failed to allocate frames for DMA heap");
+        
+        let flags = PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::CACHE_DISABLE | PageTableEntry::WRITE_THROUGH;
+
+        // Map initial range
+        let mut current_virt = heap_start;
+        let mut current_phys = phys.as_u64();
+        for _ in 0..frame_count {
+            vmm_map_page_ext(
+                VirtAddr::new(current_virt),
+                PhysAddr::new(current_phys),
+                &PageSize::Size4Kb,
+                flags
+            );
+            current_virt += 4096;
+            current_phys += 4096;
+        }
+
+        self.allocator.init(heap_start as usize, heap_size as usize);
+        self.allocator.set_contiguous(true);
+        self.allocator.set_flags(flags);
+    }
+
+    pub fn alloc_coherent(&mut self, size: usize, align: usize) -> Option<DmaAlloc> {
+        let layout = Layout::from_size_align(size, align).ok()?;
+        unsafe {
+            let ptr = self.allocator.allocate(layout);
+            if ptr.is_null() {
+                return None;
+            }
+            
+            let virt = VirtAddr::new(ptr as u64);
+            let phys = virtual_to_physical(virt).expect("DMA virtual address not mapped to physical");
+            
+            Some(DmaAlloc::new(virt, phys, layout))
+        }
+    }
+
+    pub unsafe fn free(&mut self, virt: VirtAddr, layout: Layout) {
+        self.allocator.deallocate(virt.as_u64() as *mut u8, layout);
+    }
+
+    pub fn allocator(&mut self) -> &mut LinkedListAllocator {
+        &mut self.allocator
+    }
+}
+
+lazy_static! {
+    pub static ref DMA_MANAGER: Mutex<DmaManager> = Mutex::new(DmaManager::new());
+}
+
+#[derive(Debug)]
+pub struct DmaAlloc {
+    pub virt: VirtAddr,
+    pub phys: PhysAddr,
+    pub layout: Layout,
+}
+
+impl DmaAlloc {
+    pub fn new(virt: VirtAddr, phys: PhysAddr, layout: Layout) -> Self {
+        Self { virt, phys, layout }
+    }
+}
+
+impl Drop for DmaAlloc {
+    fn drop(&mut self) {
+        unsafe {
+            DMA_MANAGER.lock().free(self.virt, self.layout);
+        }
+    }
+}
+
+//==================================================================================================
+// PUBLIC WRAPPERS
+//==================================================================================================
+
+pub fn dma_init() {
+    vgaprint!("Initializing DMA allocator...");
+    unsafe {
+        DMA_MANAGER.lock().init();
+    }
+    print_ok_msg!();
+}
+
+pub fn dma_alloc_coherent(size: usize, align: usize) -> Option<DmaAlloc> {
+    DMA_MANAGER.lock().alloc_coherent(size, align)
+}
+
+pub fn dma_free(alloc: DmaAlloc) {
+    drop(alloc);
+}

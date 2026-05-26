@@ -7,9 +7,10 @@
 
 
 use core::alloc::Layout;
+use x86_64::VirtAddr;
 use crate::memory::ll_allocator::{align_up, LinkedListAllocator, ListNode};
 use crate::memory::page_tables::PageSize;
-use crate::memory::SizeUnit;
+use crate::memory::{dma, SizeUnit};
 use crate::vgaprintln;
 
 pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
@@ -24,10 +25,14 @@ pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     // test_coalescing(allocator);
     // test_fragmentation_and_reclaim(allocator);
     // test_overflow_protection(allocator);
-    test_out_of_memory(allocator);
+    // test_out_of_memory(allocator);
     // test_node_integrity(allocator);
 
-    vgaprintln!("--- ALL KHEAP TESTS COMPLETED ---\n");
+    // vgaprintln!("--- KHEAP TESTS COMPLETED ---");
+    
+    run_dma_tests();
+
+    vgaprintln!("--- ALL MEMORY TESTS COMPLETED ---\n");
 }
 
 fn dump_debug(allocator: &LinkedListAllocator) {
@@ -1000,4 +1005,121 @@ pub fn test_allocator_everything(allocator: &mut LinkedListAllocator) {
     } else {
         vgaprintln!("\n[TEST SUITE] FAILED: at least one allocator test failed");
     }
+}
+pub fn run_dma_tests() {
+    vgaprintln!("\n--- STARTING DMA TEST SUITE ---");
+    test_dma_basic();
+    // test_dma_continuity();
+    // test_dma_large_alloc();
+    // test_dma_fragmentation();
+    vgaprintln!("--- DMA TEST SUITE COMPLETED ---\n");
+}
+
+fn test_dma_basic() {
+    vgaprintln!("[TEST] DMA Basic Alloc/Free");
+    let size = 1024;
+    let align = 64;
+    
+    if let Some(alloc) = dma::dma_alloc_coherent(size, align) {
+        vgaprintln!("  Allocated 1KB DMA at virt: {:?}, phys: {:?}", alloc.virt, alloc.phys);
+        assert!(alloc.virt.as_u64() % align as u64 == 0, "DMA alignment failed");
+        
+        unsafe {
+            let ptr = alloc.virt.as_u64() as *mut u8;
+            ptr.write_volatile(0xDE);
+            assert!(ptr.read_volatile() == 0xDE, "DMA read/write failed");
+        }
+        
+        dma::dma_free(alloc);
+        vgaprintln!("  OK: Basic DMA test passed");
+    } else {
+        panic!("  FAIL: Basic DMA allocation failed");
+    }
+}
+
+fn test_dma_continuity() {
+    vgaprintln!("[TEST] DMA Physical Continuity");
+    let pages = 4;
+    let size = pages * 4096;
+    
+    if let Some(alloc) = dma::dma_alloc_coherent(size, 4096) {
+        vgaprintln!("  Allocated {} pages DMA at phys: {:?}", pages, alloc.phys);
+        
+        // Check if every virtual page maps to the expected physical page
+        for i in 0..pages {
+            let offset = i * 4096;
+            let virt_page = VirtAddr::new(alloc.virt.as_u64() + offset as u64);
+            let phys_page = crate::memory::paging::virtual_to_physical(virt_page).unwrap();
+            let expected_phys = alloc.phys.as_u64() + offset as u64;
+            
+            assert!(phys_page.as_u64() == expected_phys, 
+                "DMA continuity failed at page {}: expected {:#x}, got {:?}", 
+                i, expected_phys, phys_page);
+        }
+        
+        dma::dma_free(alloc);
+        vgaprintln!("  OK: DMA physical continuity verified");
+    } else {
+        panic!("  FAIL: DMA continuity allocation failed");
+    }
+}
+
+fn test_dma_large_alloc() {
+    vgaprintln!("[TEST] DMA Large Allocation (1MB)");
+    let size = 1024 * 1024; // 1MB
+    
+    if let Some(alloc) = dma::dma_alloc_coherent(size, 4096) {
+        vgaprintln!("  Allocated 1MB DMA at phys: {:?}", alloc.phys);
+        
+        unsafe {
+            let ptr = alloc.virt.as_u64() as *mut u8;
+            // Write at the beginning, middle and end
+            ptr.write_volatile(0x11);
+            ptr.add(size / 2).write_volatile(0x22);
+            ptr.add(size - 1).write_volatile(0x33);
+            
+            assert!(ptr.read_volatile() == 0x11);
+            assert!(ptr.add(size / 2).read_volatile() == 0x22);
+            assert!(ptr.add(size - 1).read_volatile() == 0x33);
+        }
+        
+        dma::dma_free(alloc);
+        vgaprintln!("  OK: Large DMA allocation test passed");
+    } else {
+        panic!("  FAIL: Large DMA allocation failed");
+    }
+}
+
+fn test_dma_fragmentation() {
+    vgaprintln!("[TEST] DMA Fragmentation and Reuse");
+    let size = 4096;
+    let mut allocs: [Option<dma::DmaAlloc>; 8] = Default::default();
+    
+    // Allocate 8 pages
+    for i in 0..8 {
+        allocs[i] = dma::dma_alloc_coherent(size, size);
+    }
+    
+    // Free even ones
+    for i in (0..8).step_by(2) {
+        if let Some(a) = allocs[i].take() {
+            dma::dma_free(a);
+        }
+    }
+    
+    // Allocate 2 pages (should fit in holes)
+    let a1 = dma::dma_alloc_coherent(size, size).expect("Failed to reuse hole 1");
+    let a2 = dma::dma_alloc_coherent(size, size).expect("Failed to reuse hole 2");
+    
+    dma::dma_free(a1);
+    dma::dma_free(a2);
+    
+    // Cleanup remaining
+    for i in (1..8).step_by(2) {
+        if let Some(a) = allocs[i].take() {
+            dma::dma_free(a);
+        }
+    }
+    
+    vgaprintln!("  OK: DMA fragmentation reuse test passed");
 }

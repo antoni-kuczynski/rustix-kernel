@@ -1,8 +1,6 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
-#![feature(alloc_error_handler)]
-
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
@@ -15,12 +13,9 @@ mod boot;
 mod memory;
 
 use core::panic::PanicInfo;
-use core::sync::atomic::Ordering;
-use x86_64::VirtAddr;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::{kheap_test, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
 use crate::memory::kheap::ALLOCATOR;
-use crate::memory::pmm::PMM_BITMAP;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -42,6 +37,9 @@ unsafe extern "C" {
 }
 
 fn kernel_main_post_stack() -> ! {
+    // let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
+    // enable_acpi(&tables).expect("Enabling ACPI failed!");
+    // pci::pci_init();
     interrupts::interrupts_enable();
 
     kheap_test::run_all_tests(&mut *ALLOCATOR.lock());
@@ -104,13 +102,6 @@ fn kernel_main_post_stack() -> ! {
 
 
     }
-    // let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
-    // enable_acpi(&tables).expect("Enabling ACPI failed!");
-    //
-    // sleep(2000);
-    // acpi2_reset_command(&tables).expect("failed to acpi reset the pc");
-    //
-    // pci::pci_init();
 
     loop{
         x86_64::instructions::hlt();
@@ -130,14 +121,9 @@ pub extern "C" fn rust_main() -> ! {
     memory::dir_mapping::dir_mapping_init();
 
     memory::kheap::kheap_init();
+    memory::dma::dma_init();
 
-    unsafe {
-        let pmm = PMM_BITMAP.lock();
-        let pmm_end = pmm.ptr().load(Ordering::Relaxed).add(pmm.length() as usize);
-        PMM_BITMAP.force_unlock(); //todo
-        vgaprintln!("{:#011x}", pmm_end as u64);
-        memory::secure_stack::switch_to_secure_stack(VirtAddr::new(pmm_end as u64), 4)
-    }
+    memory::secure_stack::switch_to_secure_stack()
 }
 
 #[panic_handler]
