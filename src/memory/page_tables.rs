@@ -35,7 +35,7 @@ pub enum PagingSetupError {
 //  PAGE TABLE
 //==================================================================================================
 const PAGE_TABLE_ENTRIES: usize = 512;
-pub const PHYS_ADDR_MASK: u64 = 0x000F_FFFF_FFE0_0000;
+pub const PHYS_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 #[repr(align(4096))]
 pub struct PageTable {
     pub entries: [PageTableEntry; PAGE_TABLE_ENTRIES]

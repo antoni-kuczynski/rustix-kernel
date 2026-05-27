@@ -57,7 +57,8 @@ impl PmmAllocError {
 //==================================================================================================
 pub struct PmmBitmap {
     ptr: AtomicPtr<u8>,
-    length: u64
+    length: u64,
+    frame_count: u64
 }
 //==================================================================================================
 impl PmmBitmap {
@@ -84,26 +85,13 @@ impl PmmBitmap {
                 continue
             }
 
-            let mut base_frame_addr = (*entry1).base_addr() / 4096;
-            let length_of_frames = ((*entry1).length() / 4096) & !(FRAME_SIZE - 1);
-            let last_frame = base_frame_addr + length_of_frames;
+            let region_start = (*entry1).base_addr();
+            let region_end = region_start.saturating_add((*entry1).length());
+            let first_frame = (region_start + FRAME_SIZE - 1) / FRAME_SIZE;
+            let end_frame = region_end / FRAME_SIZE;
 
-            let base_ptr = self.ptr.load(Ordering::Acquire);
-
-            while base_frame_addr <= (last_frame - 8 * FRAME_SIZE) {
-                let byte_idx = (base_frame_addr / 8) as usize;
-                if (byte_idx as u64) < self.length {
-                    ptr::write_volatile(base_ptr.add(byte_idx), FREE);
-                } else {
-                    // check if we're really on high addr and nothings wrong
-                    if base_frame_addr * 4096 != memory_map.get_high_usable_memory_address().as_u64() {
-                        panic!("Memory high address not inside bitmap: high addr {:#011x} not equal to bitmaps: {:#011x}",
-                               base_frame_addr * 4096, memory_map.get_high_usable_memory_address().as_u64());
-                    }
-
-                    break; // we already allocated memory up to high addr
-                }
-                base_frame_addr = base_frame_addr + 8;
+            if end_frame > first_frame {
+                self.modify_bit_range(first_frame, end_frame - first_frame, false);
             }
 
             entry1 = entry1.add(1);
@@ -202,84 +190,57 @@ impl PmmBitmap {
         self.length
     }
 
-    pub fn allocate_frame(&self) -> Option<PhysAddr> {
+    pub unsafe fn allocate_frame(&self) -> Option<PhysAddr> {
         let base_ptr = self.ptr.load(Ordering::Acquire) as *const AtomicU64;
-        let u64_count = self.length / size_of::<u64>() as u64;
+        let u64_count = (self.frame_count + 63) / 64;
 
         for i in 0..u64_count {
-            unsafe {
-                let atomic_val = &*base_ptr.add(i as usize);
-                let val = atomic_val.load(Ordering::Acquire);
-                if val != u64::MAX {
-                    let bit_idx = (!val).trailing_zeros() as u64;
-                    if bit_idx < 64 {
-                        let frame_idx = i * 64 + bit_idx;
-                        self.modify_bit_range(frame_idx, 1, true);
-                        return Some(PhysAddr::new(frame_idx * 4096));
+            let atomic_val = &*base_ptr.add(i as usize);
+            let val = atomic_val.load(Ordering::Acquire);
+            if val != u64::MAX {
+                let bit_idx = (!val).trailing_zeros() as u64;
+                if bit_idx < 64 {
+                    let frame_idx = i * 64 + bit_idx;
+                    if frame_idx >= self.frame_count {
+                        return None;
                     }
+
+                    self.modify_bit_range(frame_idx, 1, true);
+                    return Some(PhysAddr::new(frame_idx * FRAME_SIZE));
                 }
             }
         }
         None
     }
 
-    pub fn allocate_contiguous(&self, frame_count: u64) -> Option<PhysAddr> {
-        if frame_count == 0 { return None; }
-        if frame_count == 1 { return self.allocate_frame(); }
+    pub unsafe fn allocate_contiguous(&self, requested_frame_count: u64) -> Option<PhysAddr> {
+        if requested_frame_count == 0 || requested_frame_count > self.frame_count {
+            return None;
+        }
+        if requested_frame_count == 1 { return self.allocate_frame(); }
 
         let mut consecutive_free = 0;
         let mut start_frame = 0;
 
         let base_ptr = self.ptr.load(Ordering::Acquire) as *const AtomicU64;
-        let u64_count = self.length / 8;
 
-        for i in 0..u64_count {
-            let val = unsafe { (*base_ptr.add(i as usize)).load(Ordering::Acquire) };
-            
-            if val == u64::MAX {
-                consecutive_free = 0;
-                continue;
-            }
-            
-            if val == 0 {
+        for frame_idx in 0..self.frame_count {
+            let u64_idx = (frame_idx / 64) as usize;
+            let bit_mask = 1u64 << (frame_idx % 64);
+            let val = (*base_ptr.add(u64_idx)).load(Ordering::Acquire);
+
+            if val & bit_mask == 0 {
                 if consecutive_free == 0 {
-                    start_frame = i * 64;
-                }
-                consecutive_free += 64;
-                if consecutive_free >= frame_count {
-                    self.modify_bit_range(start_frame, frame_count, true);
-                    return Some(PhysAddr::new(start_frame * 4096));
-                }
-                continue;
-            }
-
-            let mut bit_idx: u32 = 0;
-            while bit_idx < 64 {
-                let current_val = val >> bit_idx;
-                
-                // Skip used frames (ones)
-                let used = current_val.trailing_ones();
-                if used > 0 {
-                    consecutive_free = 0;
-                    bit_idx += used;
-                    if bit_idx >= 64 { break; }
+                    start_frame = frame_idx;
                 }
 
-                // Count free frames (zeros)
-                let free = (val >> bit_idx).trailing_zeros();
-                let free_in_this_u64 = core::cmp::min(free, 64 - bit_idx);
-                
-                if free_in_this_u64 > 0 {
-                    if consecutive_free == 0 {
-                        start_frame = i * 64 + bit_idx as u64;
-                    }
-                    consecutive_free += free_in_this_u64 as u64;
-                    if consecutive_free >= frame_count {
-                        self.modify_bit_range(start_frame, frame_count, true);
-                        return Some(PhysAddr::new(start_frame * 4096));
-                    }
-                    bit_idx += free_in_this_u64;
+                consecutive_free += 1;
+                if consecutive_free == requested_frame_count {
+                    self.modify_bit_range(start_frame, requested_frame_count, true);
+                    return Some(PhysAddr::new(start_frame * FRAME_SIZE));
                 }
+            } else {
+                consecutive_free = 0;
             }
         }
         None
@@ -304,7 +265,8 @@ pub fn pmm_init() {
     unsafe {
         let mem_size = mem_map.get_high_usable_memory_address();
 
-        let bitmap_size_bytes = mem_size.as_u64() / FRAME_SIZE / 8; //one bit per frame
+        let amount_of_frames = mem_size.as_u64() / FRAME_SIZE;
+        let bitmap_size_bytes = ((amount_of_frames + 63) / 64) * size_of::<u64>() as u64; //one bit per frame
         let bitmap_start_addr = (multiboot2_logical_end().as_u64() + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1);
         
         vmm_eba_map_range(
@@ -323,13 +285,14 @@ pub fn pmm_init() {
         let mut lock = PMM_BITMAP.lock();
         lock.ptr.store(p_bitmap, Ordering::Release);
         lock.length = bitmap_size_bytes;
+        lock.frame_count = amount_of_frames;
         lock.alloc_used_memory_regions(&mem_map);
     }
     print_ok_msg!();
 }
 //==================================================================================================
 lazy_static! {
-    pub static ref PMM_BITMAP: Mutex<PmmBitmap> = Mutex::new(PmmBitmap {ptr: AtomicPtr::new(ptr::null_mut()),length: 0,});
+    pub static ref PMM_BITMAP: Mutex<PmmBitmap> = Mutex::new(PmmBitmap {ptr: AtomicPtr::new(ptr::null_mut()),length: 0, frame_count: 0});
 }
 
 /// Reserves a frame in pmm bitmap
@@ -349,12 +312,16 @@ pub fn pmm_free_frame(frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
 
 /// Allocates a first fit frame in PMM
 pub fn pmm_allocate_frame() -> Option<PhysAddr> {
-    PMM_BITMAP.lock().allocate_contiguous(1)
+    unsafe {
+        PMM_BITMAP.lock().allocate_frame()
+    }
 }
 
 /// Allocates multiple contiguous frames in PMM
 pub fn pmm_allocate_contiguous(frame_count: u64) -> Option<PhysAddr> {
-    PMM_BITMAP.lock().allocate_contiguous(frame_count)
+    unsafe {
+        PMM_BITMAP.lock().allocate_contiguous(frame_count)
+    }
 }
 
 /// Reserves a frame range in pmm bitmap
@@ -365,4 +332,3 @@ pub fn pmm_free_range(start_addr: PhysAddr, length_bytes: u64) -> Result<(), Pmm
 pub fn pmm_is_enabled() -> bool {
     !PMM_BITMAP.lock().ptr.load(Ordering::Acquire).is_null()
 }
-

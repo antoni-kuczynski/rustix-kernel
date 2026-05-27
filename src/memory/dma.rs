@@ -31,30 +31,9 @@ impl DmaManager {
     }
 
     pub unsafe fn init(&mut self) {
-        let heap_start = DMA_START;
-        let heap_size = SizeUnit::Megabyte.as_u64() * 2; // 2mb initial size
-
-        // Allocate contiguous frames for the initial part of DMA heap
-        let frame_count = heap_size / 4096;
-        let phys = pmm_allocate_contiguous(frame_count).expect("failed to allocate frames for DMA heap");
-        
         let flags = PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::CACHE_DISABLE | PageTableEntry::WRITE_THROUGH;
 
-        // Map initial range
-        let mut current_virt = heap_start;
-        let mut current_phys = phys.as_u64();
-        for _ in 0..frame_count {
-            vmm_map_page_ext(
-                VirtAddr::new(current_virt),
-                PhysAddr::new(current_phys),
-                &PageSize::Size4Kb,
-                flags
-            );
-            current_virt += 4096;
-            current_phys += 4096;
-        }
-
-        self.allocator.init(heap_start as usize, heap_size as usize);
+        self.allocator.init(DMA_START as usize, DMA_SIZE as usize);
         self.allocator.set_contiguous(true);
         self.allocator.set_flags(flags);
     }

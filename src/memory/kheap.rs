@@ -14,7 +14,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ops::{Div, Mul};
 use spin::Mutex;
 use crate::memory::page_tables::PageSize;
-use crate::memory::pmm::pmm_allocate_frame;
+use crate::memory::pmm::{pmm_allocate_contiguous, pmm_allocate_frame};
 use crate::memory::{SizeUnit, FRAME_SIZE};
 
 const KHEAP_START: u64 = 0xffff_c200_0000_0000;
@@ -43,21 +43,8 @@ pub static ALLOCATOR: Locked<LinkedListAllocator> = Locked::new(LinkedListAlloca
 pub fn kheap_init() {
     vgaprint!("Initializing kernel heap...");
 
-    let heap_start = KHEAP_START;
-    let heap_size = SizeUnit::Megabyte.as_u64() * 2; //2mb initial size
-
-    let phys = pmm_allocate_frame().expect("failed to allocate frame for heap");
     unsafe {
-        vmm_eba_map_page(
-            VirtAddr::new(heap_start),
-            phys,
-            &PageSize::Size2Mb,
-            true
-        );
-    }
-
-    unsafe {
-        ALLOCATOR.lock().init(heap_start as usize, heap_size as usize);
+        ALLOCATOR.lock().init(KHEAP_START as usize, KHEAP_LENGTH as usize);
     }
 
     print_ok_msg!();

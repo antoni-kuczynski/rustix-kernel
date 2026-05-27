@@ -183,18 +183,27 @@ impl PageManager {
         return true;
     }
 
-    pub unsafe fn map_range_ext(&self, virt_start: VirtAddr, phys_start: PhysAddr, length: u64, page_size: &PageSize, flags: u64) {
+    pub unsafe fn map_range_ext(&self, virt_start: VirtAddr, phys_start: PhysAddr, length: u64, page_size: &PageSize, flags: u64) -> bool {
         let mut mapped_bytes = 0;
         let mut current_virt = virt_start.as_u64();
         let mut current_phys = phys_start.as_u64();
         let step = page_size.as_u64();
 
         while mapped_bytes < length {
-            self.map_page_ext(VirtAddr::new_truncate(current_virt), PhysAddr::new_truncate(current_phys), page_size, flags);
+            if !self.map_page_ext(VirtAddr::new_truncate(current_virt), PhysAddr::new_truncate(current_phys), page_size, flags) {
+                //unmap the pages if failed
+                let mut rollback_virt = virt_start.as_u64();
+                while rollback_virt < current_virt {
+                    self.unmap_page(VirtAddr::new_truncate(rollback_virt));
+                    rollback_virt += step;
+                }
+                return false;
+            }
             current_virt += step;
             current_phys += step;
             mapped_bytes += step;
         }
+        true
     }
 
     pub unsafe fn unmap_page(&self, virt: VirtAddr) -> PhysAddr {
@@ -321,8 +330,8 @@ pub unsafe fn vmm_map_range(virt_start: VirtAddr, phys_start: PhysAddr, length: 
     vmm_map_range_ext(virt_start, phys_start, length, page_size, PageTableEntry::PRESENT | PageTableEntry::WRITABLE);
 }
 
-pub unsafe fn vmm_map_range_ext(virt_start: VirtAddr, phys_start: PhysAddr, length: u64, page_size: &PageSize, flags: u64) {
-    PAGE_MANAGER.lock().map_range_ext(virt_start, phys_start, length, page_size, flags);
+pub unsafe fn vmm_map_range_ext(virt_start: VirtAddr, phys_start: PhysAddr, length: u64, page_size: &PageSize, flags: u64) -> bool {
+    PAGE_MANAGER.lock().map_range_ext(virt_start, phys_start, length, page_size, flags)
 }
 
 pub unsafe fn vmm_unmap_page(virt: VirtAddr) -> PhysAddr {

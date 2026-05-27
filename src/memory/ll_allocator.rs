@@ -8,12 +8,13 @@
 use core::alloc::Layout;
 use core::cmp::PartialEq;
 use core::{mem, ptr};
+use core::ops::Add;
 use core::ptr::null_mut;
 use x86_64::VirtAddr;
 use crate::memory::{SizeUnit, FRAME_SIZE};
 use crate::memory::page_tables::{PageSize, PageTableEntry};
-use crate::memory::paging::{vmm_map_page, vmm_map_page_ext, vmm_map_range_ext, vmm_unmap_page};
-use crate::memory::pmm::{pmm_allocate_frame, pmm_allocate_contiguous, pmm_free_frame};
+use crate::memory::paging::{virtual_to_physical, vmm_map_page, vmm_map_page_ext, vmm_map_range_ext, vmm_unmap_page};
+use crate::memory::pmm::{pmm_allocate_frame, pmm_allocate_contiguous, pmm_free_frame, pmm_free_range};
 use crate::vgaprintln;
 
 pub struct ListNode {
@@ -43,43 +44,46 @@ impl PartialEq for ListNode {
 
 pub struct LinkedListAllocator {
     pub(crate) head: ListNode,
-    pub(crate) heap_end: usize,     //4kb aligned current end of heap
+    pub(crate) current_end: usize,     //4kb aligned current end of heap
+
+    //the whole region allocator works in
+    pub(crate) global_start: usize,
+    pub(crate) global_end: usize,   // virtual end of the region
+    pub(crate) global_length: usize,
 
     //the top region is the last region if its start+size is equal to heap_end, otherwise its 0,0
     pub(crate) top_start: usize,
     pub(crate) top_size: usize,
 
-    //the whole region allocator works in
-    pub(crate) region_start: usize,
-    pub(crate) region_length: usize,
-
     pub flags: u64,
     pub is_contiguous: bool,
-    pub allow_growth: bool,
 }
 
 impl LinkedListAllocator {
     pub const fn new() -> Self {
         Self {
             head: ListNode::new(0),
-            heap_end: 0,
+            current_end: 0,
+            global_end: 0,
             top_start: 0,
             top_size: 0,
-            region_start: 0,
-            region_length: 0,
+            global_start: 0,
+            global_length: 0,
             flags: PageTableEntry::PRESENT | PageTableEntry::WRITABLE,
             is_contiguous: false,
-            allow_growth: true,
         }
     }
 
-    pub unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
-        self.add_free_region(heap_start, heap_size);
-        self.heap_end = heap_start + heap_size;
-        self.region_start = heap_start;
-        self.region_length = heap_size;
-        self.top_start = heap_start;
-        self.top_size = heap_size;
+    /// Initializes the allocator with flags PRESENT and WRITEABLE
+    pub unsafe fn init(&mut self, global_start: usize, global_length: usize) {
+        self.global_start = global_start;
+        self.global_length = global_length;
+        self.global_end = self.global_start + global_length;
+
+        self.current_end = global_start;
+
+        self.top_start = 0;
+        self.top_size = 0;
     }
 
     pub fn set_flags(&mut self, flags: u64) {
@@ -90,14 +94,10 @@ impl LinkedListAllocator {
         self.is_contiguous = contiguous;
     }
 
-    pub fn set_allow_growth(&mut self, allow_growth: bool) {
-        self.allow_growth = allow_growth;
-    }
-
     fn update_top_if_needed(&mut self, region_start: usize, region_size: usize) {
         let region_end = region_start + region_size;
 
-        if region_end == self.heap_end {
+        if region_end == self.current_end {
             self.top_start = region_start;
             self.top_size = region_size;
         }
@@ -212,48 +212,56 @@ impl LinkedListAllocator {
                 }
             }
 
-            if !self.allow_growth {
-                return None;
-            }
-
             // we didnt find a region, so allocate new pages to make room for that
             unsafe {
-                let map_start = align_up(self.heap_end, PageSize::SIZE_4KB as usize);
+                let map_start = self.current_end.add(PageSize::SIZE_4KB as usize - 1) & !(PageSize::SIZE_4KB as usize - 1);
+                let alloc_start = map_start.add(align - 1) & !(align - 1);
+                let alloc_end = alloc_start.add(size);
+                let map_end = alloc_end.add(PageSize::SIZE_4KB as usize - 1) & !(PageSize::SIZE_4KB as usize - 1);
 
-                let alloc_start = align_up(map_start, align);
-                let alloc_end = alloc_start
-                    .checked_add(size)
-                    .expect("allocation overflow");
-
-                let map_end = align_up(alloc_end, PageSize::SIZE_4KB as usize);
                 let map_size = map_end - map_start;
                 let frame_count = (map_size / PageSize::SIZE_4KB as usize) as u64;
 
-                vgaprintln!("Growth: start: {:#011x}, end: {:#011x}, size: {}, contiguous: {}", map_start, map_end, map_size, self.is_contiguous);
-                
                 if self.is_contiguous {
                     let frame_addr = pmm_allocate_contiguous(frame_count);
                     if frame_addr.is_none() {
                         return None;
                     }
-                    
-                    vmm_map_range_ext(
+
+                    if !vmm_map_range_ext(
                         VirtAddr::new(map_start as u64),
                         frame_addr.unwrap(),
                         map_size as u64,
                         &PageSize::Size4Kb,
                         self.flags
-                    );
+                    ) {
+                        pmm_free_range(frame_addr.unwrap(), map_size as u64).ok();
+                        return None;
+                    }
                 } else {
                     let mut page_addr = map_start;
                     while page_addr < map_end {
                         let frame_addr = pmm_allocate_frame();
-
                         if frame_addr.is_none() {
+                            //rollback already mapped pages
+                            let mut rollback_addr = map_start;
+                            while rollback_addr < page_addr {
+                                let phys = vmm_unmap_page(VirtAddr::new(rollback_addr as u64));
+                                pmm_free_frame(phys).ok();
+                                rollback_addr += PageSize::SIZE_4KB as usize;
+                            }
                             return None;
                         }
 
                         if !vmm_map_page_ext(VirtAddr::new(page_addr as u64), frame_addr.unwrap(), &PageSize::Size4Kb, self.flags) {
+                            //rollback already mapped pages
+                            pmm_free_frame(frame_addr.unwrap()).ok();
+                            let mut rollback_addr = map_start;
+                            while rollback_addr < page_addr {
+                                let phys = vmm_unmap_page(VirtAddr::new(rollback_addr as u64));
+                                pmm_free_frame(phys).ok();
+                                rollback_addr += PageSize::SIZE_4KB as usize;
+                            }
                             return None;
                         }
 
@@ -262,7 +270,7 @@ impl LinkedListAllocator {
                 }
 
                 let new_region_size = map_end - map_start;
-                self.heap_end = map_end;
+                self.current_end = map_end;
                 self.add_free_region(map_start, new_region_size);
             }
         }
@@ -316,7 +324,7 @@ impl LinkedListAllocator {
         let top_start = self.top_start;
         let top_end = self.top_start + self.top_size;
 
-        if top_end != self.heap_end {
+        if top_end != self.current_end {
             // invalid top
             self.top_start = 0;
             self.top_size = 0;
@@ -324,7 +332,7 @@ impl LinkedListAllocator {
         }
 
         let protected_size = SizeUnit::Megabyte.as_usize() * 2;
-        let protected_end = align_up(self.region_start + protected_size, page_size);
+        let protected_end = align_up(self.global_start + protected_size, page_size);
 
         let mut unmap_start = align_up(top_start, page_size);
 
@@ -333,11 +341,11 @@ impl LinkedListAllocator {
             unmap_start = protected_end;
         }
 
-        if unmap_start >= self.heap_end {
+        if unmap_start >= self.current_end {
             return;
         }
 
-        let old_heap_end = self.heap_end;
+        let old_heap_end = self.current_end;
         let remaining_size = unmap_start - top_start;
 
         //region smaller than listnode's size cant exist
@@ -361,7 +369,7 @@ impl LinkedListAllocator {
             addr += page_size;
         }
 
-        self.heap_end = unmap_start;
+        self.current_end = unmap_start;
     }
 
     /// Adjusts the layout so that it can also store listnode

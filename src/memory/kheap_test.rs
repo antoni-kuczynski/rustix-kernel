@@ -7,16 +7,18 @@
 
 
 use core::alloc::Layout;
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
+use crate::interrupts::hardware::pic8259::sleep;
 use crate::memory::ll_allocator::{align_up, LinkedListAllocator, ListNode};
 use crate::memory::page_tables::PageSize;
 use crate::memory::{dma, SizeUnit};
+use crate::memory::pmm::{pmm_allocate_frame, pmm_free_frame};
 use crate::vgaprintln;
 
 pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     vgaprintln!("\n--- STARTING KHEAP TEST SUITE ---");
 
-    // dump_debug(allocator);
+    dump_debug(allocator);
     // test_allocator_everything(allocator);
 
     // test_fragmentation_and_reclaim(allocator);
@@ -25,12 +27,13 @@ pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     // test_coalescing(allocator);
     // test_fragmentation_and_reclaim(allocator);
     // test_overflow_protection(allocator);
-    // test_out_of_memory(allocator);
+    // dump_debug(allocator);
+    test_out_of_memory(allocator);
     // test_node_integrity(allocator);
 
     // vgaprintln!("--- KHEAP TESTS COMPLETED ---");
     
-    run_dma_tests();
+    // run_dma_tests();
 
     vgaprintln!("--- ALL MEMORY TESTS COMPLETED ---\n");
 }
@@ -253,13 +256,14 @@ fn test_multi_page_allocation_mapping(allocator: &mut LinkedListAllocator) {
 
 fn test_overflow_protection(allocator: &mut LinkedListAllocator) {
     vgaprintln!("\n[TEST] Heap Overflow Protection");
+    vgaprintln!("Trying to allocate 1TB of memory");
 
     let layout_huge = Layout::from_size_align(1024 * 1024 * 1024 * 1024, 8).unwrap();
 
     unsafe {
         let ptr = allocator.allocate(layout_huge);
         if ptr.is_null() {
-            vgaprintln!("  OK: Allocation of 1GB failed as expected.");
+            vgaprintln!("  OK: Allocation of 1TB failed as expected.");
         } else {
             vgaprintln!("  FAIL: Allocated impossible amount of memory!");
             allocator.deallocate(ptr, layout_huge);
@@ -270,7 +274,7 @@ fn test_overflow_protection(allocator: &mut LinkedListAllocator) {
 fn test_out_of_memory(allocator: &mut LinkedListAllocator) {
     vgaprintln!("\n[TEST] Out of Memory (OOM) Protection");
     
-    const BLOCK_SIZE: usize = 512 * 1024 * 1;
+    const BLOCK_SIZE: usize = 1024 * 1024;
     let layout = Layout::from_size_align(BLOCK_SIZE, 8).unwrap();
 
     const MAX_ALLOCATIONS: usize = 1024 * 1024 * 1024;
@@ -297,9 +301,9 @@ fn test_out_of_memory(allocator: &mut LinkedListAllocator) {
 
             allocation_count += 1;
 
-            if allocation_count % 5 == 0 {
-                // vgaprintln!("    Allocated blocks: {} ({} KB)", allocation_count, (allocation_count * BLOCK_SIZE) / 1024);
-            }
+            // if allocation_count % 5 == 0 {
+            //     vgaprintln!("    Allocated blocks: {} ({} B)", allocation_count, (allocation_count * BLOCK_SIZE) / 1024);
+            // }
         }
     }
 
@@ -378,7 +382,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
                 return false;
             }
 
-            if end == allocator.heap_end {
+            if end == allocator.current_end {
                 if allocator.top_size == 0 {
                     vgaprintln!(
                         "  FAILED [{}]: free node ends at heap_end, but top is empty. node=0x{:X}..0x{:X}",
@@ -415,12 +419,12 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
                     return false;
                 }
 
-                if end != allocator.heap_end {
+                if end != allocator.current_end {
                     vgaprintln!(
                         "  FAILED [{}]: top does not end at heap_end. top_end=0x{:X}, heap_end=0x{:X}",
                         label,
                         end,
-                        allocator.heap_end
+                        allocator.current_end
                     );
                     return false;
                 }
@@ -774,7 +778,7 @@ fn test_middle_free_does_not_shrink_heap(allocator: &mut LinkedListAllocator) ->
             return false;
         };
 
-        let heap_end_before = allocator.heap_end;
+        let heap_end_before = allocator.current_end;
         let b_end = b as usize + layout.size();
 
         vgaprintln!(
@@ -786,11 +790,11 @@ fn test_middle_free_does_not_shrink_heap(allocator: &mut LinkedListAllocator) ->
 
         allocator.deallocate(b, layout);
 
-        if b_end != heap_end_before && allocator.heap_end != heap_end_before {
+        if b_end != heap_end_before && allocator.current_end != heap_end_before {
             vgaprintln!(
                 "  FAILED: heap_end changed after freeing middle allocation. before=0x{:X}, after=0x{:X}",
                 heap_end_before,
-                allocator.heap_end
+                allocator.current_end
             );
 
             allocator.deallocate(c, layout);
@@ -815,7 +819,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
     vgaprintln!("\n[TEST] Top region shrink behavior");
 
     let page_size = PageSize::SIZE_4KB as usize;
-    let protected_end = align_up(allocator.region_start + 2 * 1024 * 1024, page_size);
+    let protected_end = align_up(allocator.global_start + 2 * 1024 * 1024, page_size);
 
     let layout = Layout::from_size_align(page_size * 8, page_size).unwrap();
 
@@ -826,7 +830,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
 
         let alloc_start = ptr as usize;
         let alloc_end = alloc_start + layout.size();
-        let heap_end_after_alloc = allocator.heap_end;
+        let heap_end_after_alloc = allocator.current_end;
 
         vgaprintln!(
             "  Seed allocation: 0x{:X}..0x{:X}, heap_end=0x{:X}, protected_end=0x{:X}",
@@ -838,19 +842,19 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
 
         allocator.deallocate(ptr, layout);
 
-        if allocator.heap_end > heap_end_after_alloc {
+        if allocator.current_end > heap_end_after_alloc {
             vgaprintln!(
                 "  FAILED: heap_end grew during deallocation. before=0x{:X}, after=0x{:X}",
                 heap_end_after_alloc,
-                allocator.heap_end
+                allocator.current_end
             );
             return false;
         }
 
-        if allocator.heap_end < protected_end {
+        if allocator.current_end < protected_end {
             vgaprintln!(
                 "  FAILED: heap_end moved below protected first 2 MiB. heap_end=0x{:X}, protected_end=0x{:X}",
-                allocator.heap_end,
+                allocator.current_end,
                 protected_end
             );
             return false;
@@ -862,7 +866,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
 
         vgaprintln!(
             "  OK: after free heap_end=0x{:X}, top_start=0x{:X}, top_size={}",
-            allocator.heap_end,
+            allocator.current_end,
             allocator.top_start,
             allocator.top_size
         );
@@ -884,7 +888,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
 
         let old_top_start = allocator.top_start;
         let old_top_end = allocator.top_start + allocator.top_size;
-        let old_heap_end = allocator.heap_end;
+        let old_heap_end = allocator.current_end;
 
         if old_top_end != old_heap_end {
             vgaprintln!(
@@ -1008,8 +1012,8 @@ pub fn test_allocator_everything(allocator: &mut LinkedListAllocator) {
 }
 pub fn run_dma_tests() {
     vgaprintln!("\n--- STARTING DMA TEST SUITE ---");
-    test_dma_basic();
-    // test_dma_continuity();
+    // test_dma_basic();
+    test_dma_continuity();
     // test_dma_large_alloc();
     // test_dma_fragmentation();
     vgaprintln!("--- DMA TEST SUITE COMPLETED ---\n");
@@ -1039,7 +1043,7 @@ fn test_dma_basic() {
 
 fn test_dma_continuity() {
     vgaprintln!("[TEST] DMA Physical Continuity");
-    let pages = 4;
+    let pages = 1024;
     let size = pages * 4096;
     
     if let Some(alloc) = dma::dma_alloc_coherent(size, 4096) {
@@ -1051,7 +1055,11 @@ fn test_dma_continuity() {
             let virt_page = VirtAddr::new(alloc.virt.as_u64() + offset as u64);
             let phys_page = crate::memory::paging::virtual_to_physical(virt_page).unwrap();
             let expected_phys = alloc.phys.as_u64() + offset as u64;
-            
+
+            if phys_page.as_u64() != expected_phys {
+                dump_debug(dma::DMA_MANAGER.lock().allocator());
+            }
+
             assert!(phys_page.as_u64() == expected_phys, 
                 "DMA continuity failed at page {}: expected {:#x}, got {:?}", 
                 i, expected_phys, phys_page);
