@@ -6,27 +6,27 @@
 
 extern crate alloc;
 
-mod drivers;
-mod interrupts;
 pub mod asm;
 mod boot;
+mod drivers;
+mod interrupts;
 mod memory;
 
-use core::panic::PanicInfo;
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{kheap_test, KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
 use crate::memory::kheap::ALLOCATOR;
+use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE, kheap_test};
+use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
 #[used]
 pub static MULTIBOOT2_HEADER: [u32; 6] = [
-    0xE85250D6, // magic
-    0,          // architecture
-    24,         // header length
+    0xE85250D6,                 // magic
+    0,                          // architecture
+    24,                         // header length
     !(0xE85250D6 + 0 + 24) + 1, // checksum
-    0,          // end tag type
-    8,          // end tag size
+    0,                          // end tag type
+    8,                          // end tag size
 ];
 
 unsafe extern "C" {
@@ -60,9 +60,7 @@ fn kernel_main_post_stack() -> ! {
         // vgaprintln!("Val1: {:#011x}", *(virt.as_u64() as *mut u32));
         // *(virt.as_u64() as *mut u32) = 0xdeadc0de;
         // vgaprintln!("Val2: {:#011x}", *(virt.as_u64() as *mut u32));
-
-
-
+        
         // print_page_table_tree(kernel_offset as u64);
 
         // let memory_tag = multiboot2_memory_map_tag().unwrap();
@@ -86,7 +84,6 @@ fn kernel_main_post_stack() -> ! {
         // vgaprintln!("Multiboot end VIRTUAL: {:#011x}", multiboot2_logical_end().as_u64());
         // vgaprintln!("Bootloader name: {}", multiboot2_bootloader_name().unwrap());
 
-
         // vgaprintln!("0 = free | 1 = used");
         // PMM_BITMAP.lock().print(540);
 
@@ -99,11 +96,9 @@ fn kernel_main_post_stack() -> ! {
         //     modules = multiboot_info.get_modules_tag(start_ptr as *const u32);
         // }
         // (*multiboot_info.get_memory_map_tag().unwrap()).print_memory_map();
-
-
     }
 
-    loop{
+    loop {
         x86_64::instructions::hlt();
     }
 }
@@ -128,11 +123,13 @@ pub extern "C" fn rust_main() -> ! {
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+    VGAWRITER
+        .lock()
+        .change_foreground_color(ColorTextMode::LightRed);
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);
     vgaprintln!("=!==============================!=");
-    loop{
+    loop {
         x86_64::instructions::hlt();
     }
 }

@@ -5,15 +5,14 @@
  * 27/04/2026
  */
 
-
+use crate::interrupts::hardware::pic8259::sleep;
+use crate::memory::ll_allocator::{LinkedListAllocator, ListNode, align_up};
+use crate::memory::page_tables::PageSize;
+use crate::memory::pmm::{pmm_allocate_frame, pmm_free_frame};
+use crate::memory::{SizeUnit, dma};
+use crate::vgaprintln;
 use core::alloc::Layout;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::interrupts::hardware::pic8259::sleep;
-use crate::memory::ll_allocator::{align_up, LinkedListAllocator, ListNode};
-use crate::memory::page_tables::PageSize;
-use crate::memory::{dma, SizeUnit};
-use crate::memory::pmm::{pmm_allocate_frame, pmm_free_frame};
-use crate::vgaprintln;
 
 pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     vgaprintln!("\n--- STARTING KHEAP TEST SUITE ---");
@@ -28,17 +27,18 @@ pub fn run_all_tests(allocator: &mut LinkedListAllocator) {
     // test_fragmentation_and_reclaim(allocator);
     // test_overflow_protection(allocator);
     // dump_debug(allocator);
-    test_out_of_memory(allocator);
+    // test_out_of_memory(allocator);
+    test_allocation_2(allocator);
     // test_node_integrity(allocator);
 
     // vgaprintln!("--- KHEAP TESTS COMPLETED ---");
-    
+
     // run_dma_tests();
 
     vgaprintln!("--- ALL MEMORY TESTS COMPLETED ---\n");
 }
 
-fn dump_debug(allocator: &LinkedListAllocator) {
+pub fn dump_debug(allocator: &LinkedListAllocator) {
     vgaprintln!("[DEBUG] Current Free List:");
 
     let head_addr = core::ptr::addr_of!(allocator.head) as usize;
@@ -56,27 +56,31 @@ fn dump_debug(allocator: &LinkedListAllocator) {
         allocator.top_size
     );
 
-    let mut current = allocator.head.next.as_deref();
+    let mut current = allocator.head.next;
     let mut i = 0;
 
-    while let Some(node) = current {
-        let node_addr = node as *const ListNode as usize;
-        let node_end = node_addr + node.size;
-
-        match node.next.as_deref() {
-            Some(next) => {
-                let next_addr = next as *const ListNode as usize;
-
+    while !current.is_null() {
+        unsafe {
+            let current_addr = current as usize;
+            if current_addr < allocator.global_start
+                || current_addr >= allocator.current_end
+                || current_addr % align_of::<ListNode>() != 0
+            {
                 vgaprintln!(
-                    "  Node {}: Addr: 0x{:X}, Size: {} bytes, End: 0x{:X}, Next: 0x{:X}",
+                    "  Invalid node pointer in dump: index={}, ptr=0x{:X}, heap=0x{:X}..0x{:X}",
                     i,
-                    node_addr,
-                    node.size,
-                    node_end,
-                    next_addr
+                    current_addr,
+                    allocator.global_start,
+                    allocator.current_end
                 );
+                return;
             }
-            None => {
+
+            let node = &*current;
+            let node_addr = current as usize;
+            let node_end = node_addr + node.size;
+
+            if node.next.is_null() {
                 vgaprintln!(
                     "  Node {}: Addr: 0x{:X}, Size: {} bytes, End: 0x{:X}, Next: NULL",
                     i,
@@ -84,11 +88,20 @@ fn dump_debug(allocator: &LinkedListAllocator) {
                     node.size,
                     node_end
                 );
+            } else {
+                vgaprintln!(
+                    "  Node {}: Addr: 0x{:X}, Size: {} bytes, End: 0x{:X}, Next: 0x{:X}",
+                    i,
+                    node_addr,
+                    node.size,
+                    node_end,
+                    node.next as usize
+                );
             }
-        }
 
-        current = node.next.as_deref();
-        i += 1;
+            current = node.next;
+            i += 1;
+        }
     }
 
     if i == 0 {
@@ -126,7 +139,6 @@ fn test_coalescing(allocator: &mut LinkedListAllocator) {
         allocator.deallocate(p2, layout);
         allocator.deallocate(p1, layout);
         allocator.deallocate(p3, layout);
-
     }
     dump_debug(allocator);
 }
@@ -178,11 +190,7 @@ fn test_multi_page_allocation_mapping(allocator: &mut LinkedListAllocator) {
             return;
         }
 
-        vgaprintln!(
-            "  Allocated {} bytes at 0x{:X}",
-            alloc_size,
-            ptr as usize
-        );
+        vgaprintln!("  Allocated {} bytes at 0x{:X}", alloc_size, ptr as usize);
 
         ptr.write_volatile(0xAA);
         let first = ptr.read_volatile();
@@ -216,19 +224,13 @@ fn test_multi_page_allocation_mapping(allocator: &mut LinkedListAllocator) {
             );
 
             if start_val != 0x11 {
-                vgaprintln!(
-                    "  FAILED: page start mismatch at offset 0x{:X}",
-                    page_start
-                );
+                vgaprintln!("  FAILED: page start mismatch at offset 0x{:X}", page_start);
                 allocator.deallocate(ptr, layout);
                 return;
             }
 
             if end_val != 0x22 {
-                vgaprintln!(
-                    "  FAILED: page end mismatch at offset 0x{:X}",
-                    page_end
-                );
+                vgaprintln!("  FAILED: page end mismatch at offset 0x{:X}", page_end);
                 allocator.deallocate(ptr, layout);
                 return;
             }
@@ -271,30 +273,69 @@ fn test_overflow_protection(allocator: &mut LinkedListAllocator) {
     }
 }
 
+fn test_allocation_2(allocator: &mut LinkedListAllocator) {
+    vgaprintln!("\n[TEST] Alloc weird size test");
+
+    const BLOCK_SIZE: usize = 1;
+    let layout = Layout::from_size_align(BLOCK_SIZE, 1).unwrap();
+
+    vgaprintln!("  Allocating {} B block...", BLOCK_SIZE);
+
+    unsafe {
+        for i in 0..100_000_000 {
+            let ptr = allocator.allocate(layout);
+
+            if ptr.is_null() {
+                vgaprintln!("  FAIL: Allocator returned NULL at allocation {}.", i);
+                dump_debug(allocator);
+                return;
+            }
+
+            // dump_debug(allocator);
+        }
+    }
+    dump_debug(allocator);
+    vgaprintln!("  [TEST PASSED]");
+}
+
 fn test_out_of_memory(allocator: &mut LinkedListAllocator) {
     vgaprintln!("\n[TEST] Out of Memory (OOM) Protection");
-    
-    const BLOCK_SIZE: usize = 1024 * 1024;
-    let layout = Layout::from_size_align(BLOCK_SIZE, 8).unwrap();
+
+    const BLOCK_SIZE: usize = 128;
+    let layout = Layout::from_size_align(BLOCK_SIZE, 1).unwrap();
 
     const MAX_ALLOCATIONS: usize = 1024 * 1024 * 1024;
     let mut allocation_count = 0;
 
-    vgaprintln!("  Starting allocation loop of {} KB blocks...", BLOCK_SIZE / 1024);
+    vgaprintln!(
+        "  Starting allocation loop of {} KB blocks...",
+        BLOCK_SIZE / 1024
+    );
 
     unsafe {
         loop {
             let ptr = allocator.allocate(layout);
 
             if ptr.is_null() {
-                vgaprintln!("  OK: Allocator correctly returned NULL after {} allocations.", allocation_count);
-                vgaprintln!("      Total allocated size: {} KB", (allocation_count * BLOCK_SIZE) / 1024);
+                vgaprintln!(
+                    "  OK: Allocator correctly returned NULL after {} allocations.",
+                    allocation_count
+                );
+                vgaprintln!(
+                    "      Total allocated size: {} KB",
+                    (allocation_count * BLOCK_SIZE) / 1024
+                );
                 break;
             }
 
             if allocation_count >= MAX_ALLOCATIONS {
-                vgaprintln!("  FAIL: Reached test limit of {} allocations without OOM!", MAX_ALLOCATIONS);
-                vgaprintln!("        Tip: Increase BLOCK_SIZE in the test to hit OOM with fewer allocations.");
+                vgaprintln!(
+                    "  FAIL: Reached test limit of {} allocations without OOM!",
+                    MAX_ALLOCATIONS
+                );
+                vgaprintln!(
+                    "        Tip: Increase BLOCK_SIZE in the test to hit OOM with fewer allocations."
+                );
                 allocator.deallocate(ptr, layout);
                 break;
             }
@@ -320,7 +361,10 @@ fn test_node_integrity(allocator: &mut LinkedListAllocator) {
         core::ptr::write_bytes(p1, 0xEE, size);
 
         let p2 = allocator.allocate(layout);
-        assert!(!p2.is_null(), "Node metadata corrupted by previous allocation!");
+        assert!(
+            !p2.is_null(),
+            "Node metadata corrupted by previous allocation!"
+        );
 
         vgaprintln!("  Integrity check passed (allocated successfully after heavy write).");
         allocator.deallocate(p1, layout);
@@ -329,19 +373,39 @@ fn test_node_integrity(allocator: &mut LinkedListAllocator) {
     dump_debug(allocator);
 }
 
-
-
-
-
 fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> bool {
     unsafe {
-        let mut current = allocator.head.next.as_deref();
+        let mut current = allocator.head.next;
         let mut previous_end = 0usize;
         let mut found_top = false;
 
-        while let Some(node) = current {
+        while !current.is_null() {
+            let current_addr = current as usize;
+            if current_addr < allocator.global_start
+                || current_addr >= allocator.current_end
+                || current_addr % align_of::<ListNode>() != 0
+            {
+                vgaprintln!(
+                    "  FAILED [{}]: invalid free-list pointer: ptr=0x{:X}, heap=0x{:X}..0x{:X}",
+                    label,
+                    current_addr,
+                    allocator.global_start,
+                    allocator.current_end
+                );
+                return false;
+            }
+
+            let node = &*current;
             let start = node.start_addr();
-            let end = node.end_addr();
+            let Some(end) = node.checked_end_addr() else {
+                vgaprintln!(
+                    "  FAILED [{}]: free node end overflow: addr=0x{:X}, size={}",
+                    label,
+                    start,
+                    node.size
+                );
+                return false;
+            };
 
             if node.size < size_of::<ListNode>() {
                 vgaprintln!(
@@ -431,7 +495,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
             }
 
             previous_end = end;
-            current = node.next.as_deref();
+            current = node.next;
         }
 
         if allocator.top_size == 0 && allocator.top_start != 0 {
@@ -613,9 +677,18 @@ fn test_basic_alloc_dealloc_cases(allocator: &mut LinkedListAllocator) -> bool {
         ("tiny 1 byte", Layout::from_size_align(1, 1).unwrap()),
         ("small 37 bytes", Layout::from_size_align(37, 8).unwrap()),
         ("small align 64", Layout::from_size_align(128, 64).unwrap()),
-        ("almost one page", Layout::from_size_align(page_size - 1, 16).unwrap()),
-        ("exactly one page", Layout::from_size_align(page_size, page_size).unwrap()),
-        ("page plus one", Layout::from_size_align(page_size + 1, 16).unwrap()),
+        (
+            "almost one page",
+            Layout::from_size_align(page_size - 1, 16).unwrap(),
+        ),
+        (
+            "exactly one page",
+            Layout::from_size_align(page_size, page_size).unwrap(),
+        ),
+        (
+            "page plus one",
+            Layout::from_size_align(page_size + 1, 16).unwrap(),
+        ),
         (
             "multi page non exact",
             Layout::from_size_align(page_size * 3 + 123, 64).unwrap(),
@@ -1023,17 +1096,24 @@ fn test_dma_basic() {
     vgaprintln!("[TEST] DMA Basic Alloc/Free");
     let size = 1024;
     let align = 64;
-    
+
     if let Some(alloc) = dma::dma_alloc_coherent(size, align) {
-        vgaprintln!("  Allocated 1KB DMA at virt: {:?}, phys: {:?}", alloc.virt, alloc.phys);
-        assert!(alloc.virt.as_u64() % align as u64 == 0, "DMA alignment failed");
-        
+        vgaprintln!(
+            "  Allocated 1KB DMA at virt: {:?}, phys: {:?}",
+            alloc.virt,
+            alloc.phys
+        );
+        assert!(
+            alloc.virt.as_u64() % align as u64 == 0,
+            "DMA alignment failed"
+        );
+
         unsafe {
             let ptr = alloc.virt.as_u64() as *mut u8;
             ptr.write_volatile(0xDE);
             assert!(ptr.read_volatile() == 0xDE, "DMA read/write failed");
         }
-        
+
         dma::dma_free(alloc);
         vgaprintln!("  OK: Basic DMA test passed");
     } else {
@@ -1045,10 +1125,10 @@ fn test_dma_continuity() {
     vgaprintln!("[TEST] DMA Physical Continuity");
     let pages = 1024;
     let size = pages * 4096;
-    
+
     if let Some(alloc) = dma::dma_alloc_coherent(size, 4096) {
         vgaprintln!("  Allocated {} pages DMA at phys: {:?}", pages, alloc.phys);
-        
+
         // Check if every virtual page maps to the expected physical page
         for i in 0..pages {
             let offset = i * 4096;
@@ -1060,11 +1140,15 @@ fn test_dma_continuity() {
                 dump_debug(dma::DMA_MANAGER.lock().allocator());
             }
 
-            assert!(phys_page.as_u64() == expected_phys, 
-                "DMA continuity failed at page {}: expected {:#x}, got {:?}", 
-                i, expected_phys, phys_page);
+            assert!(
+                phys_page.as_u64() == expected_phys,
+                "DMA continuity failed at page {}: expected {:#x}, got {:?}",
+                i,
+                expected_phys,
+                phys_page
+            );
         }
-        
+
         dma::dma_free(alloc);
         vgaprintln!("  OK: DMA physical continuity verified");
     } else {
@@ -1075,22 +1159,22 @@ fn test_dma_continuity() {
 fn test_dma_large_alloc() {
     vgaprintln!("[TEST] DMA Large Allocation (1MB)");
     let size = 1024 * 1024; // 1MB
-    
+
     if let Some(alloc) = dma::dma_alloc_coherent(size, 4096) {
         vgaprintln!("  Allocated 1MB DMA at phys: {:?}", alloc.phys);
-        
+
         unsafe {
             let ptr = alloc.virt.as_u64() as *mut u8;
             // Write at the beginning, middle and end
             ptr.write_volatile(0x11);
             ptr.add(size / 2).write_volatile(0x22);
             ptr.add(size - 1).write_volatile(0x33);
-            
+
             assert!(ptr.read_volatile() == 0x11);
             assert!(ptr.add(size / 2).read_volatile() == 0x22);
             assert!(ptr.add(size - 1).read_volatile() == 0x33);
         }
-        
+
         dma::dma_free(alloc);
         vgaprintln!("  OK: Large DMA allocation test passed");
     } else {
@@ -1102,32 +1186,32 @@ fn test_dma_fragmentation() {
     vgaprintln!("[TEST] DMA Fragmentation and Reuse");
     let size = 4096;
     let mut allocs: [Option<dma::DmaAlloc>; 8] = Default::default();
-    
+
     // Allocate 8 pages
     for i in 0..8 {
         allocs[i] = dma::dma_alloc_coherent(size, size);
     }
-    
+
     // Free even ones
     for i in (0..8).step_by(2) {
         if let Some(a) = allocs[i].take() {
             dma::dma_free(a);
         }
     }
-    
+
     // Allocate 2 pages (should fit in holes)
     let a1 = dma::dma_alloc_coherent(size, size).expect("Failed to reuse hole 1");
     let a2 = dma::dma_alloc_coherent(size, size).expect("Failed to reuse hole 2");
-    
+
     dma::dma_free(a1);
     dma::dma_free(a2);
-    
+
     // Cleanup remaining
     for i in (1..8).step_by(2) {
         if let Some(a) = allocs[i].take() {
             dma::dma_free(a);
         }
     }
-    
+
     vgaprintln!("  OK: DMA fragmentation reuse test passed");
 }

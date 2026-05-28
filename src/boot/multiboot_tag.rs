@@ -2,7 +2,6 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
-
 //==================================================================================================
 //Multiboot information structures
 //==================================================================================================
@@ -10,11 +9,10 @@
 #[derive(Copy, Clone)]
 pub struct MultibootTagBase {
     pub(crate) tag_type: u32,
-    pub(crate) size: u32
+    pub(crate) size: u32,
 }
 //==================================================================================================
 pub struct MultibootBootloaderName(pub(crate) u8); // type = 2
-
 
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
@@ -22,9 +20,8 @@ pub struct MultibootModulesTag {
     pub(crate) header: MultibootTagBase, //type = 3
     pub(crate) mod_start: u32,
     pub(crate) mod_end: u32,
-    pub(crate) string: *const u8
+    pub(crate) string: *const u8,
 }
-
 
 //==================================================================================================
 //  MEMORY MAP
@@ -35,13 +32,13 @@ It’s guaranteed to be a multiple of 8. ‘entry_version’ is currently set at
 Future versions will increment this field. Future version are guranteed to be backward compatible with older format.
  */
 #[repr(C, packed)]
-pub struct MultibootMemoryMapTag { //type = 6
+pub struct MultibootMemoryMapTag {
+    //type = 6
     pub(crate) header: MultibootTagBase,
     pub(crate) entry_size: u32,
     pub(crate) entry_version: u32,
-    pub(crate) entries: MultibootMemoryMapEntry
+    pub(crate) entries: MultibootMemoryMapEntry,
 }
-
 
 /*
 ‘size’ contains the size of current entry including this field itself.
@@ -65,11 +62,12 @@ This tag may not be provided by some boot loaders on EFI platforms if EFI boot s
 for the loaded image (EFI boot services not terminated tag exists in Multiboot2 information structure).
  */
 #[repr(C, packed)]
-pub struct MultibootMemoryMapEntry { //type = 6
+pub struct MultibootMemoryMapEntry {
+    //type = 6
     pub(crate) base_addr: u64,
     pub(crate) length: u64,
     pub(crate) addr_range_type: u32,
-    _reserved: u32
+    _reserved: u32,
 }
 
 #[derive(PartialEq)]
@@ -77,9 +75,8 @@ pub enum MemoryRegionType {
     AvailableRAM = 1,
     UsableAcpi = 3,
     HibernationPreserved = 4,
-    DefectiveRAM = 5
+    DefectiveRAM = 5,
 }
-
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -157,4 +154,3 @@ impl MultibootTagStruct for MultibootModulesTag {
 impl MultibootTagStruct for MultibootMemoryMapTag {
     const TAG_TYPE: u32 = 6;
 }
-

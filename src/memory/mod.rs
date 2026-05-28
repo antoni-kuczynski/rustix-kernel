@@ -1,20 +1,20 @@
 #![allow(unused)]
 #![allow(non_snake_case)]
+use crate::endKernel;
 use core::arch::asm;
 use core::ops::{Div, Mul};
 use x86_64::{PhysAddr, VirtAddr};
-use crate::endKernel;
 
+pub mod dir_mapping;
+pub mod dma;
+pub mod eba;
+pub mod kheap;
+pub mod kheap_test;
+mod ll_allocator;
+pub mod page_tables;
 pub mod paging;
 pub mod pmm;
-pub mod eba;
-pub mod page_tables;
-pub mod dir_mapping;
-pub mod kheap;
-mod ll_allocator;
-pub mod kheap_test;
 pub mod secure_stack;
-pub mod dma;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;
@@ -29,22 +29,19 @@ pub fn _P2V_kernel(phys_address: u64) -> u64 {
 }
 
 pub fn kernel_end() -> u64 {
-    unsafe {&endKernel as *const u32 as u64}
+    unsafe { &endKernel as *const u32 as u64 }
 }
 //==================================================================
 pub struct MemoryRange {
     pub start: u64,
-    pub end: u64
+    pub end: u64,
 }
 
 impl MemoryRange {
     pub fn new(start: u64, end: u64) -> Self {
-        Self {
-            start, end
-        }
+        Self { start, end }
     }
 }
-
 
 pub struct Cr3();
 
@@ -76,20 +73,20 @@ pub enum SizeUnit {
     Kilobyte = 1024,
     Megabyte = 1_048_576,
     Gigabyte = 1_073_741_824,
-    Terabyte = 1_099_511_627_776
+    Terabyte = 1_099_511_627_776,
 }
 
 impl SizeUnit {
     pub fn as_usize(&self) -> usize {
         match self {
-            SizeUnit::Byte => {1}
-            SizeUnit::Kilobyte => {1024}
-            SizeUnit::Megabyte => {1_048_576}
-            SizeUnit::Gigabyte => {1_073_741_824}
-            SizeUnit::Terabyte => {1_099_511_627_776}
+            SizeUnit::Byte => 1,
+            SizeUnit::Kilobyte => 1024,
+            SizeUnit::Megabyte => 1_048_576,
+            SizeUnit::Gigabyte => 1_073_741_824,
+            SizeUnit::Terabyte => 1_099_511_627_776,
         }
     }
-    
+
     pub fn as_u64(&self) -> u64 {
         self.as_usize() as u64 //lol
     }

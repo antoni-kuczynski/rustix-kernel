@@ -1,12 +1,15 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-pub(crate) use crate::boot::multiboot_tag::{mb_tag_as_u32, MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag, MultibootModulesTag, MultibootTagBase, MultibootTagStruct};
+use crate::ColorTextMode;
+pub(crate) use crate::boot::multiboot_tag::{
+    MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag,
+    MultibootModulesTag, MultibootTagBase, MultibootTagStruct, mb_tag_as_u32,
+};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
-use crate::memory::{SizeUnit, _V2P_kernel, KERNEL_VIRT_BASE};
-use crate::ColorTextMode;
-use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint, VGAWRITER};
+use crate::memory::{_V2P_kernel, KERNEL_VIRT_BASE, SizeUnit};
+use crate::{__oldMultibootPhysAddr, VGAWRITER, earlyHeapEnd, vgaprint};
 use crate::{print_ok_msg, vgaprintln};
 use core::ptr;
 use core::ptr::read_volatile;
@@ -21,21 +24,24 @@ https://www.gnu.org/software/grub/manual/multiboot2/multiboot.html
 #[repr(C, packed)]
 pub struct MultibootInfo {
     total_size: u32,
-    _reserved: u32
+    _reserved: u32,
 }
 //==================================================================================================
 pub struct MultibootInfoView {
     base: &'static MultibootInfo,
     tags_size_bytes: usize,
     tags: *const u32,
-    multiboot_end_logical: u64
+    multiboot_end_logical: u64,
 }
 //==================================================================================================
 
 impl MultibootInfoView {
     fn empty() -> Self {
         Self {
-            base: &MultibootInfo { total_size: 0, _reserved: 0 },
+            base: &MultibootInfo {
+                total_size: 0,
+                _reserved: 0,
+            },
             tags_size_bytes: 0,
             tags: Default::default(),
             multiboot_end_logical: 0,
@@ -45,14 +51,15 @@ impl MultibootInfoView {
     pub unsafe fn init_multiboot_info_struct() -> MultibootInfoView {
         let original_virt_address = _P2V_kernel(__oldMultibootPhysAddr as u64);
         let original_aligned = original_virt_address & !(PageSize::SIZE_2MB - 1);
-        let virt_address_to_copy_to = _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB - 1) & !(PageSize::SIZE_2MB - 1));
+        let virt_address_to_copy_to =
+            _P2V_kernel((earlyHeapEnd + PageSize::SIZE_2MB - 1) & !(PageSize::SIZE_2MB - 1));
 
         //map original struct
         vmm_eba_map_page(
             VirtAddr::new_truncate(original_aligned),
             PhysAddr::new_truncate(_V2P_kernel(original_aligned)),
             &PageSize::Size2Mb,
-            false
+            false,
         );
 
         let length_bytes = read_volatile(original_virt_address as *const u32) as u64;
@@ -62,14 +69,14 @@ impl MultibootInfoView {
             PhysAddr::new_truncate(_V2P_kernel(original_aligned + PageSize::SIZE_2MB)),
             length_bytes,
             &PageSize::Size2Mb,
-            false
+            false,
         );
         vmm_eba_map_range(
             VirtAddr::new_truncate(virt_address_to_copy_to),
             PhysAddr::new_truncate(_V2P_kernel(virt_address_to_copy_to)),
             length_bytes,
             &PageSize::Size2Mb,
-            false
+            false,
         );
 
         //copy mb struct
@@ -79,7 +86,9 @@ impl MultibootInfoView {
         let copied_base = &*(virt_address_to_copy_to as *const MultibootInfo);
 
         //copy modules
-        let modules_start_address = ((virt_address_to_copy_to + copied_base.total_size as u64 + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1)) as *mut u8;
+        let modules_start_address =
+            ((virt_address_to_copy_to + copied_base.total_size as u64 + PageSize::SIZE_2MB)
+                & !(PageSize::SIZE_2MB - 1)) as *mut u8;
         let tags = (virt_address_to_copy_to as *const u32).add(2);
 
         let mut view = Self {
@@ -102,12 +111,13 @@ impl MultibootInfoView {
     unsafe fn copy_modules(
         copied_base: &MultibootInfo,
         start_dst: *mut u8,
-        view: &mut MultibootInfoView
+        view: &mut MultibootInfoView,
     ) -> *const u8 {
         let mut modules = view.get_tag_addr_by_type::<MultibootModulesTag>(view.tags);
 
         let mut current_dst = start_dst;
-        let mut final_end_addr = (copied_base as *const _ as *const u8).add(copied_base.total_size as usize);
+        let mut final_end_addr =
+            (copied_base as *const _ as *const u8).add(copied_base.total_size as usize);
 
         while let Some(module) = modules {
             let original_src = _P2V_kernel(module.mod_start() as u64) as *mut u8;
@@ -119,14 +129,14 @@ impl MultibootInfoView {
                 PhysAddr::new_truncate(_V2P_kernel(original_src as u64)),
                 module_len,
                 &PageSize::Size2Mb,
-                false
+                false,
             );
             vmm_eba_map_range(
                 VirtAddr::new_truncate(current_dst as u64),
                 PhysAddr::new_truncate(_V2P_kernel(current_dst as u64)),
                 module_len,
                 &PageSize::Size2Mb,
-                false
+                false,
             );
 
             let copied_end = current_dst.add(module_len as usize);
@@ -148,7 +158,8 @@ impl MultibootInfoView {
             current_dst = ((copied_end as u64 + 0xFFF) & !0xFFF) as *mut u8;
 
             //next tag
-            let next_tag_ptr = (module as *const _ as *const u8).add(((module.header().size + 7) & !0x7) as usize);
+            let next_tag_ptr =
+                (module as *const _ as *const u8).add(((module.header().size + 7) & !0x7) as usize);
             modules = view.get_tag_addr_by_type::<MultibootModulesTag>(next_tag_ptr as *const u32);
         }
 
@@ -170,7 +181,6 @@ impl MultibootInfoView {
         }
     }
 
-
     unsafe fn unmap_mb_region(original_virt: u64, copied_virt: u64, length: u64) {
         let mut offset = 0;
         while offset <= length {
@@ -179,12 +189,16 @@ impl MultibootInfoView {
 
             //unmap only if the addresses are not the same and they do not cover kernel / eba region
             if original != copied && !Self::is_page_inside_kernel_or_eba_regions(original) {
-                vmm_early_unmap_page(VirtAddr::new_truncate(original), PhysAddr::new_truncate(_V2P_kernel(original_virt)), &PageSize::Size2Mb, false);
+                vmm_early_unmap_page(
+                    VirtAddr::new_truncate(original),
+                    PhysAddr::new_truncate(_V2P_kernel(original_virt)),
+                    &PageSize::Size2Mb,
+                    false,
+                );
             }
             offset += PageSize::SIZE_2MB;
         }
     }
-
 
     fn is_page_inside_kernel_or_eba_regions(virt_addr: u64) -> bool {
         if virt_addr >= KERNEL_VIRT_BASE && virt_addr <= unsafe { _P2V_kernel(earlyHeapEnd) } {
@@ -194,7 +208,10 @@ impl MultibootInfoView {
     }
 
     //==================================================================================================
-    pub fn get_tag_addr_by_type<T: MultibootTagStruct>(&self, start_tag_addr: *const u32) -> Option<&'static mut T> {
+    pub fn get_tag_addr_by_type<T: MultibootTagStruct>(
+        &self,
+        start_tag_addr: *const u32,
+    ) -> Option<&'static mut T> {
         unsafe {
             let mut tags = start_tag_addr as *const MultibootTagBase;
             let tags_end = self.tags.byte_add(self.tags_size_bytes) as *const MultibootTagBase;
@@ -217,12 +234,12 @@ impl MultibootInfoView {
             None
         }
     }
-//==================================================================================================
+    //==================================================================================================
     pub fn get_boot_loader_name(&self) -> Option<&str> {
         unsafe {
             let addr = match self.get_tag_addr_by_type::<MultibootBootloaderName>(self.tags) {
                 Some(x) => &x.0 as *const u8 as *const u32,
-                None => return None
+                None => return None,
             };
 
             let strlen = *addr.add(1) as usize - (size_of::<u32>() * 2) - 1;
@@ -231,19 +248,22 @@ impl MultibootInfoView {
             let slice = ptr::slice_from_raw_parts(val, strlen);
             match str::from_utf8(&*slice) {
                 Ok(x) => Some(x),
-                Err(_) => None
+                Err(_) => None,
             }
         }
     }
-//==================================================================================================
+    //==================================================================================================
     fn get_memory_map_tag(&self) -> Option<&'static mut MultibootMemoryMapTag> {
         self.get_tag_addr_by_type::<MultibootMemoryMapTag>(self.tags)
     }
 
-    fn get_modules_tag(&self, search_start_addr: *const u32) -> Option<&'static mut MultibootModulesTag> {
+    fn get_modules_tag(
+        &self,
+        search_start_addr: *const u32,
+    ) -> Option<&'static mut MultibootModulesTag> {
         self.get_tag_addr_by_type::<MultibootModulesTag>(search_start_addr)
     }
-//==================================================================================================
+    //==================================================================================================
     pub fn print(&self) {
         unsafe {
             let total_size = self.base.total_size;
@@ -260,7 +280,7 @@ impl MultibootInfoView {
                 let length = (tag_base.size as usize + 7) & !7;
 
                 if tag_type == 0x00 {
-                    break
+                    break;
                 }
 
                 tags = tags.byte_add(length);
@@ -268,7 +288,7 @@ impl MultibootInfoView {
             vgaprintln!("end");
         }
     }
-//==================================================================================================
+    //==================================================================================================
     pub fn base(&self) -> &'static MultibootInfo {
         self.base
     }
@@ -297,7 +317,7 @@ impl MultibootInfo {
 
             match ptr.as_ref() {
                 Some(x) => x,
-                None => panic!("Could not reference MultibootInfo struct!")
+                None => panic!("Could not reference MultibootInfo struct!"),
             }
         }
     }
@@ -316,7 +336,7 @@ impl MultibootMemoryMapTag {
     value of 4 indicates reserved memory which needs to be preserved on hibernation,
     value of 5 indicates a memory which is occupied by defective RAM modules and all other values currently indicated a reserved area.
      */
-//==================================================================================================
+    //==================================================================================================
     pub fn get_available_memory(&self, size_unit: SizeUnit) -> u64 {
         let mut mem_size: u64 = 0;
         unsafe {
@@ -324,11 +344,12 @@ impl MultibootMemoryMapTag {
             let entry_length = self.entry_size;
             let entry_version = self.entry_version;
 
-            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
-            assert_eq!(0, entry_version);   //should be 0
+            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize); //should be 24 bytes
+            assert_eq!(0, entry_version); //should be 0
 
             //this sucks so badly
-            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+            let mut entry1 =
+                (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
             let last = entry1.byte_add(size_entries as usize);
 
             while entry1 < last {
@@ -337,9 +358,9 @@ impl MultibootMemoryMapTag {
                 let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
                     None => {
                         entry1 = entry1.add(1);
-                        continue
-                    },   //invalid memory region so skip it
-                    Some(x) => {x}
+                        continue;
+                    } //invalid memory region so skip it
+                    Some(x) => x,
                 };
 
                 if region_type == MemoryRegionType::AvailableRAM {
@@ -358,10 +379,11 @@ impl MultibootMemoryMapTag {
             let entry_length = self.entry_size;
             let entry_version = self.entry_version;
 
-            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
-            assert_eq!(0, entry_version);   //should be 0
+            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize); //should be 24 bytes
+            assert_eq!(0, entry_version); //should be 0
 
-            let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+            let mut entry1 =
+                (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
             let last = entry1.byte_add(size_entries as usize);
             let mut max = 0x00u64;
 
@@ -369,7 +391,7 @@ impl MultibootMemoryMapTag {
                 let addr = (*entry1).base_addr + (*entry1).length;
 
                 if addr > max {
-                    max  = addr;
+                    max = addr;
                 }
 
                 entry1 = entry1.add(1);
@@ -377,46 +399,47 @@ impl MultibootMemoryMapTag {
             PhysAddr::new_truncate(max)
         }
     }
-//==================================================================================================
-pub fn print_memory_map(&self) {
-    unsafe {
-        let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
-        let entry_length = self.entry_size;
-        let entry_version = self.entry_version;
+    //==================================================================================================
+    pub fn print_memory_map(&self) {
+        unsafe {
+            let size_entries = self.header.size - size_of::<MultibootMemoryMapTag>() as u32;
+            let entry_length = self.entry_size;
+            let entry_version = self.entry_version;
 
-        assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize);    //should be 24 bytes
-        assert_eq!(0, entry_version);   //should be 0
+            assert_eq!(size_of::<MultibootMemoryMapEntry>(), entry_length as usize); //should be 24 bytes
+            assert_eq!(0, entry_version); //should be 0
 
-        let mut entry1 = (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
-        let last = entry1.byte_add(size_entries as usize);
+            let mut entry1 =
+                (self as *const Self as *const u32).add(4) as *const MultibootMemoryMapEntry;
+            let last = entry1.byte_add(size_entries as usize);
 
-        while entry1 < last {
-            let base_addr = (*entry1).base_addr;
-            let length = (*entry1).length;
-            let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
-                None => {
+            while entry1 < last {
+                let base_addr = (*entry1).base_addr;
+                let length = (*entry1).length;
+                let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type) {
+                    None => {
+                        entry1 = entry1.add(1);
+                        continue;
+                    } //invalid memory region so skip it
+                    Some(x) => x,
+                };
+
+                if region_type != MemoryRegionType::AvailableRAM {
                     entry1 = entry1.add(1);
-                    continue
-                },   //invalid memory region so skip it
-                Some(x) => { x }
-            };
+                    continue;
+                }
 
-            if region_type != MemoryRegionType::AvailableRAM {
+                // vgaprintln!("Memory map entry:");
+                // vgaprintln!("========================");
+                vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
+                // vgaprintln!("Length: {:#011x}", length);
+                // vgaprintln!("Region type: {:#06x}", region_type);
+                // vgaprintln!("========================");
+
                 entry1 = entry1.add(1);
-                continue
             }
-
-            // vgaprintln!("Memory map entry:");
-            // vgaprintln!("========================");
-            vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
-            // vgaprintln!("Length: {:#011x}", length);
-            // vgaprintln!("Region type: {:#06x}", region_type);
-            // vgaprintln!("========================");
-
-            entry1 = entry1.add(1);
         }
     }
-}
     //==================================================================================================
     pub fn print(&self) {
         let tag_type = self.header.tag_type;
@@ -499,7 +522,6 @@ impl MultibootModulesTag {
     }
 }
 
-
 #[allow(dead_code)]
 impl MemoryRegionType {
     const ADDR_RANGE_TYPE_AVAILABLE_RAM: u32 = 1;
@@ -509,21 +531,11 @@ impl MemoryRegionType {
 
     pub fn from_u32(val: u32) -> Option<Self> {
         match val {
-            Self::ADDR_RANGE_TYPE_AVAILABLE_RAM => {
-                Some(Self::AvailableRAM)
-            },
-            Self::ADDR_RANGE_TYPE_USABLE_ACPI => {
-                Some(Self::UsableAcpi)
-            },
-            Self::ADDR_RANGE_TYPE_RESERVED_HIBERNATION => {
-                Some(Self::HibernationPreserved)
-            },
-            Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM => {
-                Some(Self::DefectiveRAM)
-            },
-            _ => {
-                None
-            }
+            Self::ADDR_RANGE_TYPE_AVAILABLE_RAM => Some(Self::AvailableRAM),
+            Self::ADDR_RANGE_TYPE_USABLE_ACPI => Some(Self::UsableAcpi),
+            Self::ADDR_RANGE_TYPE_RESERVED_HIBERNATION => Some(Self::HibernationPreserved),
+            Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM => Some(Self::DefectiveRAM),
+            _ => None,
         }
     }
 
@@ -532,7 +544,7 @@ impl MemoryRegionType {
             Self::AvailableRAM => Self::ADDR_RANGE_TYPE_AVAILABLE_RAM,
             Self::UsableAcpi => Self::ADDR_RANGE_TYPE_USABLE_ACPI,
             Self::HibernationPreserved => Self::ADDR_RANGE_TYPE_RESERVED_HIBERNATION,
-            Self::DefectiveRAM => Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM
+            Self::DefectiveRAM => Self::ADDR_RANGE_TYPE_DEFECTIVE_RAM,
         }
     }
 }
@@ -554,7 +566,9 @@ pub fn multiboot2_init() {
 }
 
 pub fn multiboot2_memory_map_tag() -> Option<&'static MultibootMemoryMapTag> {
-    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    let info = MULTIBOOT_INFO
+        .get()
+        .expect("Multiboot was not initialized yet!");
     let memory_map = info.get_memory_map_tag();
     if memory_map.is_some() {
         return Some(memory_map.unwrap() as &'static MultibootMemoryMapTag);
@@ -562,8 +576,12 @@ pub fn multiboot2_memory_map_tag() -> Option<&'static MultibootMemoryMapTag> {
     None
 }
 
-pub fn multiboot2_modules_tag(search_start_addr: *const u32) -> Option<&'static MultibootModulesTag> {
-    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+pub fn multiboot2_modules_tag(
+    search_start_addr: *const u32,
+) -> Option<&'static MultibootModulesTag> {
+    let info = MULTIBOOT_INFO
+        .get()
+        .expect("Multiboot was not initialized yet!");
     let modules = info.get_modules_tag(search_start_addr);
     if modules.is_some() {
         return Some(modules.unwrap() as &'static MultibootModulesTag);
@@ -572,11 +590,15 @@ pub fn multiboot2_modules_tag(search_start_addr: *const u32) -> Option<&'static 
 }
 
 pub fn multiboot2_bootloader_name() -> Option<&'static str> {
-    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    let info = MULTIBOOT_INFO
+        .get()
+        .expect("Multiboot was not initialized yet!");
     info.get_boot_loader_name()
 }
 
 pub fn multiboot2_logical_end() -> VirtAddr {
-    let info = MULTIBOOT_INFO.get().expect("Multiboot was not initialized yet!");
+    let info = MULTIBOOT_INFO
+        .get()
+        .expect("Multiboot was not initialized yet!");
     VirtAddr::new(info.multiboot_end_logical)
 }

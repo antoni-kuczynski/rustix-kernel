@@ -1,24 +1,24 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::VGAWRITER;
 use crate::ColorTextMode;
-use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
+use crate::VGAWRITER;
 use core::sync::atomic::Ordering::Acquire;
+use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 //==================================================================================================
 // This is a tem heap region to store early page tables (Early bump allocator)
 // It's been already mapped during early init, so dont care about that
 //==================================================================================================
+use crate::memory::page_tables::PagingSetupError;
+use crate::memory::{_P2V_kernel, MemoryRange};
+use crate::{earlyHeapEnd, earlyHeapStart, memory, print_ok_msg, vgaprint, vgaprintln};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PageTable;
-use crate::{earlyHeapEnd, earlyHeapStart, memory, print_ok_msg, vgaprint, vgaprintln};
-use crate::memory::{MemoryRange, _P2V_kernel};
-use crate::memory::page_tables::PagingSetupError;
 //==================================================================================================
 pub struct EarlyBumpAllocator {
     temp_range: MemoryRange,
-    temp_ptr: AtomicPtr<u8>
+    temp_ptr: AtomicPtr<u8>,
 }
 //==================================================================================================
 impl EarlyBumpAllocator {
@@ -34,7 +34,8 @@ impl EarlyBumpAllocator {
         let mut current_ptr = self.temp_ptr.load(Acquire);
 
         loop {
-            let aligned_ptr = ((current_ptr.add((align_u64 - 1) as usize)) as u64 & !(align_u64 - 1)) as *mut u8;
+            let aligned_ptr =
+                ((current_ptr.add((align_u64 - 1) as usize)) as u64 & !(align_u64 - 1)) as *mut u8;
             let next_ptr = aligned_ptr.add(size);
 
             if next_ptr as u64 > self.temp_range.end {
@@ -45,7 +46,7 @@ impl EarlyBumpAllocator {
                 current_ptr,
                 next_ptr,
                 Ordering::SeqCst,
-                Acquire
+                Acquire,
             ) {
                 Ok(_) => {
                     return Some(aligned_ptr as *mut T);
@@ -82,7 +83,10 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
                     if !entry_l3.is_unused() {
                         vgaprintln!("    L3 Entry {}: {:?}", j, entry_l3);
 
-                        if entry_l3.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                        if entry_l3
+                            .flags()
+                            .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
+                        {
                             vgaprintln!("      [1GB Huge Page]");
                             continue;
                         }
@@ -95,7 +99,10 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
                             if !entry_l2.is_unused() {
                                 vgaprintln!("      L2 Entry {}: {:?}", k, entry_l2);
 
-                                if entry_l2.flags().contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE) {
+                                if entry_l2
+                                    .flags()
+                                    .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
+                                {
                                     vgaprintln!("        [2MB Huge Page]");
                                     continue;
                                 }
@@ -107,18 +114,17 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
                                 for (l, entry_l1) in pt_table.iter().enumerate() {
                                     if !entry_l1.is_unused() {
                                         vgaprintln!("        L1 Entry {}: {:?}", l, entry_l1);
-                                    }   //WHYYYYYYYY
-                                }   //AREEEE
-                            }   //THEEERE
-                        }   //SOOOO
-                    }   //MANYYYYYYYYY?!?!?!?!?!??!
-                }   //I CANT SEE THE END!!!!! :(((((((
-            }   //SOMEONEEEEEEEEEE PLEEEEASE HEEEEEEEEEEEEEEEEEEELP!!!
-        }   //AREE WEE DOOOONE?!?!?!?!?!
-    }   //THEY ARE STILL GOING  AKLSHJDLKASDJLKASDUOHWEUIFDHXCV,NMHOUW;EF793EE :(((((((((((((((
-}   //I THINK THIS'S THE LAST ONE
+                                    } //WHYYYYYYYY
+                                } //AREEEE
+                            } //THEEERE
+                        } //SOOOO
+                    } //MANYYYYYYYYY?!?!?!?!?!??!
+                } //I CANT SEE THE END!!!!! :(((((((
+            } //SOMEONEEEEEEEEEE PLEEEEASE HEEEEEEEEEEEEEEEEEEELP!!!
+        } //AREE WEE DOOOONE?!?!?!?!?!
+    } //THEY ARE STILL GOING  AKLSHJDLKASDJLKASDUOHWEUIFDHXCV,NMHOUW;EF793EE :(((((((((((((((
+} //I THINK THIS'S THE LAST ONE
 //finally.
-
 
 pub fn eba_init() {
     vgaprint!("Initializing early bumb allocator...");
@@ -132,7 +138,8 @@ pub fn eba_init() {
 }
 
 lazy_static! {
-    pub static ref EARLY_BUMP_ALLOCATOR: Mutex<EarlyBumpAllocator> = Mutex::new(EarlyBumpAllocator::empty());
+    pub static ref EARLY_BUMP_ALLOCATOR: Mutex<EarlyBumpAllocator> =
+        Mutex::new(EarlyBumpAllocator::empty());
 }
 
 /// Early kmalloc for early bump allocator region

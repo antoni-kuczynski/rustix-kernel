@@ -1,25 +1,28 @@
 #![allow(unused)]
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::VGAWRITER;
 use crate::ColorTextMode;
+use crate::VGAWRITER;
+use crate::boot::multiboot::{
+    MULTIBOOT_INFO, MemoryRegionType, MultibootInfoView, MultibootMemoryMapEntry,
+    MultibootMemoryMapTag, multiboot2_logical_end, multiboot2_memory_map_tag,
+};
+use crate::memory::page_tables::{PageSize, PageTable};
+use crate::memory::paging::vmm_eba_map_range;
+use crate::memory::{_P2V_kernel, _V2P_kernel, Cr3, FRAME_SIZE, KERNEL_VIRT_BASE, SizeUnit};
+use crate::{print_ok_msg, vgaprint, vgaprintln};
+use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use core::{fmt, ptr};
-use core::sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::boot::multiboot::{multiboot2_logical_end, multiboot2_memory_map_tag, MemoryRegionType, MultibootInfoView, MultibootMemoryMapEntry, MultibootMemoryMapTag, MULTIBOOT_INFO};
-use crate::{print_ok_msg, vgaprint, vgaprintln};
-use crate::memory::{Cr3, SizeUnit, FRAME_SIZE, _P2V_kernel, _V2P_kernel, KERNEL_VIRT_BASE};
-use crate::memory::page_tables::{PageSize, PageTable};
-use crate::memory::paging::vmm_eba_map_range;
 //==================================================================================================
 const USED: u8 = 1;
 const FREE: u8 = 0;
 //==================================================================================================
 #[derive(Debug)]
 pub enum PmmInitError {
-    NoMemorySizeProvided = 1
+    NoMemorySizeProvided = 1,
 }
 //==================================================================================================
 #[derive(Debug)]
@@ -27,38 +30,43 @@ pub enum PmmAllocErrorType {
     FrameAddressNotAligned = 1,
     FrameAlreadyUsed = 2,
     BitmapWriteFailed = 3,
-    FrameAlreadyFreed = 4
+    FrameAlreadyFreed = 4,
 }
 pub struct PmmAllocError {
     frame: PhysAddr,
-    error_type: PmmAllocErrorType
+    error_type: PmmAllocErrorType,
 }
-
 
 impl fmt::Display for PmmAllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} at phys frame address {:#x}", self.error_type, self.frame)
+        write!(
+            f,
+            "{:?} at phys frame address {:#x}",
+            self.error_type, self.frame
+        )
     }
 }
 
 impl fmt::Debug for PmmAllocError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} at phys frame address {:#x}", self.error_type, self.frame)
+        write!(
+            f,
+            "{:?} at phys frame address {:#x}",
+            self.error_type, self.frame
+        )
     }
 }
 
 impl PmmAllocError {
     fn new(frame: PhysAddr, error_type: PmmAllocErrorType) -> Self {
-        Self {
-            frame, error_type
-        }
+        Self { frame, error_type }
     }
 }
 //==================================================================================================
 pub struct PmmBitmap {
     ptr: AtomicPtr<u8>,
     length: u64,
-    frame_count: u64
+    frame_count: u64,
 }
 //==================================================================================================
 impl PmmBitmap {
@@ -75,14 +83,14 @@ impl PmmBitmap {
             let region_type = match MemoryRegionType::from_u32((*entry1).addr_range_type()) {
                 None => {
                     entry1 = entry1.add(1);
-                    continue
-                },
-                Some(x) => { x }
+                    continue;
+                }
+                Some(x) => x,
             };
 
             if region_type != MemoryRegionType::AvailableRAM {
                 entry1 = entry1.add(1);
-                continue
+                continue;
             }
 
             let region_start = (*entry1).base_addr();
@@ -101,7 +109,7 @@ impl PmmBitmap {
         //==========================================================================================
         self.reserve_range(
             PhysAddr::new(0x00000),
-            (self.ptr.load(Ordering::Acquire) as u64 + self.length) - KERNEL_VIRT_BASE
+            (self.ptr.load(Ordering::Acquire) as u64 + self.length) - KERNEL_VIRT_BASE,
         );
     }
 
@@ -112,7 +120,11 @@ impl PmmBitmap {
         Ok(())
     }
 
-    fn reserve_range(&self, start_addr_inside_page: PhysAddr, length_bytes: u64) -> Result<(), PmmAllocError> {
+    fn reserve_range(
+        &self,
+        start_addr_inside_page: PhysAddr,
+        length_bytes: u64,
+    ) -> Result<(), PmmAllocError> {
         if length_bytes == 0 {
             return Ok(());
         }
@@ -131,7 +143,11 @@ impl PmmBitmap {
         Ok(())
     }
 
-    fn free_range(&self, start_addr_inside_page: PhysAddr, length_bytes: u64) -> Result<(), PmmAllocError> {
+    fn free_range(
+        &self,
+        start_addr_inside_page: PhysAddr,
+        length_bytes: u64,
+    ) -> Result<(), PmmAllocError> {
         if length_bytes == 0 {
             return Ok(());
         }
@@ -143,7 +159,7 @@ impl PmmBitmap {
         self.modify_bit_range(start_aligned / 4096, frame_count, false);
         Ok(())
     }
-//==================================================================================================
+    //==================================================================================================
     fn modify_bit_range(&self, start_frame: u64, frame_count: u64, alloc_mode: bool) {
         if frame_count == 0 {
             return;
@@ -167,9 +183,11 @@ impl PmmBitmap {
 
             unsafe {
                 let atomic_val = &*base_ptr.add(u64_idx);
-                if alloc_mode { //alloc
+                if alloc_mode {
+                    //alloc
                     atomic_val.fetch_or(mask, Ordering::AcqRel);
-                } else { //free
+                } else {
+                    //free
                     atomic_val.fetch_and(!mask, Ordering::AcqRel);
                 }
             }
@@ -178,7 +196,7 @@ impl PmmBitmap {
             frames_left -= frames_in_this_u64;
         }
     }
-//==================================================================================================
+    //==================================================================================================
     pub unsafe fn print(&self, range: usize) {
         let base_ptr = self.ptr.load(Ordering::Acquire);
         for i in 0..range {
@@ -217,7 +235,9 @@ impl PmmBitmap {
         if requested_frame_count == 0 || requested_frame_count > self.frame_count {
             return None;
         }
-        if requested_frame_count == 1 { return self.allocate_frame(); }
+        if requested_frame_count == 1 {
+            return self.allocate_frame();
+        }
 
         let mut consecutive_free = 0;
         let mut start_frame = 0;
@@ -257,24 +277,23 @@ pub fn pmm_init() {
     let mem_map = match multiboot2_memory_map_tag() {
         None => {
             panic!("PMM init: Mb2 memory map tag doesn't exist!")
-        },
-        Some(x) => {
-            x
         }
+        Some(x) => x,
     };
     unsafe {
         let mem_size = mem_map.get_high_usable_memory_address();
 
         let amount_of_frames = mem_size.as_u64() / FRAME_SIZE;
         let bitmap_size_bytes = ((amount_of_frames + 63) / 64) * size_of::<u64>() as u64; //one bit per frame
-        let bitmap_start_addr = (multiboot2_logical_end().as_u64() + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1);
-        
+        let bitmap_start_addr =
+            (multiboot2_logical_end().as_u64() + PageSize::SIZE_2MB) & !(PageSize::SIZE_2MB - 1);
+
         vmm_eba_map_range(
             VirtAddr::new_truncate(bitmap_start_addr),
             PhysAddr::new_truncate(_V2P_kernel(bitmap_start_addr)),
             bitmap_size_bytes,
             &PageSize::Size2Mb,
-            false
+            false,
         );
 
         let p_bitmap = bitmap_start_addr as *mut u8;
@@ -292,7 +311,11 @@ pub fn pmm_init() {
 }
 //==================================================================================================
 lazy_static! {
-    pub static ref PMM_BITMAP: Mutex<PmmBitmap> = Mutex::new(PmmBitmap {ptr: AtomicPtr::new(ptr::null_mut()),length: 0, frame_count: 0});
+    pub static ref PMM_BITMAP: Mutex<PmmBitmap> = Mutex::new(PmmBitmap {
+        ptr: AtomicPtr::new(ptr::null_mut()),
+        length: 0,
+        frame_count: 0
+    });
 }
 
 /// Reserves a frame in pmm bitmap
@@ -312,16 +335,12 @@ pub fn pmm_free_frame(frame_addr: PhysAddr) -> Result<(), PmmAllocError> {
 
 /// Allocates a first fit frame in PMM
 pub fn pmm_allocate_frame() -> Option<PhysAddr> {
-    unsafe {
-        PMM_BITMAP.lock().allocate_frame()
-    }
+    unsafe { PMM_BITMAP.lock().allocate_frame() }
 }
 
 /// Allocates multiple contiguous frames in PMM
 pub fn pmm_allocate_contiguous(frame_count: u64) -> Option<PhysAddr> {
-    unsafe {
-        PMM_BITMAP.lock().allocate_contiguous(frame_count)
-    }
+    unsafe { PMM_BITMAP.lock().allocate_contiguous(frame_count) }
 }
 
 /// Reserves a frame range in pmm bitmap

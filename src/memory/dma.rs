@@ -4,17 +4,17 @@
  * Created by Antoni Kuczyński
  * 19/05/2026
  */
-use x86_64::{PhysAddr, VirtAddr};
-use crate::{vgaprint, VGAWRITER, print_ok_msg, vgaprintln};
 use crate::ColorTextMode;
-use crate::memory::paging::{vmm_map_page_ext, virtual_to_physical};
-use crate::memory::ll_allocator::LinkedListAllocator;
-use core::alloc::Layout;
-use crate::memory::page_tables::{PageSize, PageTableEntry};
-use crate::memory::pmm::{pmm_allocate_contiguous};
 use crate::memory::SizeUnit;
-use spin::Mutex;
+use crate::memory::ll_allocator::LinkedListAllocator;
+use crate::memory::page_tables::{PageSize, PageTableEntry};
+use crate::memory::paging::{virtual_to_physical, vmm_map_page_ext};
+use crate::memory::pmm::pmm_allocate_contiguous;
+use crate::{VGAWRITER, print_ok_msg, vgaprint, vgaprintln};
+use core::alloc::Layout;
 use lazy_static::lazy_static;
+use spin::Mutex;
+use x86_64::{PhysAddr, VirtAddr};
 
 const DMA_START: u64 = 0xffff_d300_0000_0000;
 const DMA_SIZE: u64 = 16 * 1_099_511_627_776; // 16tb
@@ -31,7 +31,10 @@ impl DmaManager {
     }
 
     pub unsafe fn init(&mut self) {
-        let flags = PageTableEntry::PRESENT | PageTableEntry::WRITABLE | PageTableEntry::CACHE_DISABLE | PageTableEntry::WRITE_THROUGH;
+        let flags = PageTableEntry::PRESENT
+            | PageTableEntry::WRITABLE
+            | PageTableEntry::CACHE_DISABLE
+            | PageTableEntry::WRITE_THROUGH;
 
         self.allocator.init(DMA_START as usize, DMA_SIZE as usize);
         self.allocator.set_contiguous(true);
@@ -45,10 +48,11 @@ impl DmaManager {
             if ptr.is_null() {
                 return None;
             }
-            
+
             let virt = VirtAddr::new(ptr as u64);
-            let phys = virtual_to_physical(virt).expect("DMA virtual address not mapped to physical");
-            
+            let phys =
+                virtual_to_physical(virt).expect("DMA virtual address not mapped to physical");
+
             Some(DmaAlloc::new(virt, phys, layout))
         }
     }

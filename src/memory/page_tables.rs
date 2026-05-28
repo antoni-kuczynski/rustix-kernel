@@ -2,21 +2,20 @@
  * Created by Antoni Kuczyński
  * 14/04/2026
  */
-use alloc::alloc::{alloc, Layout};
+use crate::memory::dir_mapping::physical_to_virtual;
+use crate::memory::eba::eba_kmalloc;
+use crate::memory::pmm::pmm_allocate_frame;
+use crate::memory::{_P2V_kernel, _V2P_kernel, Cr3, SizeUnit};
+use crate::vgaprintln;
+use alloc::alloc::{Layout, alloc};
 use core::ops::AddAssign;
 use core::ptr;
 use x86_64::PhysAddr;
 use x86_64::VirtAddr;
-use crate::memory::{Cr3, SizeUnit, _P2V_kernel, _V2P_kernel};
-use crate::memory::dir_mapping::physical_to_virtual;
-use crate::memory::eba::eba_kmalloc;
-use crate::memory::pmm::pmm_allocate_frame;
-use crate::vgaprintln;
-
 
 fn early_page_alloc() -> *mut PageTable {
     unsafe {
-        match eba_kmalloc::<PageTable>(PageSize::PAGE_TABLE_SIZE, PageSize::PAGE_TABLE_SIZE- 1) {
+        match eba_kmalloc::<PageTable>(PageSize::PAGE_TABLE_SIZE, PageSize::PAGE_TABLE_SIZE - 1) {
             None => panic!("No space for page table! Early bump region full"),
             Some(x) => {
                 ptr::write_bytes(x as *mut u8, 0x00u8, PageSize::PAGE_TABLE_SIZE);
@@ -28,7 +27,7 @@ fn early_page_alloc() -> *mut PageTable {
 
 #[derive(Debug)]
 pub enum PagingSetupError {
-    NoMemoryMapProvided = 1
+    NoMemoryMapProvided = 1,
 }
 
 //==================================================================================================
@@ -38,7 +37,7 @@ const PAGE_TABLE_ENTRIES: usize = 512;
 pub const PHYS_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 #[repr(align(4096))]
 pub struct PageTable {
-    pub entries: [PageTableEntry; PAGE_TABLE_ENTRIES]
+    pub entries: [PageTableEntry; PAGE_TABLE_ENTRIES],
 }
 
 impl PageTable {
@@ -92,16 +91,16 @@ impl PageTable {
 pub struct PageTableEntry(pub u64);
 
 impl PageTableEntry {
-    pub const PRESENT: u64         = 1 << 0;
-    pub const WRITABLE: u64        = 1 << 1;
+    pub const PRESENT: u64 = 1 << 0;
+    pub const WRITABLE: u64 = 1 << 1;
     pub const USER_ACCESSIBLE: u64 = 1 << 2;
-    pub const WRITE_THROUGH: u64   = 1 << 3;
-    pub const CACHE_DISABLE: u64   = 1 << 4;
-    pub const ACCESSED: u64        = 1 << 5;
-    pub const DIRTY: u64           = 1 << 6;
-    pub const HUGE: u64            = 1 << 7;
-    pub const GLOBAL: u64          = 1 << 8;
-    pub const NO_EXECUTE: u64      = 1 << 63;
+    pub const WRITE_THROUGH: u64 = 1 << 3;
+    pub const CACHE_DISABLE: u64 = 1 << 4;
+    pub const ACCESSED: u64 = 1 << 5;
+    pub const DIRTY: u64 = 1 << 6;
+    pub const HUGE: u64 = 1 << 7;
+    pub const GLOBAL: u64 = 1 << 8;
+    pub const NO_EXECUTE: u64 = 1 << 63;
     const PHYS_ADDR_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
     pub fn read(entry: u64) -> Self {
@@ -204,7 +203,7 @@ impl PageIndexes {
 pub enum PageSize {
     Size4Kb,
     Size2Mb,
-    Size1Gb
+    Size1Gb,
 }
 
 impl PageSize {
@@ -212,18 +211,12 @@ impl PageSize {
     pub const SIZE_4KB: u64 = 0x1000;
     pub const SIZE_2MB: u64 = 0x200000;
     pub const SIZE_1GB: u64 = 1_073_741_824;
-    
+
     pub fn as_u64(&self) -> u64 {
         match self {
-            PageSize::Size4Kb => {
-                Self::SIZE_4KB
-            },
-            PageSize::Size2Mb => {
-                Self::SIZE_2MB
-            },
-            PageSize::Size1Gb => {
-                Self::SIZE_1GB
-            }
+            PageSize::Size4Kb => Self::SIZE_4KB,
+            PageSize::Size2Mb => Self::SIZE_2MB,
+            PageSize::Size1Gb => Self::SIZE_1GB,
         }
     }
 }

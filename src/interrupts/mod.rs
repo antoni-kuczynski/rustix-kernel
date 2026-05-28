@@ -1,17 +1,22 @@
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
-            interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX,
-         hardware::pic8259::{timer_interrupt_handler, PicInterruptIndex}},
-            print_ok_msg, vgaprint};
 use crate::interrupts::hardware::pic8259::keyboard_interrupt_handler;
+use crate::{
+    drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
+    interrupts::{
+        exceptions::*,
+        gdt::DOUBLE_FAULT_IST_INDEX,
+        hardware::pic8259::{PicInterruptIndex, timer_interrupt_handler},
+    },
+    print_ok_msg, vgaprint,
+};
 
 pub mod exceptions;
 pub mod gdt;
 pub mod hardware;
 
-lazy_static!{
+lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
         let mut idt = InterruptDescriptorTable::new();
         //exceptions
@@ -22,7 +27,7 @@ lazy_static!{
         idt.divide_error.set_handler_fn(division_error_handler);
         unsafe{
             idt.double_fault.set_handler_fn(double_fault_handler)
-                .set_stack_index(DOUBLE_FAULT_IST_INDEX); // <- this line is unsafe 
+                .set_stack_index(DOUBLE_FAULT_IST_INDEX); // <- this line is unsafe
                                                           // we have to give valid, unused and
                                                           // initialized stack index
             }
@@ -45,8 +50,7 @@ pub fn idt_init() {
     print_ok_msg!();
 }
 
-
-pub fn interrupts_enable(){
+pub fn interrupts_enable() {
     vgaprint!("Enabling interrupts...");
 
     x86_64::instructions::interrupts::enable();

@@ -4,18 +4,18 @@
  * Created by Antoni Kuczyński
  * 20/04/2026
  */
-use x86_64::{PhysAddr, VirtAddr};
-use crate::{vgaprint, VGAWRITER};
 use crate::ColorTextMode;
-use crate::{print_ok_msg, vgaprintln};
-use crate::memory::paging::{vmm_eba_map_page, vmm_map_page};
 use crate::memory::ll_allocator::LinkedListAllocator;
+use crate::memory::page_tables::PageSize;
+use crate::memory::paging::{vmm_eba_map_page, vmm_map_page};
+use crate::memory::pmm::{pmm_allocate_contiguous, pmm_allocate_frame};
+use crate::memory::{FRAME_SIZE, SizeUnit};
+use crate::{VGAWRITER, vgaprint};
+use crate::{print_ok_msg, vgaprintln};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ops::{Div, Mul};
 use spin::Mutex;
-use crate::memory::page_tables::PageSize;
-use crate::memory::pmm::{pmm_allocate_contiguous, pmm_allocate_frame};
-use crate::memory::{SizeUnit, FRAME_SIZE};
+use x86_64::{PhysAddr, VirtAddr};
 
 const KHEAP_START: u64 = 0xffff_c200_0000_0000;
 const KHEAP_LENGTH: u64 = 16 * 1_099_511_627_776; // 16tb
@@ -44,7 +44,9 @@ pub fn kheap_init() {
     vgaprint!("Initializing kernel heap...");
 
     unsafe {
-        ALLOCATOR.lock().init(KHEAP_START as usize, KHEAP_LENGTH as usize);
+        ALLOCATOR
+            .lock()
+            .init(KHEAP_START as usize, KHEAP_LENGTH as usize);
     }
 
     print_ok_msg!();

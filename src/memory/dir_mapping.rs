@@ -4,15 +4,15 @@
  * Created by Antoni Kuczyński
  * 15/04/2026
  */
-use crate::{print_fail_msg, vgaprintln, VGAWRITER};
 use crate::ColorTextMode;
-use x86_64::{PhysAddr, VirtAddr};
 use crate::boot::cpuid::CpuId;
-use crate::boot::multiboot::{multiboot2_memory_map_tag, MULTIBOOT_INFO};
+use crate::boot::multiboot::{MULTIBOOT_INFO, multiboot2_memory_map_tag};
 use crate::memory::SizeUnit;
-use crate::{print_ok_msg, vgaprint};
 use crate::memory::page_tables::PageSize;
-use crate::memory::paging::{vmm_eba_map_page};
+use crate::memory::paging::vmm_eba_map_page;
+use crate::{VGAWRITER, print_fail_msg, vgaprintln};
+use crate::{print_ok_msg, vgaprint};
+use x86_64::{PhysAddr, VirtAddr};
 
 const DIR_MAP_TOTAL_SIZE: u64 = 64 * 1_099_511_627_776; //64 terabytes
 const DIR_MAP_START: VirtAddr = VirtAddr::new(0xffff_8080_0000_0000);
@@ -20,12 +20,12 @@ const DIR_MAP_END: VirtAddr = VirtAddr::new(0xffff_e080_0000_0000);
 const PHYS_MEMORY_OFFSET: u64 = DIR_MAP_START.as_u64();
 
 unsafe fn do_4kb_pages(total: u64, mut mapped: u64) -> u64 {
-    while mapped  <= total - PageSize::SIZE_4KB {
+    while mapped <= total - PageSize::SIZE_4KB {
         vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
             &PageSize::Size4Kb,
-            false
+            false,
         );
         mapped += PageSize::SIZE_4KB;
     }
@@ -33,12 +33,12 @@ unsafe fn do_4kb_pages(total: u64, mut mapped: u64) -> u64 {
 }
 
 unsafe fn do_2mb_pages(total: u64, mut mapped: u64) -> u64 {
-    while mapped  <= total - PageSize::SIZE_2MB {
+    while mapped <= total - PageSize::SIZE_2MB {
         vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
             &PageSize::Size2Mb,
-            false
+            false,
         );
         mapped += PageSize::SIZE_2MB;
     }
@@ -46,18 +46,17 @@ unsafe fn do_2mb_pages(total: u64, mut mapped: u64) -> u64 {
 }
 
 unsafe fn do_1gb_pages(total: u64, mut mapped: u64) -> u64 {
-    while mapped  <= total - PageSize::SIZE_1GB {
+    while mapped <= total - PageSize::SIZE_1GB {
         vmm_eba_map_page(
             VirtAddr::new(PHYS_MEMORY_OFFSET + mapped),
             PhysAddr::new(mapped),
             &PageSize::Size1Gb,
-            false
+            false,
         );
         mapped += PageSize::SIZE_1GB;
     }
     mapped
 }
-
 
 // If using 2mb pages, cap the memory to like 1tb and use +/- 5mb of page tables
 fn init_2mb(high_addr: PhysAddr) -> u64 {
