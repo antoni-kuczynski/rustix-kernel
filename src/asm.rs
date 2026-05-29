@@ -78,4 +78,3 @@ pub unsafe fn inl(port: u16) -> u32 {
         value
     }
 }
-

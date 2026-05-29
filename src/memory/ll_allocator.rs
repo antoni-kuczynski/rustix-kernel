@@ -5,6 +5,8 @@
  * Created by Antoni Kuczyński
  * 20/04/2026
  */
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
+use crate::memory::FRAME_SIZE;
 use crate::memory::page_tables::{PageSize, PageTableEntry};
 use crate::memory::paging::{
     virtual_to_physical, vmm_map_page, vmm_map_page_ext, vmm_map_range_ext, vmm_unmap_page,
@@ -12,7 +14,6 @@ use crate::memory::paging::{
 use crate::memory::pmm::{
     pmm_allocate_contiguous, pmm_allocate_frame, pmm_free_frame, pmm_free_range,
 };
-use crate::memory::{FRAME_SIZE, SizeUnit};
 use crate::vgaprintln;
 use core::alloc::Layout;
 use core::cmp::PartialEq;
@@ -20,7 +21,6 @@ use core::ops::Add;
 use core::ptr::{addr_of_mut, null_mut};
 use core::{mem, ptr};
 use x86_64::VirtAddr;
-use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 
 pub struct ListNode {
     pub(crate) size: usize,
@@ -152,14 +152,14 @@ impl LinkedListAllocator {
         }
 
         let addr = node as usize;
-        addr >= self.global_start
-            && addr < self.current_end
-            && addr % align_of::<ListNode>() == 0
+        addr >= self.global_start && addr < self.current_end && addr % align_of::<ListNode>() == 0
     }
 
     unsafe fn validate_free_node_ptr(&self, node: *mut ListNode, context: &str) -> bool {
         if !self.is_valid_free_node_ptr(node) {
-            VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::LightRed);
             vgaprintln!(
                 " [ALLOCATOR] Invalid free-list pointer [{}]: ptr=0x{:X}, heap=0x{:X}..0x{:X}",
                 context,
@@ -167,12 +167,16 @@ impl LinkedListAllocator {
                 self.global_start,
                 self.current_end
             );
-            VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::White);
             return false;
         }
 
         let Some(end) = (*node).checked_end_addr() else {
-            VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::LightRed);
             vgaprintln!(
                 " [ALLOCATOR] Invalid free-list node overflow [{}]: ptr=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
                 context,
@@ -182,12 +186,16 @@ impl LinkedListAllocator {
                 self.debug_last_free_node,
                 self.debug_last_free_size
             );
-            VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::White);
             return false;
         };
 
         if end > self.current_end {
-            VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::LightRed);
             vgaprintln!(
                 " [ALLOCATOR] Invalid free-list node range [{}]: node=0x{:X}..0x{:X}, heap_end=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
                 context,
@@ -199,7 +207,9 @@ impl LinkedListAllocator {
                 self.debug_last_free_node,
                 self.debug_last_free_size
             );
-            VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::White);
             return false;
         }
 
@@ -217,18 +227,35 @@ impl LinkedListAllocator {
         }
 
         if (*node).size != self.debug_last_free_size {
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::LightRed);
             vgaprintln!(
-                "Last free node changed [{}]: node=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
+                " [ALLOCATOR] Last free node changed [{}]: node=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
                 context,
                 self.debug_last_free_node,
                 self.debug_last_free_size,
                 (*node).size,
                 (*node).next as usize
             );
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::White);
             return false;
         }
 
         true
+    }
+
+    fn clear_debug_last_free_node_if_inside(&mut self, region_start: usize, region_size: usize) {
+        let Some(region_end) = region_start.checked_add(region_size) else {
+            return;
+        };
+
+        if self.debug_last_free_node >= region_start && self.debug_last_free_node < region_end {
+            self.debug_last_free_node = 0;
+            self.debug_last_free_size = 0;
+        }
     }
 
     /// Adds a free region with the given address and size to the front of the list
@@ -237,7 +264,13 @@ impl LinkedListAllocator {
         let padding = aligned_addr - addr;
 
         if addr < self.global_start || addr > self.global_end {
-            vgaprintln!("Invalid region address {:#011x}", addr);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::LightRed);
+            vgaprintln!(" [ALLOCATOR] Invalid region address {:#011x}", addr);
+            VGAWRITER
+                .lock()
+                .change_foreground_color(ColorTextMode::White);
             return;
         }
 
@@ -443,6 +476,7 @@ impl LinkedListAllocator {
 
                     (*current).next = (*next).next;
                     (*next).next = null_mut();
+                    self.clear_debug_last_free_node_if_inside(region_start, region_size);
 
                     if self.region_contains_top(region_start, region_size) {
                         self.clear_top();
@@ -560,8 +594,10 @@ impl LinkedListAllocator {
             }
 
             if (*next).start_addr() == region_start {
+                let region_size = (*next).size;
                 (*current).next = (*next).next;
                 (*next).next = null_mut();
+                self.clear_debug_last_free_node_if_inside(region_start, region_size);
                 return;
             }
 
@@ -586,15 +622,7 @@ impl LinkedListAllocator {
             return;
         }
 
-        let protected_size = SizeUnit::Megabyte.as_usize() * 2;
-        let protected_end = align_up(self.global_start + protected_size, page_size);
-
-        let mut unmap_start = align_up(top_start, page_size);
-
-        //first 2mb cant be unmapped
-        if unmap_start < protected_end {
-            unmap_start = protected_end;
-        }
+        let unmap_start = align_up(top_start, page_size);
 
         if unmap_start >= self.current_end {
             return;

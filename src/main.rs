@@ -42,7 +42,8 @@ fn kernel_main_post_stack() -> ! {
     // pci::pci_init();
     interrupts::interrupts_enable();
 
-    kheap_test::run_all_tests(&mut *ALLOCATOR.lock());
+    kheap_test::run_kheap_tests(&mut *ALLOCATOR.lock());
+    kheap_test::run_dma_tests();
 
     unsafe {
         let kernel_offset = KERNEL_VIRT_BASE;
@@ -60,7 +61,7 @@ fn kernel_main_post_stack() -> ! {
         // vgaprintln!("Val1: {:#011x}", *(virt.as_u64() as *mut u32));
         // *(virt.as_u64() as *mut u32) = 0xdeadc0de;
         // vgaprintln!("Val2: {:#011x}", *(virt.as_u64() as *mut u32));
-        
+
         // print_page_table_tree(kernel_offset as u64);
 
         // let memory_tag = multiboot2_memory_map_tag().unwrap();
