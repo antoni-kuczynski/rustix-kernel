@@ -163,18 +163,15 @@ This tag contains a copy of RSDP as defined per ACPI 2.0 or later specification.
 pub struct MultibootOldRsdpTag {
     //type = 14
     pub(crate) header: MultibootTagBase,
-    pub(crate) copy_of_rsdp: RSDP
+    pub(crate) copy_of_rsdp: RSDP,
 }
 
 #[repr(C, packed)]
 pub struct MultibootNewRsdpTag {
     //type = 15
     pub(crate) header: MultibootTagBase,
-    pub(crate) copy_of_xsdp: XSDP
+    pub(crate) copy_of_xsdp: XSDP,
 }
-
-
-
 
 pub trait MultibootTagStruct {
     const TAG_TYPE: u32;
@@ -195,7 +192,6 @@ impl MultibootTagStruct for MultibootModulesTag {
 impl MultibootTagStruct for MultibootMemoryMapTag {
     const TAG_TYPE: u32 = 6;
 }
-
 
 // ===== ACPI =====
 impl MultibootTagStruct for MultibootOldRsdpTag {

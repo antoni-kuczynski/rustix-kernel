@@ -299,15 +299,13 @@ impl CpuId {
 
 pub fn cpuid_init() {
     vgaprint!("Initializing CPUID...");
-    unsafe {
-        let base_result = __cpuid(0x01);
-        let extended_result = __cpuid(0x8000_0001);
+    let base_result = __cpuid(0x01);
+    let extended_result = __cpuid(0x8000_0001);
 
-        CPU_ID.call_once(|| CpuId {
-            base: base_result,
-            extended: extended_result,
-        });
-    }
+    CPU_ID.call_once(|| CpuId {
+        base: base_result,
+        extended: extended_result,
+    });
     print_ok_msg!();
 }
 

@@ -4,6 +4,7 @@
  */
 use crate::drivers::acpi::acpi_tables::ACPISignature;
 use crate::drivers::acpi::tables::AcpiRevision;
+use x86_64::VirtAddr;
 
 // ============================================================
 //
@@ -26,10 +27,8 @@ pub struct ACPISDTHeader {
 
 #[allow(dead_code)]
 impl ACPISDTHeader {
-    pub(crate) fn new_from_ptr_u64<'a>(ptr: u64) -> &'a ACPISDTHeader {
-        unsafe {
-            &*(ptr as *const ACPISDTHeader)
-        }
+    pub(crate) fn new_from_virt_addr<'a>(ptr: VirtAddr) -> &'a ACPISDTHeader {
+        unsafe { &*(ptr.as_ptr::<ACPISDTHeader>()) }
     }
     pub fn validate_checksum(&self) -> bool {
         unsafe {

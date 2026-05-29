@@ -5,6 +5,8 @@ pub(crate) use crate::boot::multiboot_tag::{
     MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag,
     MultibootModulesTag, MultibootTagBase, MultibootTagStruct, mb_tag_as_u32,
 };
+use crate::boot::multiboot_tag::{MultibootNewRsdpTag, MultibootOldRsdpTag};
+use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
@@ -15,8 +17,6 @@ use core::ptr;
 use core::ptr::read_volatile;
 use spin::Once;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::boot::multiboot_tag::{MultibootNewRsdpTag, MultibootOldRsdpTag};
-use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 /*
 ==============================================
 SOURCES:
@@ -625,7 +625,6 @@ pub fn multiboot2_new_rsdp() -> Option<&'static XSDP> {
         info.get_new_rsdp()
     }
 }
-
 
 pub fn multiboot2_logical_end() -> VirtAddr {
     let info = MULTIBOOT_INFO

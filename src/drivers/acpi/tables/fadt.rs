@@ -2,10 +2,11 @@
  * Created by Antoni Kuczyński
  * 03/11/2025
  */
-use core::ptr::slice_from_raw_parts;
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
+use core::ptr::slice_from_raw_parts;
+use x86_64::VirtAddr;
 
 // ============================================================
 //               **FADT STRUCT**
@@ -89,7 +90,6 @@ pub struct FADT {
     pub x_gpe1_block: GenericAddressStructure,
 }
 
-
 pub enum PrefferedPowerManagementProfile {
     Unspecified,
     Desktop,
@@ -99,7 +99,7 @@ pub enum PrefferedPowerManagementProfile {
     SOHOServer,
     AppliancePC,
     PerformanceServer,
-    Reserved
+    Reserved,
 }
 
 impl AcpiSdtTable for FADT {
@@ -118,14 +118,12 @@ impl AcpiSdtTable for FADT {
 
 #[allow(dead_code)]
 impl FADT {
-    pub fn new_from_ptr<'a>(ptr: u64) -> &'a FADT {
+    pub fn new_from_ptr<'a>(ptr: VirtAddr) -> &'a FADT {
         unsafe {
-            let header = ACPISDTHeader::new_from_ptr_u64(ptr);
+            let header = ACPISDTHeader::new_from_virt_addr(ptr);
             let length = header.length as usize;
-            let rsdt_ptr = slice_from_raw_parts(
-                ptr as *const u8,
-                (length - size_of_val(&header)) >> 2,
-            );
+            let rsdt_ptr =
+                slice_from_raw_parts(ptr.as_ptr::<u8>(), (length - size_of_val(&header)) >> 2);
 
             &*(rsdt_ptr as *const FADT)
         }
@@ -134,7 +132,7 @@ impl FADT {
     pub fn get_dsdt_pointer(&self) -> u64 {
         match self.get_sdt_header().get_revision() {
             AcpiRevision::Acpi20 => self.x_dsdt,
-            _ => self.dsdt as u64
+            _ => self.dsdt as u64,
         }
     }
 
@@ -148,7 +146,7 @@ impl FADT {
             5 => PrefferedPowerManagementProfile::SOHOServer,
             6 => PrefferedPowerManagementProfile::AppliancePC,
             7 => PrefferedPowerManagementProfile::PerformanceServer,
-            _ => PrefferedPowerManagementProfile::Reserved
+            _ => PrefferedPowerManagementProfile::Reserved,
         }
     }
 }

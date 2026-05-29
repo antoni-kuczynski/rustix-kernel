@@ -2,11 +2,12 @@
  * Created by Antoni Kuczyński
  * 05/11/2025
  */
+use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
+use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::slice_from_raw_parts;
-use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
-use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
+use x86_64::VirtAddr;
 
 // ============================================================
 //               **XSDT & RSDT**
@@ -16,7 +17,7 @@ use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 #[repr(C, packed)]
 pub struct RSDT {
     pub header: ACPISDTHeader,
-    pub other_sdt_pointers: [u32]
+    pub other_sdt_pointers: [u32],
 }
 
 impl AcpiSdtTable for RSDT {
@@ -34,14 +35,12 @@ impl AcpiSdtTable for RSDT {
 }
 
 impl RSDT {
-    pub fn new_from_ptr<'a>(ptr: u64) -> &'a RSDT {
+    pub fn new_from_ptr<'a>(ptr: VirtAddr) -> &'a RSDT {
         unsafe {
-            let header = ACPISDTHeader::new_from_ptr_u64(ptr);
+            let header = ACPISDTHeader::new_from_virt_addr(ptr);
             let length = header.length as usize;
-            let rsdt_ptr = slice_from_raw_parts(
-                ptr as *const u8,
-                (length - size_of_val(&header)) >> 2,
-            );
+            let rsdt_ptr =
+                slice_from_raw_parts(ptr.as_ptr::<u8>(), (length - size_of_val(&header)) >> 2);
 
             &*(rsdt_ptr as *const RSDT)
         }
@@ -65,7 +64,7 @@ impl RSDT {
 #[repr(C, packed)]
 pub struct XSDT {
     pub header: ACPISDTHeader,
-    pub other_sdt_pointers: [u64]
+    pub other_sdt_pointers: [u64],
 }
 
 impl AcpiSdtTable for XSDT {
@@ -83,14 +82,12 @@ impl AcpiSdtTable for XSDT {
 }
 
 impl XSDT {
-    pub fn new<'a>(ptr: u64) -> &'a XSDT {
+    pub fn new<'a>(ptr: VirtAddr) -> &'a XSDT {
         unsafe {
-            let header = ACPISDTHeader::new_from_ptr_u64(ptr);
+            let header = ACPISDTHeader::new_from_virt_addr(ptr);
             let length = header.length as usize;
-            let xsdt_ptr = slice_from_raw_parts(
-                ptr as *const u8,
-                (length - size_of_val(&header)) >> 3,
-            );
+            let xsdt_ptr =
+                slice_from_raw_parts(ptr.as_ptr::<u8>(), (length - size_of_val(&header)) >> 3);
 
             &*(xsdt_ptr as *const XSDT)
         }
