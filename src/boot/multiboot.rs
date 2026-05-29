@@ -15,6 +15,8 @@ use core::ptr;
 use core::ptr::read_volatile;
 use spin::Once;
 use x86_64::{PhysAddr, VirtAddr};
+use crate::boot::multiboot_tag::{MultibootNewRsdpTag, MultibootOldRsdpTag};
+use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 /*
 ==============================================
 SOURCES:
@@ -262,6 +264,16 @@ impl MultibootInfoView {
         search_start_addr: *const u32,
     ) -> Option<&'static mut MultibootModulesTag> {
         self.get_tag_addr_by_type::<MultibootModulesTag>(search_start_addr)
+    }
+    //==================================================================================================
+    unsafe fn get_old_rsdp(&self) -> Option<&'static RSDP> {
+        let tag = self.get_tag_addr_by_type::<MultibootOldRsdpTag>(self.tags)?;
+        Some(&(*tag).copy_of_rsdp)
+    }
+    //==================================================================================================
+    unsafe fn get_new_rsdp(&self) -> Option<&'static XSDP> {
+        let tag = self.get_tag_addr_by_type::<MultibootNewRsdpTag>(self.tags)?;
+        Some(&(*tag).copy_of_xsdp)
     }
     //==================================================================================================
     pub fn print(&self) {
@@ -595,6 +607,25 @@ pub fn multiboot2_bootloader_name() -> Option<&'static str> {
         .expect("Multiboot was not initialized yet!");
     info.get_boot_loader_name()
 }
+
+pub fn multiboot2_old_rsdp() -> Option<&'static RSDP> {
+    unsafe {
+        let info = MULTIBOOT_INFO
+            .get()
+            .expect("Multiboot was not initialized yet!");
+        info.get_old_rsdp()
+    }
+}
+
+pub fn multiboot2_new_rsdp() -> Option<&'static XSDP> {
+    unsafe {
+        let info = MULTIBOOT_INFO
+            .get()
+            .expect("Multiboot was not initialized yet!");
+        info.get_new_rsdp()
+    }
+}
+
 
 pub fn multiboot2_logical_end() -> VirtAddr {
     let info = MULTIBOOT_INFO

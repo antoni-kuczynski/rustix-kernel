@@ -7,7 +7,7 @@ use crate::drivers::acpi::acpi_tables::{ACPISignature, ACPITables};
 use crate::asm::{inw, outb, outw};
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::interrupts::hardware::pic8259::{get_current_time_millis};
-use crate::{print_fail_msg, print_ok_msg, vgaprint, vgaprintln};
+use crate::{print_fail_msg, print_ok_msg, vgaprint};
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{S5Obj, DSDT};
 use crate::drivers::vga::vga_text::VGAWRITER;

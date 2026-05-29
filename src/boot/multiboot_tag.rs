@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
+
 //==================================================================================================
 //Multiboot information structures
 //==================================================================================================
@@ -134,6 +136,45 @@ impl TryFrom<u32> for MultibootTagType {
         }
     }
 }
+//==================================================================================================
+//  ACPI STUFF
+//==================================================================================================
+/*
+3.6.16 ACPI old RSDP
+
+        +-------------------+
+u32     | type = 14         |
+u32     | size              |
+        | copy of RSDPv1    |
+        +-------------------+
+
+This tag contains a copy of RSDP as defined per ACPI 1.0 specification.
+3.6.17 ACPI new RSDP
+
+        +-------------------+
+u32     | type = 15         |
+u32     | size              |
+        | copy of RSDPv2    |
+        +-------------------+
+
+This tag contains a copy of RSDP as defined per ACPI 2.0 or later specification.
+ */
+#[repr(C, packed)]
+pub struct MultibootOldRsdpTag {
+    //type = 14
+    pub(crate) header: MultibootTagBase,
+    pub(crate) copy_of_rsdp: RSDP
+}
+
+#[repr(C, packed)]
+pub struct MultibootNewRsdpTag {
+    //type = 15
+    pub(crate) header: MultibootTagBase,
+    pub(crate) copy_of_xsdp: XSDP
+}
+
+
+
 
 pub trait MultibootTagStruct {
     const TAG_TYPE: u32;
@@ -153,4 +194,14 @@ impl MultibootTagStruct for MultibootModulesTag {
 
 impl MultibootTagStruct for MultibootMemoryMapTag {
     const TAG_TYPE: u32 = 6;
+}
+
+
+// ===== ACPI =====
+impl MultibootTagStruct for MultibootOldRsdpTag {
+    const TAG_TYPE: u32 = 14;
+}
+
+impl MultibootTagStruct for MultibootNewRsdpTag {
+    const TAG_TYPE: u32 = 15;
 }

@@ -13,9 +13,10 @@ mod interrupts;
 mod memory;
 
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::kheap::ALLOCATOR;
-use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE, kheap_test};
+use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
 use core::panic::PanicInfo;
+use crate::boot::multiboot::{multiboot2_new_rsdp, multiboot2_old_rsdp};
+use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -42,8 +43,20 @@ fn kernel_main_post_stack() -> ! {
     // pci::pci_init();
     interrupts::interrupts_enable();
 
-    kheap_test::run_kheap_tests(&mut *ALLOCATOR.lock());
-    kheap_test::run_dma_tests();
+    // kheap_test::run_kheap_tests(&mut *ALLOCATOR.lock());
+    // kheap_test::run_dma_tests();
+
+    if let Some(rsdp) = multiboot2_old_rsdp() {
+        vgaprintln!("old rsdp found at {:#011x}", rsdp as *const RSDP as u64);
+    } else {
+        vgaprintln!("no old rsdp found");
+    };
+
+    if let Some(xsdp) = multiboot2_new_rsdp() {
+        vgaprintln!("new rsdp (xsdp) found at {:#011x}", xsdp as *const XSDP as u64);
+    } else {
+        vgaprintln!("no new rsdp (xsdp) found");
+    };
 
     unsafe {
         let kernel_offset = KERNEL_VIRT_BASE;

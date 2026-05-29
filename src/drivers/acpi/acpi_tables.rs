@@ -4,11 +4,16 @@
  */
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::BootInfo;
 use crate::drivers::acpi::tables::{rsdp, AcpiRevision};
 use crate::drivers::acpi::tables::rsdp::{DescriptionPointerTable, RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
+
+
+//TODO: temporary struct to make the compiler shut up
+pub struct BootInfo {
+    physical_memory_offset: u64
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ACPISignature([u8; 4]); //all signatures are 4 chars (except rsdp)
