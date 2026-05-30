@@ -117,6 +117,7 @@ pub extern "C" fn rust_main() -> ! {
 
     memory::kheap::kheap_init();
     memory::dma::dma_init();
+    memory::ioremap::ioremap_init();
 
     memory::secure_stack::switch_to_secure_stack()
 }

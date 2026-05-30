@@ -15,6 +15,7 @@ pub mod page_tables;
 pub mod paging;
 pub mod pmm;
 pub mod secure_stack;
+pub mod ioremap;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;
@@ -117,3 +118,8 @@ impl Div<i32> for &SizeUnit {
 }
 
 pub const FRAME_SIZE: u64 = 4096;
+
+/// Align the given address `addr` upwards to alignment `align`.
+pub fn align_up(addr: usize, align: usize) -> usize {
+    (addr + align - 1) & !(align - 1)
+}

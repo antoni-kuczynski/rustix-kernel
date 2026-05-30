@@ -295,6 +295,9 @@ impl CpuId {
     pub fn has_pdpe1gb() -> bool {
         (Self::ext().edx & (1 << 26)) != 0
     }
+    pub fn has_xd() -> bool {
+        (Self::ext().edx & (1 << 20)) != 0
+    }
 }
 
 pub fn cpuid_init() {

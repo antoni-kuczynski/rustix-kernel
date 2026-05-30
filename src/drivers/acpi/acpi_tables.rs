@@ -16,11 +16,6 @@ use alloc::vec::Vec;
 use spin::Once;
 use x86_64::{PhysAddr, VirtAddr};
 
-//TODO: temporary struct to make the compiler shut up
-pub struct BootInfo {
-    physical_memory_offset: u64,
-}
-
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ACPISignature([u8; 4]); //all signatures are 4 chars (except rsdp)
 

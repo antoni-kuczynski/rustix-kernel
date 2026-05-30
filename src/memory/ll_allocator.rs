@@ -6,7 +6,7 @@
  * 20/04/2026
  */
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::FRAME_SIZE;
+use crate::memory::{align_up, FRAME_SIZE};
 use crate::memory::page_tables::{PageSize, PageTableEntry};
 use crate::memory::paging::{
     virtual_to_physical, vmm_map_page, vmm_map_page_ext, vmm_map_range_ext, vmm_unmap_page,
@@ -726,9 +726,6 @@ impl LinkedListAllocator {
     }
 }
 
-/// Align the given address `addr` upwards to alignment `align`.
-pub fn align_up(addr: usize, align: usize) -> usize {
-    (addr + align - 1) & !(align - 1)
-}
+
 
 unsafe impl Send for LinkedListAllocator {}

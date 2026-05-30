@@ -442,14 +442,14 @@ pub unsafe fn vmm_map_range(
     phys_start: PhysAddr,
     length: u64,
     page_size: &PageSize,
-) {
+) -> bool {
     vmm_map_range_ext(
         virt_start,
         phys_start,
         length,
         page_size,
         PageTableEntry::PRESENT | PageTableEntry::WRITABLE,
-    );
+    )
 }
 
 pub unsafe fn vmm_map_range_ext(
