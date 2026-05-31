@@ -2,11 +2,10 @@
  * Created by Antoni Kuczyński
  * 25/12/2025
  */
-use crate::interrupts::hardware::pic8259::{sleep};
 use alloc::boxed::Box;
-use bootloader::BootInfo;
 use x86_64::structures::paging::OffsetPageTable;
 use crate::asm::{outb, outl, outw};
+use crate::drivers::apic::apic::timer_lapic_sleep;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
 
@@ -29,7 +28,7 @@ const UHCI_FRBASEADD: u64 = 0x08;
 const UHCI_USB_CMD: u64 = 0x00;
 
 impl PciDeviceInitializer for UHCI {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
         let pci_bar = PciBAR::get(&pci_device, 4);
 
         if pci_bar.bar_type() != &BarType::Io {
@@ -46,7 +45,7 @@ impl PciDeviceInitializer for UHCI {
 
             //global reset & host controller reset
             outb((io_addres + UHCI_USB_CMD) as u16, 0b00000110);
-            sleep(10);
+            timer_lapic_sleep(10);
             outb((io_addres + UHCI_USB_CMD) as u16, 0x00);
 
 
