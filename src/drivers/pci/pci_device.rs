@@ -3,7 +3,6 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-use bootloader::BootInfo;
 use x86_64::structures::paging::OffsetPageTable;
 use crate::vgaprintln;
 
@@ -28,12 +27,12 @@ pub enum PciDeviceInitError {
 }
 
 pub trait PciDeviceInitializer {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError>;
+    fn initialize(pci_device: &PciDeviceHeader, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError>;
 }
 
 
 impl PciDeviceInitializer for PciDeviceHeader {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
         Err(PciDeviceInitError::NotImplemeted)
     }
 }
