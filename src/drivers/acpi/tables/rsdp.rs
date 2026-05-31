@@ -1,13 +1,13 @@
 use crate::drivers::acpi::tables::AcpiRevision;
-
+use crate::memory::dir_mapping::physical_to_virtual;
+use x86_64::{PhysAddr, VirtAddr};
 /*
  * Created by Antoni Kuczyński
  * 05/11/2025
  */
-const BIOS_START: u64 = 0x000E0000;
-const BIOS_END: u64   = 0x000FFFFF;
+const BIOS_START: PhysAddr = PhysAddr::new(0x000E0000);
+const BIOS_END: PhysAddr = PhysAddr::new(0x000FFFFF);
 const RSD_EXPECTED_SIGNATURE: &[u8] = b"RSD PTR ";
-
 
 // ============================================================
 //               **XSDP & RSDP**
@@ -34,7 +34,7 @@ pub struct XSDP {
     pub length: u32,
     pub xsdt_address: u64,
     pub extended_checksum: u8,
-    pub reserved: [u8; 3]
+    pub reserved: [u8; 3],
 }
 
 #[allow(dead_code)]
@@ -75,15 +75,11 @@ impl DescriptionPointerTable for RSDP {
     }
 }
 
-
 impl RSDP {
     pub fn new_from_rsd_ptr<'a>(ptr: u64) -> &'a RSDP {
-        unsafe {
-            &*(ptr as *const RSDP)
-        }
+        unsafe { &*(ptr as *const RSDP) }
     }
 }
-
 
 impl DescriptionPointerTable for XSDP {
     fn get_signature(&self) -> [u8; 8] {
@@ -119,26 +115,25 @@ impl DescriptionPointerTable for XSDP {
 
 impl XSDP {
     pub fn new_xsdp_from_rsd_ptr<'a>(ptr: u64) -> &'a XSDP {
-        unsafe {
-            &*(ptr as *const XSDP)
-        }
+        unsafe { &*(ptr as *const XSDP) }
     }
 }
 
 // ============================================================
 //              **SERCHING THE MEMORY FOR RSDP**
 // ============================================================
-pub fn get_rsdp_address(physical_memory_offset: u64) -> u64 {
+pub fn rsdp_fallback_search_in_bios() -> Option<VirtAddr> {
     unsafe {
-        let mut addr = BIOS_START;
-        while addr <= BIOS_END {
-            let vaddr = (addr + physical_memory_offset) as *const u8;
+        let mut addr = physical_to_virtual(BIOS_START);
+        let end = physical_to_virtual(BIOS_END);
+        while addr.as_u64() <= end.as_u64() {
+            let vaddr = addr.as_u64() as *const u8;
             let slice = core::slice::from_raw_parts(vaddr, 8);
             if slice == RSD_EXPECTED_SIGNATURE {
-                return addr + physical_memory_offset;
+                return Some(addr);
             }
             addr += 16;
         }
-        BIOS_START
+        None
     }
 }

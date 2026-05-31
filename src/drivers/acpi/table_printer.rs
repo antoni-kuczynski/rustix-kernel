@@ -1,10 +1,10 @@
-use alloc::string::String;
 use crate::asm::inw;
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use crate::vgaprintln;
+use alloc::string::String;
 
 #[allow(dead_code)]
 pub trait ACPITablePrinter {
@@ -20,7 +20,10 @@ impl ACPITablePrinter for RSDP {
         let rsdt_address = self.rsdt_address;
 
         vgaprintln!("==== RSDP Table Descriptor) ====");
-        vgaprintln!("Signature          : {}", String::from_utf8_lossy(&signature));
+        vgaprintln!(
+            "Signature          : {}",
+            String::from_utf8_lossy(&signature)
+        );
         vgaprintln!("Checksum           : {:#04x}", checksum);
         vgaprintln!("OEM ID             : {}", String::from_utf8_lossy(&oem_id));
         vgaprintln!("Revision           : {}", revision);
@@ -42,7 +45,10 @@ impl ACPITablePrinter for XSDP {
         let reserved = self.reserved;
 
         vgaprintln!("==== XSDP Table Descriptor) ====");
-        vgaprintln!("Signature          : {}", String::from_utf8_lossy(&signature));
+        vgaprintln!(
+            "Signature          : {}",
+            String::from_utf8_lossy(&signature)
+        );
         vgaprintln!("Checksum           : {:#04x}", checksum);
         vgaprintln!("OEM ID             : {}", String::from_utf8_lossy(&oem_id));
         vgaprintln!("Revision           : {}", revision);
@@ -74,7 +80,10 @@ impl ACPITablePrinter for RSDT {
         vgaprintln!("  Revision:  {}", revision);
         vgaprintln!("  Checksum:  {}", checksum);
         vgaprintln!("  OEM ID:    {:?}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!("  OEM Table ID: {:?}", String::from_utf8_lossy(&oem_table_id));
+        vgaprintln!(
+            "  OEM Table ID: {:?}",
+            String::from_utf8_lossy(&oem_table_id)
+        );
         vgaprintln!("  OEM Revision: {}", oem_revision);
         vgaprintln!("  Creator ID:   {:?}", creator_id);
         vgaprintln!("  Creator Rev:  {}", creator_revision);
@@ -106,7 +115,10 @@ impl ACPITablePrinter for XSDT {
         vgaprintln!("  Revision:  {}", revision);
         vgaprintln!("  Checksum:  {}", checksum);
         vgaprintln!("  OEM ID:    {:?}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!("  OEM Table ID: {:?}", String::from_utf8_lossy(&oem_table_id));
+        vgaprintln!(
+            "  OEM Table ID: {:?}",
+            String::from_utf8_lossy(&oem_table_id)
+        );
         vgaprintln!("  OEM Revision: {}", oem_revision);
         vgaprintln!("  Creator ID:   {:?}", creator_id);
         vgaprintln!("  Creator Rev:  {}", creator_revision);

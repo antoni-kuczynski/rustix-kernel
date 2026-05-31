@@ -1,61 +1,93 @@
 #![no_std]
 #![no_main]
 #![feature(abi_x86_interrupt)]
-/*
- * Created by Oskar Przybylski
- * 22/09/2025
- */
+#![allow(dead_code)]
+#![allow(unused_variables)]
 
 extern crate alloc;
 
-use core::{panic::PanicInfo};
-use bootloader::{entry_point, BootInfo};
-use crate::drivers::acpi::acpi::{acpi2_reset_command, enable_acpi};
-use crate::drivers::acpi::acpi_tables::{get_acpi_tables};
-use crate::drivers::pci::pci;
-use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::interrupts::hardware::pic8259::sleep;
-use crate::memory::mapping::BootInfoFrameAllocator;
-use crate::memory::pages;
-
+pub mod asm;
+mod boot;
 mod drivers;
 mod interrupts;
 mod memory;
-mod bootinfo;
-pub mod asm;
 mod graphics;
 
-entry_point!(_start);
-fn _start(boot_info: &'static BootInfo) -> ! {
-    bootinfo::show_vitals(&boot_info);
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
+use core::panic::PanicInfo;
+use crate::boot::cpuid::cpuid_init;
+use crate::boot::multiboot::{multiboot2_init};
+use crate::drivers::acpi::acpi_tables::acpi_init;
+use crate::drivers::apic::apic::apic_bsp_init;
+use crate::drivers::pci::pci::pci_init;
+use crate::interrupts::gdt::gdt_init;
+use crate::interrupts::idt_init;
+use crate::memory::dir_mapping::dir_mapping_init;
+use crate::memory::dma::dma_init;
+use crate::memory::eba::eba_init;
+use crate::memory::ioremap::ioremap_init;
+use crate::memory::kheap::kheap_init;
+use crate::memory::pmm::pmm_init;
+use crate::memory::secure_stack::switch_to_secure_stack;
 
-    interrupts::init_idt();
-    interrupts::gdt::init_gdt();
-    interrupts::hardware::pic8259::init_pics();
-    interrupts::enable();
+#[unsafe(no_mangle)]
+#[unsafe(link_section = ".multiboot2_header")]
+#[used]
+pub static MULTIBOOT2_HEADER: [u32; 6] = [
+    0xE85250D6,                 // magic
+    0,                          // architecture
+    24,                         // header length
+    !(0xE85250D6 + 0 + 24) + 1, // checksum
+    0,                          // end tag type
+    8,                          // end tag size
+];
 
-    let mut _offset_page_table = pages::init(&boot_info);
-    let mut _fa = BootInfoFrameAllocator::init(&boot_info.memory_map);
-    memory::gallocator::init(&mut _offset_page_table,&mut _fa)
-        .expect("heap init failed");
+unsafe extern "C" {
+    static endKernel: u32;
+    static earlyHeapStart: u64;
+    static earlyHeapEnd: u64;
+    static __oldMultibootPhysAddr: u32;
+}
 
-    let tables = get_acpi_tables(&boot_info).expect("Acpi tables init failed!");
-    enable_acpi(&tables).expect("Enabling ACPI failed!");
+fn kernel_main_post_stack() -> ! {
+    interrupts::interrupts_enable();
 
-    pci::pci_init();
-
-    loop{
+    loop {
         x86_64::instructions::hlt();
     }
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn rust_main() -> ! {
+    idt_init();
+    gdt_init();
+
+    eba_init();
+    cpuid_init();
+    multiboot2_init();
+    pmm_init();
+    dir_mapping_init();
+
+    kheap_init();
+    dma_init();
+    ioremap_init();
+
+    acpi_init();
+    apic_bsp_init();
+    pci_init();
+
+    switch_to_secure_stack()
+}
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::LightRed);
+    VGAWRITER
+        .lock()
+        .change_foreground_color(ColorTextMode::LightRed);
     vgaprintln!("=!==============================!=");
     vgaprintln!("Kernel panic! \n{}", _info);
     vgaprintln!("=!==============================!=");
-    loop{
+    loop {
         x86_64::instructions::hlt();
     }
 }

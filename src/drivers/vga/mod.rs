@@ -2,6 +2,7 @@ use alloc::boxed::Box;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+
 pub mod vga_text;
 pub mod vga_graphics;
 mod registers;

@@ -1,11 +1,10 @@
-
 /*
  * Created by Oskar Przybylski
  * 23/09/2025
  *
  * TSS is a legacy structure that was used for hardware context switching
  * Now it contains two stack tables (PST and IST).  Interrupt Stack table
- * allows us to swich stacks when excetions occur, and prevent triple faults 
+ * allows us to swich stacks when excetions occur, and prevent triple faults
  * from happening for ex. from kernel stack overflow.
  *
  * TSS has following format:
@@ -24,25 +23,35 @@
 */
 
 use lazy_static::lazy_static;
-use x86_64::{instructions::tables::load_tss, registers::segmentation::{Segment, CS}, structures::{gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector}, tss::TaskStateSegment}, VirtAddr};
+use x86_64::{
+    VirtAddr,
+    instructions::tables::load_tss,
+    registers::segmentation::{CS, Segment},
+    structures::{
+        gdt::{Descriptor, GlobalDescriptorTable, SegmentSelector},
+        tss::TaskStateSegment,
+    },
+};
 
-use crate::{drivers::vga::vga_text::{ColorTextMode, VGAWRITER}, vgaprint, vgaprintln};
+use crate::{
+    drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
+    print_ok_msg, vgaprint,
+};
 
-pub const DOUBLE_FAULT_IST_INDEX : u16 = 0;
+pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
-pub fn init_gdt() {
-    vgaprint!("Initlializing global descriptor table...");
+pub fn gdt_init() {
+    vgaprint!("Initializing global descriptor table...");
 
     GDT.0.load(); // load gdt 
 
-    unsafe { // it might break memory safety with invalid selectors
+    unsafe {
+        // it might break memory safety with invalid selectors
         CS::set_reg(GDT.1.code_selector); // set code selector register 
-        load_tss(GDT.1.tss_selector);     // set tss selector
+        load_tss(GDT.1.tss_selector); // set tss selector
     }
 
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::Green);
-    vgaprintln!(" OK!");
-    VGAWRITER.lock().change_foreground_color(ColorTextMode::White);
+    print_ok_msg!();
 }
 
 struct Selectors {
@@ -50,7 +59,7 @@ struct Selectors {
     tss_selector: SegmentSelector,
 }
 
-lazy_static!{
+lazy_static! {
     static ref TSS: TaskStateSegment = {
         // initialize the tss struct
         let mut tss = TaskStateSegment::new();
@@ -71,7 +80,7 @@ lazy_static!{
 
     static ref GDT: (GlobalDescriptorTable,Selectors) = {
         let mut gdt = GlobalDescriptorTable::new();
-        // tell CPU where kernel code is so we dont 
+        // tell CPU where kernel code is so we dont
         // get General Protection Fault in protected/long mode
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         let tss_selector  = gdt.append(Descriptor::tss_segment(&TSS));

@@ -1,9 +1,12 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
-use x86_64::{instructions::hlt, registers::control::Cr2, structures::idt::{InterruptStackFrame, PageFaultErrorCode}};
+use x86_64::{
+    instructions::hlt,
+    registers::control::Cr2,
+    structures::idt::{InterruptStackFrame, PageFaultErrorCode},
+};
 
-use crate::{vgaprintln};
-
+use crate::vgaprintln;
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -18,18 +21,18 @@ use crate::{vgaprintln};
  *  Division Error              0  (0x0)     Fault       #DE         No             Yes
  *  Debug                       1  (0x1)     Fault/Trap  #DB         No
  *  Non-maskable Interrupt      2  (0x2)     Interrupt   -           No
- *  Breakpoint                  3  (0x3)     Trap        #BP         No             Yes 
+ *  Breakpoint                  3  (0x3)     Trap        #BP         No             Yes
  *  Overflow                    4  (0x4)     Trap        #OF         No
  *  Bound Range Exceeded        5  (0x5)     Fault       #BR         No
- *  Invalid Optcode             6  (0x6)     Fault       #UD         No             Yes 
+ *  Invalid Optcode             6  (0x6)     Fault       #UD         No             Yes
  *  Device Not Available        7  (0x7)     Fault       #NM         No
- *  Double Fault                8  (0x8)     Abort       #DF         Yes (Zero)     Yes 
+ *  Double Fault                8  (0x8)     Abort       #DF         Yes (Zero)     Yes
  *  Reserved                    9  (0x9)     Fault       -           No
  *  Invalid TSS                 10 (0xA)     Fault       #TS         Yes
  *  Segment Not Present         11 (0xB)     Fault       #NP         Yes
  *  Stack-Segment Fault         12 (0xC)     Fault       #SS         Yes
- *  General Protection Fault    13 (0xD)     Fault       #GP         Yes            Yes 
- *  Page Fault                  14 (0xE)     Fault       #PF         Yes            Yes 
+ *  General Protection Fault    13 (0xD)     Fault       #GP         Yes            Yes
+ *  Page Fault                  14 (0xE)     Fault       #PF         Yes            Yes
  *  Reserved                    15 (0xF)     -           -           No
  *  x87 FP Exception            16 (0x10)    Fault       #MF         No
  *  Alignment Check             17 (0x11)    Fault       #AC         Yes
@@ -48,7 +51,7 @@ use crate::{vgaprintln};
  * TODO: implement handlers for all this exceptions ^
  *
  * The hardware enforces following format for the IDT.
- * We use Entry<F> from x86_64 crate 
+ * We use Entry<F> from x86_64 crate
  * Each entry must follow this 16-byte structure:
  *  Type    Name                    Description
  *  u16     Function Pointer[0:15]  The lower bits of the pointer to the handler function.
@@ -75,12 +78,11 @@ use crate::{vgaprintln};
 
 static LAST_EXCEPTION: AtomicU8 = AtomicU8::new(0);
 
-
 /* thanks to x86_64 we do not have to worry about calling convention */
 // this handler is invoked when x86_64 int3 is called
-pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame){
-    LAST_EXCEPTION.store(3,Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: BREAKPOINT: \n {:#?}",stack_frame);
+pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+    LAST_EXCEPTION.store(3, Ordering::SeqCst);
+    vgaprintln!("EXCEPTION: BREAKPOINT: \n {:#?}", stack_frame);
 }
 
 /* double fault handler can be invoked with this odly specific
@@ -105,36 +107,65 @@ pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFram
 * (the page fault handler is invoked),but a divide-by-zero fault
 * followed by a general-protection fault leads to a double fault.
 */
-pub extern "x86-interrupt" fn double_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64) -> !{
-    vgaprintln!("LAST_EXCEPTION: {:?}",LAST_EXCEPTION);
-    vgaprintln!("EXCEPTION: DOUBLE FAULT (_e:{}): \n {:?}",_error_code,stack_frame);
+pub extern "x86-interrupt" fn double_fault_handler(
+    stack_frame: InterruptStackFrame,
+    _error_code: u64,
+) -> ! {
+    vgaprintln!("LAST_EXCEPTION: {:?}", LAST_EXCEPTION);
+    vgaprintln!(
+        "EXCEPTION: DOUBLE FAULT (_e:{}): \n {:?}",
+        _error_code,
+        stack_frame
+    );
     panic!("Double fault occured");
 }
 
-pub extern "x86-interrupt" fn invalid_optcode_handler(stack_frame: InterruptStackFrame ){
+pub extern "x86-interrupt" fn invalid_optcode_handler(stack_frame: InterruptStackFrame) {
     LAST_EXCEPTION.store(6, Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: INVALID OPTCODE: \n {:?}",stack_frame);
-    loop{ hlt(); }
+    vgaprintln!("EXCEPTION: INVALID OPTCODE: \n {:?}", stack_frame);
+    loop {
+        hlt();
+    }
 }
 
-pub extern "x86-interrupt" fn general_protection_fault_handler(stack_frame: InterruptStackFrame, _error_code: u64){
+pub extern "x86-interrupt" fn general_protection_fault_handler(
+    stack_frame: InterruptStackFrame,
+    _error_code: u64,
+) {
     LAST_EXCEPTION.store(13, Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: GENERAL PROTECTION FAULT (_e:{}): \n {:?}",_error_code,stack_frame);
-    loop{ hlt(); }
+    vgaprintln!(
+        "EXCEPTION: GENERAL PROTECTION FAULT (_e:{}): \n {:?}",
+        _error_code,
+        stack_frame
+    );
+    loop {
+        hlt();
+    }
 }
 
-pub extern "x86-interrupt" fn page_fault_handler(stack_frame: InterruptStackFrame, _error_code: PageFaultErrorCode){
+pub extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: InterruptStackFrame,
+    _error_code: PageFaultErrorCode,
+) {
     LAST_EXCEPTION.store(14, Ordering::SeqCst);
     match Cr2::read() {
-        Ok(adress) => vgaprintln!("CR2 (Accesed adress): {:?}",adress),
-        Err(e)     => vgaprintln!("Could not read Cr2 register: {:?}",e),
+        Ok(adress) => vgaprintln!("CR2 (Accesed adress): {:?}", adress),
+        Err(e) => vgaprintln!("Could not read Cr2 register: {:?}", e),
     }
-    vgaprintln!("EXCEPTION: PAGE FAULT (_e:{:#?}): \n {:#?}",_error_code,stack_frame);
-    loop{ hlt(); }
+    vgaprintln!(
+        "EXCEPTION: PAGE FAULT (_e:{:#?}): \n {:#?}",
+        _error_code,
+        stack_frame
+    );
+    loop {
+        hlt();
+    }
 }
 
-pub extern "x86-interrupt" fn division_error_handler(stack_frame: InterruptStackFrame ){
+pub extern "x86-interrupt" fn division_error_handler(stack_frame: InterruptStackFrame) {
     LAST_EXCEPTION.store(0, Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: DIVISION ERROR: \n {:?}",stack_frame);
-    loop{ hlt(); }
+    vgaprintln!("EXCEPTION: DIVISION ERROR: \n {:?}", stack_frame);
+    loop {
+        hlt();
+    }
 }
