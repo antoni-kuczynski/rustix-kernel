@@ -10,6 +10,7 @@ use core::{mem, ptr};
 use crate::drivers::vga::CURRENT_VGA_MODE;
 use crate::drivers::vga::vga_fonts::*;
 use crate::drivers::vga::registers::vga_io::*;
+use crate::memory::_P2V_kernel;
 
 pub struct VgaVideoMode<const BUF_SIZE: usize> {
     pub video_width_px: usize, //res width
@@ -744,11 +745,11 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
             pitch: 320,
             pixel_width: 1,
             mode_value: 0x13,
-            video_buffer_vga1: unsafe { &mut *(0xA0000 as *mut [u8; 64000]) },
+            video_buffer_vga1: unsafe { &mut *(_P2V_kernel(0xA0000) as *mut [u8; 64000]) },
             back_buffer_heap: vec![0x00; 64000],
-            video_buffer_vga2: unsafe { &mut *(0xA0000 as *mut [u8; 64000]) }, //not used here
+            video_buffer_vga2: unsafe { &mut *(_P2V_kernel(0xA0000) as *mut [u8; 64000]) }, //not used here
             current_write_plane: 0x00, //not used here,
-            active_buf: unsafe { &mut *(0xA0000 as *mut [u8; 64000]) } //not used here
+            active_buf: unsafe { &mut *(_P2V_kernel(0xA0000) as *mut [u8; 64000]) } //not used here
         }
     }
 

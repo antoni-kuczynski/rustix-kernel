@@ -1,20 +1,18 @@
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use crate::interrupts::hardware::pic8259::keyboard_interrupt_handler;
 use crate::{
     drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
     interrupts::{
         exceptions::*,
         gdt::DOUBLE_FAULT_IST_INDEX,
-        hardware::pic8259::{PicInterruptIndex, timer_interrupt_handler},
     },
     print_ok_msg, vgaprint,
 };
+use crate::drivers::apic::apic::{apic_error_interrupt_handler, apic_spurious_interrupt_handler, lapic_timer_interrupt_handler, LAPIC_ERROR_VECTOR, LAPIC_SPURIOUS_VECTOR_IDT_INDEX, LAPIC_TIMER_VECTOR};
 
 pub mod exceptions;
 pub mod gdt;
-pub mod hardware;
 
 lazy_static! {
     static ref IDT: InterruptDescriptorTable = {
@@ -33,11 +31,9 @@ lazy_static! {
             }
 
         // interrupts
-        idt[PicInterruptIndex::Timer.as_u8()]
-            .set_handler_fn(timer_interrupt_handler);
-        idt[PicInterruptIndex::Keyboard.as_u8()]
-            .set_handler_fn(keyboard_interrupt_handler);
-
+        idt[LAPIC_TIMER_VECTOR].set_handler_fn(lapic_timer_interrupt_handler);
+        idt[LAPIC_SPURIOUS_VECTOR_IDT_INDEX].set_handler_fn(apic_spurious_interrupt_handler);
+        idt[LAPIC_ERROR_VECTOR].set_handler_fn(apic_error_interrupt_handler);
         idt
     };
 }

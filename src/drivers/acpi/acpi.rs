@@ -3,17 +3,17 @@
  * 01/11/2025
  */
 use crate::asm::{inw, outb, outw};
-use crate::drivers::acpi::acpi_tables::{ACPI_TABLES, ACPISignature};
+use crate::drivers::acpi::acpi_tables::{ACPI_TABLES, ACPISignature, acpi_get_sdt_table, acpi_get_revision};
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{DSDT, S5Obj};
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::drivers::vga::vga_text::ColorTextMode;
 use crate::drivers::vga::vga_text::VGAWRITER;
-use crate::interrupts::hardware::pic8259::get_current_time_millis;
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::{print_fail_msg, print_ok_msg, vgaprint};
 use core::fmt::Error;
 use x86_64::{PhysAddr, VirtAddr};
+use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 
 #[allow(dead_code)]
 pub fn enable_acpi() -> Result<(), Error> {
@@ -26,7 +26,7 @@ pub fn enable_acpi() -> Result<(), Error> {
         Some(x) => x,
     };
     unsafe {
-        let fadt: &FADT = match tables.find_sdt_table(ACPISignature::FADT) {
+        let fadt: &FADT = match acpi_get_sdt_table(ACPISignature::FADT) {
             None => {
                 return Err(Error);
             }
@@ -36,11 +36,11 @@ pub fn enable_acpi() -> Result<(), Error> {
         outb(fadt.smi_command_port as u16, fadt.acpi_enable);
 
         //check if ACPI is actually enabled
-        let mut prev_time = get_current_time_millis();
+        let mut prev_time = timer_lapic_uptime_ms();
         let mut current_time;
         let mut d_time = 0; //wait for 3 seconds (linux approach)
         while (inw(fadt.pm1a_control_block as u16) & 1 == 0) && d_time < 3_000 {
-            current_time = get_current_time_millis();
+            current_time = timer_lapic_uptime_ms();
             d_time += current_time - prev_time;
             prev_time = current_time;
         }
@@ -64,7 +64,7 @@ pub fn acpi_soft_off_state() -> Result<(), Error> {
         Some(x) => x,
     };
 
-    let facp_ptr: VirtAddr = match tables.find_sdt_table(ACPISignature::FADT) {
+    let facp_ptr: VirtAddr = match acpi_get_sdt_table(ACPISignature::FADT) {
         Some(x) => x,
         None => return Err(Error),
     };
@@ -96,11 +96,11 @@ pub fn acpi2_reset_command() -> Result<(), Error> {
         Some(x) => x,
     };
 
-    if tables.get_revision() != AcpiRevision::Acpi20 {
+    if acpi_get_revision() != AcpiRevision::Acpi20 {
         return Err(Error);
     }
 
-    let facp_ptr: VirtAddr = match tables.find_sdt_table(ACPISignature::FADT) {
+    let facp_ptr: VirtAddr = match acpi_get_sdt_table(ACPISignature::FADT) {
         Some(x) => x,
         None => return Err(Error),
     };

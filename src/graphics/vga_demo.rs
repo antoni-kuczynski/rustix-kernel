@@ -4,8 +4,8 @@ use alloc::format;
 use alloc::string::String;
 use crate::graphics::color::ColorU8;
 use crate::graphics::graphics::Graphics;
-use crate::interrupts::hardware::pic8259::get_current_time_millis;
 use crate::{point, rect};
+use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 use crate::drivers::vga::vga_fonts::VgaFont;
 use crate::graphics::test_bitmap::get_my_cat_bitmap;
 
@@ -51,10 +51,10 @@ pub fn vga_demo(mut g: Graphics) {
         ColorU8::from_u24_rgb_to_u8(228, 96, 24),
     ];
 
-    let mut previous_time = get_current_time_millis();
+    let mut previous_time = timer_lapic_uptime_ms();
 
     loop {
-        let current_time = get_current_time_millis();
+        let current_time = timer_lapic_uptime_ms();
         let mut delta_time = current_time - previous_time;
         if delta_time == 0 {
             delta_time = 1;

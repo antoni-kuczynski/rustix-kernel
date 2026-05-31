@@ -11,10 +11,13 @@ mod boot;
 mod drivers;
 mod interrupts;
 mod memory;
+mod graphics;
 
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::{KERNEL_PHYS_BASE, KERNEL_VIRT_BASE};
 use core::panic::PanicInfo;
+use crate::graphics::graphics::Graphics;
+use crate::graphics::vga_demo::vga_demo;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -37,7 +40,8 @@ unsafe extern "C" {
 
 fn kernel_main_post_stack() -> ! {
     drivers::acpi::acpi_tables::acpi_init();
-    // pci::pci_init();
+    drivers::apic::apic::apic_bsp_init();
+    drivers::pci::pci::pci_init();
     interrupts::interrupts_enable();
 
     // kheap_test::run_kheap_tests(&mut *ALLOCATOR.lock());
@@ -107,7 +111,7 @@ fn kernel_main_post_stack() -> ! {
 pub extern "C" fn rust_main() -> ! {
     interrupts::idt_init();
     interrupts::gdt::gdt_init();
-    interrupts::hardware::pic8259::pics_init();
+    // interrupts::hardware::pic8259::pics_init();
 
     memory::eba::eba_init();
     boot::cpuid::cpuid_init();

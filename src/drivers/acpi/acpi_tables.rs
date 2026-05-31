@@ -25,6 +25,7 @@ impl ACPISignature {
     pub const XSDT: ACPISignature = ACPISignature(*b"XSDT");
     pub const FADT: ACPISignature = ACPISignature(*b"FACP");
     pub const DSDT: ACPISignature = ACPISignature(*b"DSDT");
+    pub const MADT: ACPISignature = ACPISignature(*b"APIC");
 
     pub fn as_str<'a>(&self) -> &'a str {
         match self {
@@ -32,6 +33,7 @@ impl ACPISignature {
             &ACPISignature::XSDT => "XSDT",
             &ACPISignature::FADT => "FADT",
             &ACPISignature::DSDT => "DSDT",
+            &ACPISignature::MADT => "APIC",
             _ => "----",
         }
     }
@@ -76,7 +78,7 @@ impl ACPITables {
         }
     }
 
-    pub fn get_revision(&self) -> AcpiRevision {
+    fn get_revision(&self) -> AcpiRevision {
         match self.xsdp {
             Some(_) => AcpiRevision::Acpi20,
             None => match self.rsdp {
@@ -86,7 +88,7 @@ impl ACPITables {
         }
     }
 
-    pub fn find_sdt_table(&self, signature: ACPISignature) -> Option<VirtAddr> {
+    fn find_sdt_table(&self, signature: ACPISignature) -> Option<VirtAddr> {
         for i in 0..self.rsdt_mappings.len() {
             let ptr = PhysAddr::new(self.rsdt_mappings[i]);
             let header = ACPISDTHeader::new_from_virt_addr(physical_to_virtual(ptr));
@@ -173,3 +175,13 @@ pub fn acpi_init() {
     ACPI_TABLES.call_once(|| tables);
     enable_acpi().expect("acpi emabling failed");
 }
+
+pub fn acpi_get_sdt_table(signature: ACPISignature) -> Option<VirtAddr> {
+    ACPI_TABLES.get()?.find_sdt_table(signature)
+}
+
+pub fn acpi_get_revision() -> AcpiRevision {
+    ACPI_TABLES.get().expect("ACPI not initialized!").get_revision()
+}
+
+

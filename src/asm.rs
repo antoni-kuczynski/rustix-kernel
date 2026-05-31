@@ -78,3 +78,21 @@ pub unsafe fn inl(port: u16) -> u32 {
         value
     }
 }
+
+#[inline]
+pub unsafe fn rdmsr(msr: u32) -> u64 {
+    unsafe {
+        let low: u32;
+        let high: u32;
+
+        asm!(
+        "rdmsr",
+        in("ecx") msr,
+        out("eax") low,
+        out("edx") high,
+        options(nomem, nostack, preserves_flags),
+        );
+
+        ((high as u64) << 32) | (low as u64)
+    }
+}

@@ -20,7 +20,7 @@ pub fn init_usb_controller(pci_dev: &PciDeviceHeader) {
         PIF_UHCI_CONTROLLER => {
             vgaprint!("Initializing UHCI...TODO\n");
             let bar = PciBAR::get(&pci_dev, 4);
-            bar.print();
+            // bar.print();
         },
         PIF_OHCI_CONTROLLER => {
             vgaprint!("Initializing OHCI...TODO\n");
@@ -28,7 +28,7 @@ pub fn init_usb_controller(pci_dev: &PciDeviceHeader) {
         PIF_EHCI_CONTROLLER => {
             vgaprint!("Initializing EHCI...TODO\n");
             let bar = PciBAR::get(&pci_dev, 0);
-            bar.print();
+            // bar.print();
         },
         PIF_XHCI_CONTROLLER => {
             vgaprint!("Initializing XHCI...TODO\n");
