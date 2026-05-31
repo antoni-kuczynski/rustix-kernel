@@ -1,11 +1,18 @@
 [unstable]
 build-std-features = ["compiler-builtins-mem"]
 build-std = ["core", "compiler_builtins", "alloc"]
+json-target-spec = true
+
+[env]
+RUST_TARGET_PATH = { value = ".", relative = true }
+
 [build]
-target = "x86_64-rustix.json"
-[target.'cfg(target_os = "none")']
+target = "x86_64-rustix"
+
+[target.x86_64-rustix]
 rustflags = [
+    "-Z", "unstable-options",
     "-C", "link-arg=boot/o/multiboot.o",
     "-C", "link-arg=boot/o/entry.o",
-    "-C", "link-arg=-Tlinker.ld"
+    "-C", "link-arg=-Tlinker.ld",
 ]

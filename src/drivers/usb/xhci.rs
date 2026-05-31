@@ -15,16 +15,12 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
-use bootloader::BootInfo;
 use x86_64::structures::paging::OffsetPageTable;
 use x86_64::VirtAddr;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType, NoMSIXCapabilities, TimeoutError};
 use crate::drivers::pci::pci_io::{pci_read16, pci_read32, pci_read8, pci_write16};
-use crate::drivers::usb::interrupts::xhci_interrupt_handler::XHCIInterruptIndex;
-use crate::interrupts::hardware::pic8259::{get_ticks, pic_get_ticks_per_ms};
-use crate::memory::pages::virtual_to_physical;
 use crate::vgaprintln;
 /*
 Base
@@ -1146,7 +1142,7 @@ impl TrbRing {
         trbs[last_index].set_cycle(true);
 
         let virt = VirtAddr::new(trbs.as_mut_ptr() as *mut u64 as u64);
-        let phys = match virtual_to_physical(virt, offset_page_table) {
+        let phys = match virtual_to_physical(virt) {
             Some(x) => x,
             None => return Err(TrbCreationError())
         };
@@ -1514,7 +1510,7 @@ impl<'a> XHCI<'a> {
 
 
 impl PciDeviceInitializer for XHCI<'_> {
-    fn initialize(pci_device: &PciDeviceHeader, boot_info: &BootInfo, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
         let bar = PciBAR::get(pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
@@ -1758,6 +1754,7 @@ fn alloc_aligned_trb_array(len: usize, align: usize) -> &'static mut [Trb] {
 }
 
 use core::mem::{size_of, forget};
+use crate::memory::paging::virtual_to_physical;
 
 pub fn alloc_aligned_erst() -> &'static mut ERST {
     let total_bytes = size_of::<ERST>() + 64;

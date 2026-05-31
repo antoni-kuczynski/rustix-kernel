@@ -4,7 +4,8 @@ use crate::drivers::pci::pci_device::PciDeviceHeader;
 use crate::drivers::pci::pci_bar::PciBAR;
 
 pub mod uhci;
-
+pub mod xhci;
+pub mod ehci;
 
 const PIF_UHCI_CONTROLLER: u8 = 0x00;
 const PIF_OHCI_CONTROLLER: u8 = 0x10;
