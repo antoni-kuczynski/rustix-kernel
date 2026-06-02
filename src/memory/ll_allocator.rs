@@ -6,7 +6,6 @@
  * 20/04/2026
  */
 use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use crate::memory::{align_up, FRAME_SIZE};
 use crate::memory::page_tables::{PageSize, PageTableEntry};
 use crate::memory::paging::{
     virtual_to_physical, vmm_map_page, vmm_map_page_ext, vmm_map_range_ext, vmm_unmap_page,
@@ -14,6 +13,7 @@ use crate::memory::paging::{
 use crate::memory::pmm::{
     pmm_allocate_contiguous, pmm_allocate_frame, pmm_free_frame, pmm_free_range,
 };
+use crate::memory::{FRAME_SIZE, align_up};
 use crate::vgaprintln;
 use core::alloc::Layout;
 use core::cmp::PartialEq;
@@ -725,7 +725,5 @@ impl LinkedListAllocator {
         self.try_shrink_top();
     }
 }
-
-
 
 unsafe impl Send for LinkedListAllocator {}

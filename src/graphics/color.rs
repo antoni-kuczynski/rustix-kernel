@@ -18,15 +18,14 @@ impl ColorU8 {
     pub const CYAN: Self = Self(0b00011111); //mix of green and blue
     pub const MAGENTA: Self = Self(0b11100011); //mix of red and blue
 
-
     pub fn from_u24_rgb_to_u8(r: u8, g: u8, b: u8) -> Self {
         //Returns "compressed" color from 24bit to 8bit
         /*
         7   6   5   4   3   2   1   0
         R   R   R   G   G   G   B   B
          */
-        let r_dac =  r & 0b11100000; //3 bytes
-        let g_dac =  g >> 5 << 2; //3 bytes
+        let r_dac = r & 0b11100000; //3 bytes
+        let g_dac = g >> 5 << 2; //3 bytes
         let b_dac = b >> 6; //2 bytes
         ColorU8(r_dac | g_dac | b_dac)
     }

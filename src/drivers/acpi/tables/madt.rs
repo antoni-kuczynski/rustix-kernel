@@ -7,9 +7,9 @@
  */
 use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
+use crate::vgaprintln;
 use alloc::vec::Vec;
 use x86_64::VirtAddr;
-use crate::vgaprintln;
 
 #[repr(C, packed)]
 pub struct Madt {

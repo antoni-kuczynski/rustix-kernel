@@ -5,23 +5,23 @@
  * Created by Antoni Kuczyński
  * 30/05/2026
  */
-use crate::{print_ok_msg, vgaprintln, VGAWRITER};
 use crate::ColorTextMode;
+use crate::asm::{outb, rdmsr};
+use crate::boot::cpuid::CpuId;
+use crate::drivers::acpi::acpi_tables::{ACPISignature, acpi_get_sdt_table};
+use crate::drivers::acpi::tables::madt::Madt;
+use crate::drivers::apic::disable_pic;
+use crate::drivers::apic::pit::_pit_wait_ms;
+use crate::memory::ioremap::{IoAlloc, ioremap_permanent};
+use crate::memory::page_tables::PageSize;
+use crate::{VGAWRITER, print_ok_msg, vgaprintln};
+use crate::{print_fail_msg, vgaprint};
 use core::ops::Add;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Once;
 use x86_64::PhysAddr;
 use x86_64::structures::idt::InterruptStackFrame;
-use crate::asm::{outb, rdmsr};
-use crate::boot::cpuid::CpuId;
-use crate::drivers::acpi::acpi_tables::{acpi_get_sdt_table, ACPISignature};
-use crate::drivers::acpi::tables::madt::Madt;
-use crate::drivers::apic::disable_pic;
-use crate::memory::ioremap::{ioremap_permanent, IoAlloc};
-use crate::memory::page_tables::PageSize;
-use crate::{print_fail_msg, vgaprint};
-use crate::drivers::apic::pit::_pit_wait_ms;
 // ============================================================================
 // Local APIC / xAPIC constants
 // ============================================================================
@@ -45,23 +45,23 @@ pub const LAPIC_MMIO_SIZE: u64 = 0x1000;
 pub const LAPIC_ID: usize = 0x020;
 pub const LAPIC_VERSION: usize = 0x030;
 
-pub const LAPIC_TPR: usize = 0x080;       // Task Priority Register
-pub const LAPIC_APR: usize = 0x090;       // Arbitration Priority Register
-pub const LAPIC_PPR: usize = 0x0A0;       // Processor Priority Register
-pub const LAPIC_EOI: usize = 0x0B0;       // End Of Interrupt
-pub const LAPIC_RRD: usize = 0x0C0;       // Remote Read Register
-pub const LAPIC_LDR: usize = 0x0D0;       // Logical Destination Register
-pub const LAPIC_DFR: usize = 0x0E0;       // Destination Format Register
-pub const LAPIC_SVR: usize = 0x0F0;       // Spurious Interrupt Vector Register
+pub const LAPIC_TPR: usize = 0x080; // Task Priority Register
+pub const LAPIC_APR: usize = 0x090; // Arbitration Priority Register
+pub const LAPIC_PPR: usize = 0x0A0; // Processor Priority Register
+pub const LAPIC_EOI: usize = 0x0B0; // End Of Interrupt
+pub const LAPIC_RRD: usize = 0x0C0; // Remote Read Register
+pub const LAPIC_LDR: usize = 0x0D0; // Logical Destination Register
+pub const LAPIC_DFR: usize = 0x0E0; // Destination Format Register
+pub const LAPIC_SVR: usize = 0x0F0; // Spurious Interrupt Vector Register
 
-pub const LAPIC_ISR_BASE: usize = 0x100;  // In-Service Register, 0x100-0x170
-pub const LAPIC_TMR_BASE: usize = 0x180;  // Trigger Mode Register, 0x180-0x1F0
-pub const LAPIC_IRR_BASE: usize = 0x200;  // Interrupt Request Register, 0x200-0x270
+pub const LAPIC_ISR_BASE: usize = 0x100; // In-Service Register, 0x100-0x170
+pub const LAPIC_TMR_BASE: usize = 0x180; // Trigger Mode Register, 0x180-0x1F0
+pub const LAPIC_IRR_BASE: usize = 0x200; // Interrupt Request Register, 0x200-0x270
 
-pub const LAPIC_ESR: usize = 0x280;       // Error Status Register
+pub const LAPIC_ESR: usize = 0x280; // Error Status Register
 
-pub const LAPIC_ICR_LOW: usize = 0x300;   // Interrupt Command Register low
-pub const LAPIC_ICR_HIGH: usize = 0x310;  // Interrupt Command Register high
+pub const LAPIC_ICR_LOW: usize = 0x300; // Interrupt Command Register low
+pub const LAPIC_ICR_HIGH: usize = 0x310; // Interrupt Command Register high
 
 pub const LAPIC_LVT_TIMER: usize = 0x320;
 pub const LAPIC_LVT_THERMAL: usize = 0x330;
@@ -83,7 +83,6 @@ pub const LAPIC_SVR_FOCUS_PROCESSOR_CHECKING_DISABLE: u32 = 1 << 9;
 pub const LAPIC_SVR_EOI_BROADCAST_SUPPRESSION: u32 = 1 << 12;
 pub const LAPIC_SPURIOUS_VECTOR: u8 = 0xFF;
 
-
 // ============================================================================
 // LVT common bits
 // ============================================================================
@@ -102,7 +101,6 @@ pub const LAPIC_LVT_REMOTE_IRR: u32 = 1 << 14;
 pub const LAPIC_LVT_TRIGGER_LEVEL: u32 = 1 << 15;
 pub const LAPIC_LVT_MASKED: u32 = 1 << 16;
 pub const LAPIC_LVT_UNMASKED: u32 = 0 << 16;
-
 
 // ============================================================================
 // Local APIC Timer
@@ -168,9 +166,8 @@ pub const LAPIC_ERROR_VECTOR: u8 = 0xFE;
 pub struct Apic {
     phys_addr: PhysAddr,
     mmio_mapping: IoAlloc,
-    ticks_per_ms: u64
+    ticks_per_ms: u64,
 }
-
 
 impl Apic {
     unsafe fn new(phys_addr: PhysAddr) -> Apic {
@@ -183,7 +180,7 @@ impl Apic {
         Apic {
             phys_addr,
             mmio_mapping,
-            ticks_per_ms: 0
+            ticks_per_ms: 0,
         }
     }
 
@@ -199,7 +196,10 @@ impl Apic {
         self.lapic_write(LAPIC_TPR, 0);
 
         //mask all for now
-        self.lapic_write(LAPIC_LVT_TIMER, LAPIC_LVT_MASKED | LAPIC_TIMER_VECTOR as u32);
+        self.lapic_write(
+            LAPIC_LVT_TIMER,
+            LAPIC_LVT_MASKED | LAPIC_TIMER_VECTOR as u32,
+        );
         self.lapic_write(LAPIC_LVT_THERMAL, LAPIC_LVT_MASKED);
         self.lapic_write(LAPIC_LVT_PERF, LAPIC_LVT_MASKED);
         self.lapic_write(LAPIC_LVT_LINT0, LAPIC_LVT_MASKED);
@@ -220,7 +220,8 @@ impl Apic {
         self.lapic_write(
             LAPIC_LVT_TIMER,
             LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_MODE_ONE_SHOT | LAPIC_LVT_MASKED,
-        );        self.lapic_write(LAPIC_TIMER_INITIAL_COUNT, LAPIC_START_COUNT);
+        );
+        self.lapic_write(LAPIC_TIMER_INITIAL_COUNT, LAPIC_START_COUNT);
 
         _pit_wait_ms(calibration_ms);
 
@@ -232,20 +233,30 @@ impl Apic {
         let period_ms = 1000 / TIMER_HZ;
         let initial_count = ticks_per_ms * period_ms as u32;
 
-
         self.lapic_write(LAPIC_TIMER_DIVIDE_CONFIG, LAPIC_TIMER_DIVIDE_BY_16);
-        self.lapic_write(LAPIC_LVT_TIMER, LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_MODE_PERIODIC);
+        self.lapic_write(
+            LAPIC_LVT_TIMER,
+            LAPIC_TIMER_VECTOR as u32 | LAPIC_TIMER_MODE_PERIODIC,
+        );
         self.lapic_write(LAPIC_TIMER_INITIAL_COUNT, initial_count);
     }
 
     #[inline]
     pub unsafe fn lapic_write(&self, reg: usize, value: u32) {
-        write_volatile(self.mmio_mapping.virt_addr.add(reg as u64).as_u64() as *mut u32, value);
+        write_volatile(
+            self.mmio_mapping.virt_addr.add(reg as u64).as_u64() as *mut u32,
+            value,
+        );
     }
 
     #[inline]
     pub unsafe fn lapic_read(&self, reg: usize) -> u32 {
         read_volatile(self.mmio_mapping.virt_addr.add(reg as u64).as_u64() as *mut u32)
+    }
+
+    #[inline]
+    pub unsafe fn id(&self) -> u8 {
+        (self.lapic_read(LAPIC_ID) >> 24) as u8
     }
 
     #[inline]
@@ -262,8 +273,6 @@ impl Apic {
         ms * self.ticks_per_ms
     }
 }
-
-
 
 pub fn apic_bsp_init() {
     vgaprint!("Initializng APIC for BSP...");
@@ -288,7 +297,6 @@ pub fn apic_bsp_init() {
         let mut apic = Apic::new(PhysAddr::new(msr_addr));
         apic.enable();
         LAPIC.call_once(|| apic);
-
     }
     print_ok_msg!();
 }
@@ -304,9 +312,7 @@ pub extern "x86-interrupt" fn apic_error_interrupt_handler(_stack_frame: Interru
     vgaprintln!("NOT IMPLEMENTED YET - error vector");
 }
 
-pub extern "x86-interrupt" fn lapic_timer_interrupt_handler(
-    _stack_frame: InterruptStackFrame,
-) {
+pub extern "x86-interrupt" fn lapic_timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed) + 1;
 
     unsafe {
@@ -326,4 +332,3 @@ pub fn timer_lapic_sleep(ms: u64) {
         core::hint::spin_loop();
     }
 }
-

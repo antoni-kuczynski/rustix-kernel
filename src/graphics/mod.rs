@@ -1,5 +1,5 @@
-pub mod graphics;
-pub mod color;
 pub mod bitmap;
-pub mod vga_demo;
+pub mod color;
+pub mod graphics;
 pub mod test_bitmap;
+pub mod vga_demo;

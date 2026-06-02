@@ -1,14 +1,13 @@
-use crate::graphics::graphics::Rectangle;
-use crate::graphics::graphics::PointUnsigned;
-use alloc::format;
-use alloc::string::String;
-use crate::graphics::color::ColorU8;
-use crate::graphics::graphics::Graphics;
-use crate::{point, rect};
 use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 use crate::drivers::vga::vga_fonts::VgaFont;
+use crate::graphics::color::ColorU8;
+use crate::graphics::graphics::Graphics;
+use crate::graphics::graphics::PointUnsigned;
+use crate::graphics::graphics::Rectangle;
 use crate::graphics::test_bitmap::get_my_cat_bitmap;
-
+use crate::{point, rect};
+use alloc::format;
+use alloc::string::String;
 
 #[allow(dead_code)]
 pub fn vga_demo(mut g: Graphics) {
@@ -59,7 +58,6 @@ pub fn vga_demo(mut g: Graphics) {
         if delta_time == 0 {
             delta_time = 1;
         }
-
 
         let fps = 1_000_000 / delta_time;
         let fps_str: String = format!("FPS: {}", fps);
@@ -131,20 +129,39 @@ pub fn test_offscreen_primitives() {
     // Completely off-screen to the left / top
     g.fill_rect(&rect!(usize::MAX - 10, usize::MAX - 10, 20, 20));
     g.draw_rect(&rect!(usize::MAX - 10, usize::MAX - 10, 20, 20));
-    g.fill_triangle(&point!(usize::MAX - 5, 0), &point!(usize::MAX - 1, 0), &point!(usize::MAX - 3, 5));
-    g.draw_triangle(&point!(usize::MAX - 5, 0), &point!(usize::MAX - 1, 0), &point!(usize::MAX - 3, 5));
+    g.fill_triangle(
+        &point!(usize::MAX - 5, 0),
+        &point!(usize::MAX - 1, 0),
+        &point!(usize::MAX - 3, 5),
+    );
+    g.draw_triangle(
+        &point!(usize::MAX - 5, 0),
+        &point!(usize::MAX - 1, 0),
+        &point!(usize::MAX - 3, 5),
+    );
     g.fill_elipse(&point!(usize::MAX - 10, usize::MAX - 10), 15, 15);
     g.draw_elipse(&point!(usize::MAX - 10, usize::MAX - 10), 15, 15);
     g.draw_line(&point!(usize::MAX - 10, 0), &point!(usize::MAX - 5, 5));
-    g.draw_bitmap(&point!(usize::MAX - 10, usize::MAX - 10), &get_my_cat_bitmap().unwrap());
+    g.draw_bitmap(
+        &point!(usize::MAX - 10, usize::MAX - 10),
+        &get_my_cat_bitmap().unwrap(),
+    );
     g.draw_char(&point!(usize::MAX - 10, usize::MAX - 10), 'X');
     g.draw_str(&point!(usize::MAX - 10, usize::MAX - 10), "Offscreen");
 
     // Completely off-screen to the right / bottom
     g.fill_rect(&rect!(w + 10, h + 10, 20, 20));
     g.draw_rect(&rect!(w + 10, h + 10, 20, 20));
-    g.fill_triangle(&point!(w + 5, h + 5), &point!(w + 10, h + 10), &point!(w + 15, h + 5));
-    g.draw_triangle(&point!(w + 5, h + 5), &point!(w + 10, h + 10), &point!(w + 15, h + 5));
+    g.fill_triangle(
+        &point!(w + 5, h + 5),
+        &point!(w + 10, h + 10),
+        &point!(w + 15, h + 5),
+    );
+    g.draw_triangle(
+        &point!(w + 5, h + 5),
+        &point!(w + 10, h + 10),
+        &point!(w + 15, h + 5),
+    );
     g.fill_elipse(&point!(w + 20, h + 20), 10, 10);
     g.draw_elipse(&point!(w + 20, h + 20), 10, 10);
     g.draw_line(&point!(w + 1, h + 1), &point!(w + 5, h + 5));
@@ -155,8 +172,16 @@ pub fn test_offscreen_primitives() {
     // Partially off-screen (should be clipped, not panic)
     g.fill_rect(&rect!(w - 5, h - 5, 20, 20));
     g.draw_rect(&rect!(w - 5, h - 5, 20, 20));
-    g.fill_triangle(&point!(w - 2, h - 2), &point!(w + 5, h - 2), &point!(w, h + 5));
-    g.draw_triangle(&point!(w - 2, h - 2), &point!(w + 5, h - 2), &point!(w, h + 5));
+    g.fill_triangle(
+        &point!(w - 2, h - 2),
+        &point!(w + 5, h - 2),
+        &point!(w, h + 5),
+    );
+    g.draw_triangle(
+        &point!(w - 2, h - 2),
+        &point!(w + 5, h - 2),
+        &point!(w, h + 5),
+    );
     g.fill_elipse(&point!(w - 1, h - 1), 15, 15);
     g.draw_elipse(&point!(w - 1, h - 1), 15, 15);
     g.draw_line(&point!(w - 1, h - 1), &point!(w + 10, h + 10));

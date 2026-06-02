@@ -13,10 +13,11 @@ grub-mkrescue -o rustix.iso iso
 qemu-system-x86_64 \
   -cdrom rustix.iso \
   -m 8G \
-  -device qemu-xhci,id=xhci \
+  -device qemu-xhci,id=xhci,msi=on,msix=on \
   -device usb-ehci,id=ehci \
   -device pci-ohci,id=ohci \
   -device piix3-usb-uhci,id=uhci \
   -d int,cpu_reset \
   -no-reboot \
-  -D log.txt
+  -D log.txt \
+  -monitor stdio

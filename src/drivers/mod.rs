@@ -1,5 +1,5 @@
 pub mod acpi;
-pub mod vga;
+pub mod apic;
 pub mod pci;
 pub mod usb;
-pub mod apic;
+pub mod vga;

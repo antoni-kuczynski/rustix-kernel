@@ -8,6 +8,7 @@ use x86_64::{PhysAddr, VirtAddr};
 pub mod dir_mapping;
 pub mod dma;
 pub mod eba;
+pub mod ioremap;
 pub mod kheap;
 pub mod kheap_test;
 mod ll_allocator;
@@ -15,7 +16,6 @@ pub mod page_tables;
 pub mod paging;
 pub mod pmm;
 pub mod secure_stack;
-pub mod ioremap;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;

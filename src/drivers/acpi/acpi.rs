@@ -3,17 +3,19 @@
  * 01/11/2025
  */
 use crate::asm::{inw, outb, outw};
-use crate::drivers::acpi::acpi_tables::{ACPI_TABLES, ACPISignature, acpi_get_sdt_table, acpi_get_revision};
+use crate::drivers::acpi::acpi_tables::{
+    ACPI_TABLES, ACPISignature, acpi_get_revision, acpi_get_sdt_table,
+};
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{DSDT, S5Obj};
 use crate::drivers::acpi::tables::fadt::FADT;
+use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 use crate::drivers::vga::vga_text::ColorTextMode;
 use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::{print_fail_msg, print_ok_msg, vgaprint};
 use core::fmt::Error;
 use x86_64::{PhysAddr, VirtAddr};
-use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 
 #[allow(dead_code)]
 pub fn enable_acpi() -> Result<(), Error> {

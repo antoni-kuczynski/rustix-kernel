@@ -4,12 +4,12 @@
  */
 use crate::boot::multiboot::{multiboot2_new_rsdp, multiboot2_old_rsdp};
 use crate::drivers::acpi::acpi::enable_acpi;
+use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::rsdp::{
     DescriptionPointerTable, RSDP, XSDP, rsdp_fallback_search_in_bios,
 };
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
-use crate::drivers::acpi::tables::{AcpiRevision};
 use crate::memory::dir_mapping::physical_to_virtual;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -182,7 +182,8 @@ pub fn acpi_get_sdt_table(signature: ACPISignature) -> Option<VirtAddr> {
 }
 
 pub fn acpi_get_revision() -> AcpiRevision {
-    ACPI_TABLES.get().expect("ACPI not initialized!").get_revision()
+    ACPI_TABLES
+        .get()
+        .expect("ACPI not initialized!")
+        .get_revision()
 }
-
-

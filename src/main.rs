@@ -9,17 +9,16 @@ extern crate alloc;
 pub mod asm;
 mod boot;
 mod drivers;
+mod graphics;
 mod interrupts;
 mod memory;
-mod graphics;
 
-use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
-use core::panic::PanicInfo;
 use crate::boot::cpuid::cpuid_init;
-use crate::boot::multiboot::{multiboot2_init};
+use crate::boot::multiboot::multiboot2_init;
 use crate::drivers::acpi::acpi_tables::acpi_init;
 use crate::drivers::apic::apic::apic_bsp_init;
 use crate::drivers::pci::pci::pci_init;
+use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::interrupts::gdt::gdt_init;
 use crate::interrupts::idt_init;
 use crate::memory::dir_mapping::dir_mapping_init;
@@ -29,6 +28,7 @@ use crate::memory::ioremap::ioremap_init;
 use crate::memory::kheap::kheap_init;
 use crate::memory::pmm::pmm_init;
 use crate::memory::secure_stack::switch_to_secure_stack;
+use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".multiboot2_header")]
@@ -59,8 +59,8 @@ fn kernel_main_post_stack() -> ! {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rust_main() -> ! {
-    idt_init();
     gdt_init();
+    idt_init();
 
     eba_init();
     cpuid_init();
