@@ -2,17 +2,16 @@ use alloc::boxed::Box;
 use lazy_static::lazy_static;
 use spin::Mutex;
 
-
-pub mod vga_text;
-pub mod vga_graphics;
 mod registers;
 pub mod vga_fonts;
+pub mod vga_graphics;
+pub mod vga_text;
 
 // ============================================================
 //                     **CURRENT VGA OPERATION MODE**
 // ============================================================
 pub struct CurrentVgaMode {
-    val: Box<Option<u8>>
+    val: Box<Option<u8>>,
 }
 impl CurrentVgaMode {
     fn new() -> Self {

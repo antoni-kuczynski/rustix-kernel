@@ -4,7 +4,9 @@
  */
 use crate::drivers::pci::pci_device::PciDeviceHeader;
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
-use crate::__vgaprintln;
+use crate::memory::ioremap::{IoAlloc, ioremap_permanent};
+use crate::vgaprintln;
+use x86_64::PhysAddr;
 
 #[derive(PartialEq, Eq)]
 
@@ -12,12 +14,12 @@ pub struct PciBAR {
     base_address: u64,
     size: u64,
     bar_type: BarType,
-    prefetchable: bool
+    prefetchable: bool,
 }
 
 struct BarInfo {
     address: u32,
-    mask: u32
+    mask: u32,
 }
 
 #[derive(PartialEq, Eq)]
@@ -50,9 +52,7 @@ impl BarInfo {
 
         pci_write32(base_id, bar_offset, address);
 
-        BarInfo {
-            address, mask
-        }
+        BarInfo { address, mask }
     }
 }
 
@@ -71,7 +71,6 @@ impl PciBAR {
         let bar = BarInfo::get(bar_index, device.base_id());
         let address_low = bar.address;
         let mask_low = bar.mask;
-
 
         if (address_low & PCI_BAR_IO) != 0 {
             let base = (address_low & !0x3) as u64;
@@ -93,13 +92,9 @@ impl PciBAR {
         if mem_type == PCI_BAR_MEM_TYPE_64 {
             let bar_high = BarInfo::get(bar_index + 1, device.base_id());
 
-            let base =
-                ((bar_high.address as u64) << 32) |
-                    ((address_low & !0xF) as u64);
+            let base = ((bar_high.address as u64) << 32) | ((address_low & !0xF) as u64);
 
-            let size =
-                !(((bar_high.mask as u64) << 32) |
-                    ((mask_low & !0xF) as u64)) + 1;
+            let size = !(((bar_high.mask as u64) << 32) | ((mask_low & !0xF) as u64)) + 1;
 
             return PciBAR {
                 base_address: base,
@@ -150,15 +145,15 @@ impl PciBAR {
             BarType::Io => "I/O",
         };
 
-        __vgaprintln!("PCI BAR:");
-        __vgaprintln!("  Type         : {}", bar_type_str);
-        __vgaprintln!("  Base Address : 0x{:016x}", self.base_address);
-        __vgaprintln!("  Size         : 0x{:x} ({} bytes)", self.size, self.size);
-        __vgaprintln!("  Prefetchable : {}", self.prefetchable);
+        vgaprintln!("PCI BAR:");
+        vgaprintln!("  Type         : {}", bar_type_str);
+        vgaprintln!("  Base Address : 0x{:016x}", self.base_address);
+        vgaprintln!("  Size         : 0x{:x} ({} bytes)", self.size, self.size);
+        vgaprintln!("  Prefetchable : {}", self.prefetchable);
     }
 
-    pub fn base_address(&self) -> u64 {
-        self.base_address
+    pub fn base_address(&self) -> PhysAddr {
+        PhysAddr::new(self.base_address)
     }
 
     pub fn size(&self) -> u64 {
@@ -171,5 +166,13 @@ impl PciBAR {
 
     pub fn prefetchable(&self) -> bool {
         self.prefetchable
+    }
+
+    pub fn ioremap_checked(&self) -> IoAlloc {
+        let iomap = ioremap_permanent(self.base_address(), self.size(), self.size() as usize);
+        if iomap.virt_addr.is_null() {
+            panic!("Failed to map mmio for ehci!");
+        }
+        iomap
     }
 }
