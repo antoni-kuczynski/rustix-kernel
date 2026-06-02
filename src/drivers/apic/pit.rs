@@ -21,8 +21,6 @@ pub const PIT_PORT61_GATE2: u8 = 1 << 0;
 pub const PIT_PORT61_SPEAKER: u8 = 1 << 1;
 pub const PIT_PORT61_OUT2: u8 = 1 << 5;
 
-
-
 #[inline]
 pub unsafe fn _pit_wait_ms(ms: u16) {
     assert!(ms > 0);
