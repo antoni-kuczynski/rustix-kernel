@@ -9,7 +9,7 @@ pub struct Bitmap {
     pub mem: Vec<u8>,
     pub width: usize,
     pub height: usize,
-    pixel_width: usize
+    pixel_width: usize,
 }
 
 impl Bitmap {
@@ -17,12 +17,12 @@ impl Bitmap {
         if data.len() * pixel_width != width * height {
             return None;
         }
-        
+
         let tmp = Bitmap {
             mem: data,
             width,
             height,
-            pixel_width
+            pixel_width,
         };
         Some(tmp)
     }

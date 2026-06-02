@@ -3,7 +3,6 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-use x86_64::structures::paging::OffsetPageTable;
 use crate::vgaprintln;
 
 #[repr(C, packed)]
@@ -14,7 +13,7 @@ pub struct PciDeviceHeader {
     sub_class: u8,
     prog_info_byte: u8,
     header_type: u8,
-    base_id: u32
+    base_id: u32,
 }
 
 #[derive(Debug)]
@@ -23,16 +22,27 @@ pub enum PciDeviceInitError {
     InvalidBarType,
     InitializationFailure,
     TimeoutError,
-    NoMSIXCapabilities
+    NoMSIXCapabilities,
+    DmaAllocationFailure,
+    XhciControllerStopTimeout,
+    XhciControllerResetTimeout,
+    XhciControllerNotReadyTimeout,
+    XhciControllerStartTimeout,
+    XhciCommandRingInitFailure,
+    XhciMsixCapabilityNotFound,
+    XhciMsiCapabilityNotFound,
+    XhciNoSupportedInterruptMode,
+    XhciInsufficientMsixVectors,
+    XhciMsixTableBarInvalid,
+    XhciMsixPbaBarInvalid,
 }
 
 pub trait PciDeviceInitializer {
-    fn initialize(pci_device: &PciDeviceHeader, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError>;
+    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError>;
 }
 
-
 impl PciDeviceInitializer for PciDeviceHeader {
-    fn initialize(pci_device: &PciDeviceHeader, offset_page_table: &OffsetPageTable) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
         Err(PciDeviceInitError::NotImplemeted)
     }
 }
@@ -42,13 +52,25 @@ impl PciDeviceHeader {
         val
     }
 
-    pub fn new(vendor_id: u16, device_id: u16, class_code: u8, sub_class: u8, prog_info_byte: u8, header_type: u8, base_id: u32) -> Self {
+    pub fn new(
+        vendor_id: u16,
+        device_id: u16,
+        class_code: u8,
+        sub_class: u8,
+        prog_info_byte: u8,
+        header_type: u8,
+        base_id: u32,
+    ) -> Self {
         PciDeviceHeader {
-            vendor_id,device_id,class_code,sub_class,prog_info_byte,header_type, base_id
+            vendor_id,
+            device_id,
+            class_code,
+            sub_class,
+            prog_info_byte,
+            header_type,
+            base_id,
         }
     }
-
-
 
     pub fn print(&self) {
         let vendor_id = self.vendor_id;
@@ -97,4 +119,3 @@ impl PciDeviceHeader {
         self.base_id
     }
 }
-
