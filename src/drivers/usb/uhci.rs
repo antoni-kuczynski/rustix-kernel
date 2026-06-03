@@ -5,7 +5,7 @@
 use crate::asm::{outb, outl, outw};
 use crate::drivers::apic::apic::timer_lapic_sleep;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
-use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
+use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceInitializer};
 use alloc::boxed::Box;
 use x86_64::PhysAddr;
 //================================================================================
@@ -14,7 +14,7 @@ use x86_64::PhysAddr;
 //================================================================================
 #[allow(dead_code)]
 pub struct UHCI {
-    pci_header: PciDeviceHeader,
+    pci_header: PciDevice,
     frame_list: Box<[u32; 1024]>,
 }
 
@@ -29,7 +29,7 @@ fn io_port(base: PhysAddr, offset: u64) -> u16 {
 }
 
 impl PciDeviceInitializer for UHCI {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
         let pci_bar = PciBAR::get(&pci_device, 4);
 
         if pci_bar.bar_type() != &BarType::Io {

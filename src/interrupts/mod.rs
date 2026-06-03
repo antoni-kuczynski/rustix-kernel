@@ -26,7 +26,8 @@ unsafe fn init_static_idt(idt: &mut InterruptDescriptorTable) {
     // exceptions
     idt.breakpoint.set_handler_fn(breakpoint_handler);
     idt.invalid_opcode.set_handler_fn(invalid_optcode_handler);
-    idt.general_protection_fault.set_handler_fn(general_protection_fault_handler);
+    idt.general_protection_fault
+        .set_handler_fn(general_protection_fault_handler);
     idt.page_fault.set_handler_fn(page_fault_handler);
     idt.divide_error.set_handler_fn(division_error_handler);
     unsafe {
