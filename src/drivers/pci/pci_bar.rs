@@ -2,7 +2,7 @@
  * Created by Antoni Kuczyński
  * 25/12/2025
  */
-use crate::drivers::pci::pci_device::PciDeviceHeader;
+use crate::drivers::pci::pci_device::PciDevice;
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use crate::memory::ioremap::{IoAlloc, ioremap_permanent};
 use crate::vgaprintln;
@@ -67,7 +67,7 @@ I/O Space BAR Layout Bits 31-2 	Bit 1 	Bit 0
 
 #[allow(dead_code)]
 impl PciBAR {
-    pub fn get(device: &PciDeviceHeader, bar_index: u8) -> Self {
+    pub fn get(device: &PciDevice, bar_index: u8) -> Self {
         let bar = BarInfo::get(bar_index, device.base_id());
         let address_low = bar.address;
         let mask_low = bar.mask;
@@ -116,7 +116,7 @@ impl PciBAR {
         }
     }
 
-    pub fn from_bir(device: &PciDeviceHeader, bir: u8) -> Result<Self, &'static str> {
+    pub fn from_bir(device: &PciDevice, bir: u8) -> Result<Self, &'static str> {
         if bir > 5 {
             return Err("Invalid BIR (must be 0–5)");
         }

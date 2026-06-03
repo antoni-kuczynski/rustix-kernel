@@ -1,5 +1,6 @@
 pub mod xhci;
 mod xhci_endpoint_context;
+mod xhci_ext_cap;
 mod xhci_msix;
 mod xhci_portsc;
 mod xhci_slot_context;
@@ -58,3 +59,6 @@ const USB_CMD_HOST_CONTROLLER_RESET: u32 = 1 << 1;
 const USB_CMD_INTERRUPTER_ENABLE: u32 = 1 << 2;
 const INTERRUPTER_REGISTER_STRIDE: u64 = 0x20;
 const INTERRUPTER_MANAGEMENT_ENABLE: u32 = 1 << 1;
+//==================================================================================================
+pub const HCCPARAMS1_XECP_MASK: u32 = 0xFFFF_0000;
+pub const HCCPARAMS1_XECP_SHIFT: u32 = 16;

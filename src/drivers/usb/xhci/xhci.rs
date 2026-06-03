@@ -19,10 +19,16 @@ use crate::drivers::pci::pci_device::PciDeviceInitError::{
     XhciInsufficientMsixVectors, XhciMsiCapabilityNotFound, XhciMsixPbaBarInvalid,
     XhciMsixTableBarInvalid,
 };
-use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
-use crate::drivers::pci::pci_io::{pci_read8, pci_read16, pci_read32, pci_write16, pci_write32};
+use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceInitializer};
+use crate::drivers::pci::pci_io::{
+    PciVendor, pci_read8, pci_read16, pci_read32, pci_write16, pci_write32,
+};
+use crate::drivers::pci::pci_quirks::usb_intel_enable_xhci_ports;
 use crate::drivers::pci::*;
 use crate::drivers::usb::xhci::xhci_endpoint_context::*;
+use crate::drivers::usb::xhci::xhci_ext_cap::{
+    XhciPortInfo, XhciPortProtocol, parse_xhci_supported_protocols,
+};
 use crate::drivers::usb::xhci::xhci_msix::*;
 use crate::drivers::usb::xhci::xhci_portsc::PortStatusControl;
 use crate::drivers::usb::xhci::xhci_slot_context::*;
@@ -34,6 +40,7 @@ use crate::interrupts::vector::allocate_vectors;
 use crate::memory::dma::DmaAlloc;
 use crate::vgaprintln;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::mem::{align_of, size_of};
 use core::ops::Add;
@@ -61,6 +68,8 @@ const PCI_MSI_MESSAGE_DATA_64_OFFSET: u32 = 0x0C;
 const XHCI_INIT_TIMEOUT_MS: u64 = 1000;
 const RUNTIME_BASE_ALIGNMENT_MASK: u64 = !0x1f;
 const MAX_SLOTS_MASK: u32 = 0xFF;
+const MAX_PORTS_SHIFT: u32 = 24;
+const MAX_PORTS_MASK: u32 = 0xFF << MAX_PORTS_SHIFT;
 const CONTEXT_SIZE_64_BYTE_FLAG: u32 = 1 << 2;
 const CONTEXT_SIZE_64_BYTES: u32 = 64;
 const CONTEXT_SIZE_32_BYTES: u32 = 32;
@@ -73,6 +82,15 @@ const ERDP_RESERVED_BITS: u64 = 0xf;
 const LAPIC_MSI_ADDR: u64 = 0xFEE0_0000;
 const ERDP_PTR_MASK: u64 = !0xF;
 const ERDP_EHB: u64 = 1 << 3;
+const XHCI_EXT_CAP_ID_MASK: u32 = 0xFF;
+const XHCI_EXT_CAP_NEXT_MASK: u32 = 0xFF00;
+const XHCI_EXT_CAP_NEXT_SHIFT: u32 = 8;
+const XHCI_EXT_CAP_LEGACY_SUPPORT: u8 = 0x01;
+const XHCI_LEGACY_BIOS_OWNED: u32 = 1 << 16;
+const XHCI_LEGACY_OS_OWNED: u32 = 1 << 24;
+const XHCI_LEGACY_CTLSTS_OFFSET: u64 = 0x04;
+const XHCI_LEGACY_CTLSTS_CLEAR: u32 = 0xE000_0000;
+const XHCI_LEGACY_HANDOFF_TIMEOUT_MS: u64 = 100;
 
 #[derive(Clone, Copy)]
 pub(crate) enum XhciInterrupterKind {
@@ -89,7 +107,16 @@ fn msi_message_address() -> u64 {
     LAPIC_MSI_ADDR | (lapic_id << 12)
 }
 
-fn enable_pci_mmio_and_bus_mastering(pci_device: &PciDeviceHeader) {
+fn first_ext_cap_addr(base: VirtAddr, hccparams1: u32) -> Option<VirtAddr> {
+    let ext_cap_offset = (hccparams1 & HCCPARAMS1_XECP_MASK) >> HCCPARAMS1_XECP_SHIFT;
+    if ext_cap_offset == 0 {
+        None
+    } else {
+        Some(base.add((ext_cap_offset << 2) as u64))
+    }
+}
+
+fn enable_pci_mmio_and_bus_mastering(pci_device: &PciDevice) {
     let command = pci_read16(pci_device.base_id(), PCI_COMMAND_REGISTER);
     pci_write16(
         pci_device.base_id(),
@@ -171,7 +198,148 @@ unsafe fn start_controller(operational_base: VirtAddr) -> Result<(), PciDeviceIn
     )
 }
 
-fn find_pci_capability(pci_device: &PciDeviceHeader, capability_id: u8) -> Option<u8> {
+unsafe fn xhci_legacy_handoff(first_ext_cap_addr: Option<VirtAddr>) {
+    let Some(mut cap_addr) = first_ext_cap_addr else {
+        return;
+    };
+
+    for _ in 0..256 {
+        let header = mmio_read::<u32>(cap_addr, 0);
+        let cap_id = (header & XHCI_EXT_CAP_ID_MASK) as u8;
+        let next = ((header & XHCI_EXT_CAP_NEXT_MASK) >> XHCI_EXT_CAP_NEXT_SHIFT) as u8;
+
+        if cap_id == XHCI_EXT_CAP_LEGACY_SUPPORT {
+            if header & XHCI_LEGACY_BIOS_OWNED != 0 {
+                mmio_write::<u32>(cap_addr, 0, header | XHCI_LEGACY_OS_OWNED);
+
+                let start_ms = timer_lapic_uptime_ms();
+                loop {
+                    let current = mmio_read::<u32>(cap_addr, 0);
+                    if current & XHCI_LEGACY_BIOS_OWNED == 0 {
+                        break;
+                    }
+
+                    if timer_lapic_uptime_ms().wrapping_sub(start_ms)
+                        >= XHCI_LEGACY_HANDOFF_TIMEOUT_MS
+                    {
+                        vgaprintln!("xHCI legacy handoff timeout: USBLEGSUP={:#010x}", current);
+                        break;
+                    }
+                }
+            }
+
+            let legsup = mmio_read::<u32>(cap_addr, 0);
+            let legctlsts = mmio_read::<u32>(cap_addr, XHCI_LEGACY_CTLSTS_OFFSET);
+            mmio_write::<u32>(
+                cap_addr,
+                XHCI_LEGACY_CTLSTS_OFFSET,
+                XHCI_LEGACY_CTLSTS_CLEAR,
+            );
+            vgaprintln!(
+                "xHCI legacy handoff: USBLEGSUP={:#010x} USBLEGCTLSTS={:#010x}",
+                legsup,
+                legctlsts
+            );
+            return;
+        }
+
+        if next == 0 {
+            return;
+        }
+
+        cap_addr += (next as u64) * 4;
+    }
+
+    vgaprintln!("xHCI legacy handoff: extended capability chain too long");
+}
+
+fn enable_usb3_port_power(operational_base: VirtAddr, supported_protocols: &[XhciPortInfo]) {
+    let mut powered_ports = 0usize;
+
+    for port_info in supported_protocols {
+        if port_info.protocol != XhciPortProtocol::Usb3 || port_info.port_id == 0 {
+            continue;
+        }
+
+        let portsc = PortStatusControl::from_port(operational_base, port_info.port_id);
+        if portsc.pp_read() {
+            continue;
+        }
+
+        let mut write = PortStatusControl::write_from_raw(portsc.raw());
+        write.pp_write(true);
+        write.write_to_port(operational_base, port_info.port_id);
+        powered_ports += 1;
+    }
+
+    if powered_ports != 0 {
+        vgaprintln!("xHCI powered {} USB3 root hub ports", powered_ports);
+    }
+}
+
+fn debug_print_supported_protocols(supported_protocols: &[XhciPortInfo]) {
+    for port_info in supported_protocols {
+        if port_info.protocol == XhciPortProtocol::Unknown {
+            vgaprintln!("  port {}: unknown", port_info.port_id);
+            continue;
+        }
+
+        match port_info.raw_bps {
+            Some(raw_bps) => vgaprintln!(
+                "  port {}: {} {}.{} {:?} psiv {} {} slot_type {} proto {:#x}",
+                port_info.port_id,
+                port_info.protocol,
+                port_info.major,
+                port_info.minor,
+                port_info.speed,
+                port_info.psiv,
+                raw_bps,
+                port_info.slot_type,
+                port_info.protocol_defined
+            ),
+            None => vgaprintln!(
+                "  port {}: {} {}.{} {:?} psiv {} unknown slot_type {} proto {:#x}",
+                port_info.port_id,
+                port_info.protocol,
+                port_info.major,
+                port_info.minor,
+                port_info.speed,
+                port_info.psiv,
+                port_info.slot_type,
+                port_info.protocol_defined
+            ),
+        }
+    }
+}
+
+fn debug_print_usb3_portsc(operational_base: VirtAddr, supported_protocols: &[XhciPortInfo]) {
+    for port_info in supported_protocols {
+        if port_info.protocol == XhciPortProtocol::Usb2 || port_info.port_id == 0 {
+            continue;
+        }
+
+        let portsc = PortStatusControl::from_port(operational_base, port_info.port_id);
+        vgaprintln!(
+            "USB3 port {} PORTSC raw={:#010x} pp={} ccs={} ped={} pls={:?} ps={} cas={} chg[csc={} pec={} wrc={} prc={} plc={} cec={}]",
+            port_info.port_id,
+            portsc.raw(),
+            portsc.pp_read(),
+            portsc.ccs_read(),
+            portsc.ped_read(),
+            portsc.pls_read(),
+            portsc.ps_read(),
+            portsc.cas_read(),
+            portsc.csc_read(),
+            portsc.pec_read(),
+            portsc.wrc_read(),
+            portsc.prc_read(),
+            portsc.plc_read(),
+            portsc.cec_read()
+        );
+    }
+}
+
+fn find_pci_capability(pci_device: &PciDevice, capability_id: u8) -> Option<u8> {
     let status = pci_read16(pci_device.base_id(), PCI_STATUS_REGISTER);
     if status & PCI_STATUS_CAPABILITIES_LIST == 0 {
         return None;
@@ -194,7 +362,7 @@ fn find_pci_capability(pci_device: &PciDeviceHeader, capability_id: u8) -> Optio
 }
 
 fn configure_msix(
-    pci_device: &PciDeviceHeader,
+    pci_device: &PciDevice,
     cap_ptr: u8,
 ) -> Result<XhciInterruptConfig, PciDeviceInitError> {
     let [command_vector, transfer_vector] =
@@ -281,7 +449,7 @@ fn configure_msix(
 }
 
 fn configure_msi(
-    pci_device: &PciDeviceHeader,
+    pci_device: &PciDevice,
     cap_ptr: u8,
 ) -> Result<XhciInterruptConfig, PciDeviceInitError> {
     let [vector] = allocate_vectors::<1>().ok_or(XhciInsufficientMsixVectors)?;
@@ -339,9 +507,7 @@ fn configure_msi(
     })
 }
 
-fn configure_interrupts(
-    pci_device: &PciDeviceHeader,
-) -> Result<XhciInterruptConfig, PciDeviceInitError> {
+fn configure_interrupts(pci_device: &PciDevice) -> Result<XhciInterruptConfig, PciDeviceInitError> {
     if let Some(msix_cap_ptr) = find_pci_capability(pci_device, PCI_CAPABILITY_ID_MSIX) {
         return configure_msix(pci_device, msix_cap_ptr);
     }
@@ -505,7 +671,7 @@ impl ERST {
 }
 
 pub struct XHCI<'a> {
-    pci_device: &'a PciDeviceHeader,
+    pub pci_device: &'a PciDevice,
     operational_base: VirtAddr,
     slots: u32,
     context_size: u32,
@@ -524,6 +690,7 @@ pub struct XHCI<'a> {
     primary_interrupter: XhciInterrupterState,
     transfer_interrupter: XhciInterrupterState,
     interrupt_config: XhciInterruptConfig,
+    supported_protocols: Vec<XhciPortInfo>,
 }
 
 #[derive(Clone, Copy)]
@@ -598,16 +765,45 @@ impl XhciInterrupterState {
         }
     }
 
+    unsafe fn handle_device_attach(&self, controller: &XHCI, port: u8, portsc: PortStatusControl) {
+        let Some(port_info) = controller.port_info(port) else {
+            vgaprintln!("Attach detected at port {} with unknown protocol", port);
+            return;
+        };
+        // vgaprintln!(
+        //     "Attach detected at port {} and protocol {}",
+        //     port,
+        //     port_info.protocol
+        // );
+    }
+
+    unsafe fn handle_device_detach(&self, controller: &XHCI, port: u8, portsc: PortStatusControl) {
+        let Some(port_info) = controller.port_info(port) else {
+            vgaprintln!("Detach detected at port {} with unknown protocol", port);
+            return;
+        };
+        // vgaprintln!(
+        //     "Detach detected at port {} and protocol {}",
+        //     port,
+        //     port_info.protocol
+        // );
+    }
+
     unsafe fn handle_port_status_change(&self, trb: PortStatusChangeEventTrb, controller: &XHCI) {
         let port = trb.read_port_id();
+        if !controller.is_valid_port(port) {
+            vgaprintln!("Ignoring port status change for invalid port {}", port);
+            return;
+        }
+
         let portsc = PortStatusControl::from_port(controller.operational_base, port);
         let csc = portsc.csc_read();
         let ccs = portsc.ccs_read();
 
         if csc && ccs {
-            vgaprintln!("Device attached at port {}", port);
+            self.handle_device_attach(controller, port, portsc);
         } else if csc && !ccs {
-            vgaprintln!("Device disconnected from port {}", port);
+            self.handle_device_detach(controller, port, portsc);
         }
 
         let mut clear = PortStatusControl::write_from_raw(portsc.raw());
@@ -624,8 +820,19 @@ impl XhciInterrupterState {
             XhciInterrupterKind::Transfer => unsafe { &mut *controller.event_ring_secondary.get() },
         };
 
+        debug_print_usb3_portsc(controller.operational_base, &controller.supported_protocols);
+
         while let Ok(trb) = event_ring.dequeue() {
             let trb_type = trb.trb_type();
+            // vgaprintln!(
+            //     "xHCI {} event TRB: type={} cycle={} param={:#018x} status={:#010x} control={:#010x}",
+            //     self.name,
+            //     trb_type,
+            //     trb.cycle(),
+            //     trb.parameter(),
+            //     trb.status(),
+            //     trb.control()
+            // );
 
             if trb_type == Trb::TRB_PORT_STATUS_CHANGE_EVENT {
                 let event_change = trb
@@ -633,21 +840,6 @@ impl XhciInterrupterState {
                     .expect("Cannot parse change event TRB!");
                 self.handle_port_status_change(event_change, controller);
             }
-
-            // let cycle = trb.cycle();
-            // let parameter = trb.parameter();
-            // let status = trb.status();
-            // let control = trb.control();
-            //
-            // vgaprintln!(
-            //     "xHCI {} event TRB: type={} cycle={} param={:#018x} status={:#010x} control={:#010x}",
-            //     self.name,
-            //     trb_type,
-            //     cycle,
-            //     parameter,
-            //     status,
-            //     control
-            // );
         }
 
         self.ack(event_ring.dequeue_phys().as_u64());
@@ -673,8 +865,20 @@ fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) 
 }
 
 impl<'a> XHCI<'a> {
+    fn is_valid_port(&self, port: u8) -> bool {
+        port != 0 && (port as usize) <= self.supported_protocols.len()
+    }
+
+    fn port_info(&self, port: u8) -> Option<XhciPortInfo> {
+        if !self.is_valid_port(port) {
+            return None;
+        }
+
+        self.supported_protocols.get((port - 1) as usize).copied()
+    }
+
     fn new(
-        pci_device: &'a PciDeviceHeader,
+        pci_device: &'a PciDevice,
         operational_base: VirtAddr,
         slots: u32,
         context_size: u32,
@@ -693,6 +897,7 @@ impl<'a> XHCI<'a> {
         primary_interrupter: XhciInterrupterState,
         transfer_interrupter: XhciInterrupterState,
         interrupt_config: XhciInterruptConfig,
+        supported_protocols: Vec<XhciPortInfo>,
     ) -> Self {
         XHCI {
             pci_device,
@@ -714,6 +919,7 @@ impl<'a> XHCI<'a> {
             primary_interrupter,
             transfer_interrupter,
             interrupt_config,
+            supported_protocols,
         }
     }
 
@@ -768,7 +974,7 @@ fn alloc_dma_erst() -> Result<(DmaAlloc, &'static mut ERST), PciDeviceInitError>
 }
 
 impl PciDeviceInitializer for XHCI<'_> {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
         let bar = PciBAR::get(pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
@@ -788,6 +994,10 @@ impl PciDeviceInitializer for XHCI<'_> {
             let runtime_base =
                 VirtAddr::new((base.as_u64() + runtime_offset) & RUNTIME_BASE_ALIGNMENT_MASK);
 
+            let hccparams1 = mmio_read::<u32>(base, CAP_REG_HCCPARAMS1 as u64);
+            let ext_cap_address = first_ext_cap_addr(base, hccparams1);
+            xhci_legacy_handoff(ext_cap_address);
+
             stop_controller(operational_base)?;
             reset_controller(operational_base)?;
 
@@ -796,6 +1006,8 @@ impl PciDeviceInitializer for XHCI<'_> {
 
             //enable all slots
             let max_slots = hcsparams1 & MAX_SLOTS_MASK;
+            let max_ports = ((hcsparams1 & MAX_PORTS_MASK) >> MAX_PORTS_SHIFT) as usize;
+
             let config_reg = mmio_read::<u32>(operational_base, OP_REG_CONFIG as u64);
             mmio_write::<u32>(
                 operational_base,
@@ -929,6 +1141,17 @@ impl PciDeviceInitializer for XHCI<'_> {
             let event_ring_secondary =
                 EventRing::new(event_ring_secondary, event_ring_secondary_dma.phys);
 
+            let ext_cap_address = first_ext_cap_addr(base, hccparams1);
+
+            //fix for intel panther point chipset - switch over usb2 ports to xhci
+            if pci_device.vendor_id() == PciVendor::INTEL {
+                usb_intel_enable_xhci_ports(pci_device);
+            }
+            let supported_protocols = parse_xhci_supported_protocols(ext_cap_address, max_ports);
+            // debug_print_supported_protocols(&supported_protocols);
+            enable_usb3_port_power(operational_base, &supported_protocols);
+            debug_print_usb3_portsc(operational_base, &supported_protocols);
+
             let xhci_controller = Box::leak(Box::new(XHCI::new(
                 pci_device,
                 operational_base,
@@ -949,6 +1172,7 @@ impl PciDeviceInitializer for XHCI<'_> {
                 primary_interrupter,
                 transfer_interrupter,
                 interrupt_config,
+                supported_protocols,
             )));
             xhci_controller.bind_interrupters_to_controller();
             xhci_controller.register_interrupt_handlers()?;
