@@ -4,7 +4,7 @@
  * Created by Antoni Kuczyński
  * 01/06/2026
  */
-use crate::drivers::pci::pci_device::PciDeviceHeader;
+use crate::drivers::pci::pci_device::PciDevice;
 use crate::drivers::pci::pci_io::pci_write16;
 use crate::interrupts::vector::InterruptVector;
 use crate::vgaprintln;
@@ -73,7 +73,7 @@ impl MsixCapability {
         self.pba & !0x7
     }
 
-    pub fn write_back(&self, pci: &PciDeviceHeader, cap_ptr: u8) {
+    pub fn write_back(&self, pci: &PciDevice, cap_ptr: u8) {
         // Message Control is at offset +2
         pci_write16(pci.base_id(), (cap_ptr as u32) + 0x02, self.message_control);
     }

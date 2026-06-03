@@ -3,10 +3,11 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
+use crate::drivers::pci::pci_io::pci_read16;
 use crate::vgaprintln;
 
 #[repr(C, packed)]
-pub struct PciDeviceHeader {
+pub struct PciDevice {
     vendor_id: u16,
     device_id: u16,
     class_code: u8,
@@ -38,15 +39,15 @@ pub enum PciDeviceInitError {
 }
 
 pub trait PciDeviceInitializer {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError>;
+    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError>;
 }
 
-impl PciDeviceInitializer for PciDeviceHeader {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+impl PciDeviceInitializer for PciDevice {
+    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
         Err(PciDeviceInitError::NotImplemeted)
     }
 }
-impl PciDeviceHeader {
+impl PciDevice {
     pub fn get_pci_id(pci_bus: u32, pci_device: u32, pci_function: u32) -> u32 {
         let val: u32 = (pci_bus << 16) | (pci_device << 11) | (pci_function << 8);
         val
@@ -61,7 +62,7 @@ impl PciDeviceHeader {
         header_type: u8,
         base_id: u32,
     ) -> Self {
-        PciDeviceHeader {
+        PciDevice {
             vendor_id,
             device_id,
             class_code,
@@ -117,5 +118,13 @@ impl PciDeviceHeader {
 
     pub fn base_id(&self) -> u32 {
         self.base_id
+    }
+
+    pub fn subsystem_vendor_id(&self) -> u16 {
+        pci_read16(self.base_id(), 0x2C)
+    }
+
+    pub fn subsystem_device_id(&self) -> u16 {
+        pci_read16(self.base_id(), 0x2E)
     }
 }

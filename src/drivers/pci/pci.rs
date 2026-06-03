@@ -2,7 +2,7 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-use crate::drivers::pci::pci_device::PciDeviceHeader;
+use crate::drivers::pci::pci_device::PciDevice;
 use crate::drivers::pci::pci_io::{pci_read8, pci_read16};
 use crate::drivers::usb;
 use crate::vgaprintln;
@@ -21,7 +21,7 @@ const CLASS_CODE_SERIAL_BUS_CONTROLLER: u8 = 0x0C;
 
 const SUBCLASS_USB_CONTROLLER: u8 = 0x03;
 
-fn init_device(device: &PciDeviceHeader) {
+fn init_device(device: &PciDevice) {
     //INITIALIZE DEVICES
 
     //USB CONTROLLERS
@@ -32,28 +32,40 @@ fn init_device(device: &PciDeviceHeader) {
     }
 }
 
-pub fn pci_init() {
-    vgaprintln!("Initializing PCI devices...");
+pub fn for_each_pci_device(mut callback: impl FnMut(PciDevice)) {
     for bus in 0..256 {
         for device in 0..32 {
-            let pci_id = PciDeviceHeader::get_pci_id(bus, device, 0);
-            let header_type = pci_read8(pci_id, CFG_HEADER_TYPE);
-            let function_count = if (header_type & 0x80) != 0 { 8 } else { 1 };
+            let function0 = pci_check_device(bus, device, 0);
 
-            for function in 0..function_count {
-                let device = pci_check_device(bus, device, function);
+            let Some(function0_dev) = function0 else {
+                continue;
+            };
 
-                match device {
-                    None => {}
-                    Some(dev) => init_device(&dev),
+            let is_multifunction = (function0_dev.header_type() & 0x80) != 0;
+
+            callback(function0_dev);
+
+            if is_multifunction {
+                for function in 1..8 {
+                    if let Some(dev) = pci_check_device(bus, device, function) {
+                        callback(dev);
+                    }
                 }
             }
         }
     }
 }
 
-fn pci_check_device(bus: u32, device: u32, function: u32) -> Option<PciDeviceHeader> {
-    let base_dev_id = PciDeviceHeader::get_pci_id(bus, device, function);
+pub fn pci_init() {
+    vgaprintln!("Initializing PCI devices...");
+
+    for_each_pci_device(|dev| {
+        init_device(&dev);
+    });
+}
+
+fn pci_check_device(bus: u32, device: u32, function: u32) -> Option<PciDevice> {
+    let base_dev_id = PciDevice::get_pci_id(bus, device, function);
 
     let vendor_id: u16 = pci_read16(base_dev_id, CFG_VENDOR_ID);
 
@@ -68,7 +80,7 @@ fn pci_check_device(bus: u32, device: u32, function: u32) -> Option<PciDeviceHea
     let prog_info_byte = pci_read8(base_dev_id, CFG_PROG_IF);
     let header_type = pci_read8(base_dev_id, CFG_HEADER_TYPE);
 
-    let dev_info = PciDeviceHeader::new(
+    let dev_info = PciDevice::new(
         vendor_id,
         device_id,
         class_code,

@@ -1,7 +1,7 @@
 use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType};
-use crate::drivers::pci::pci_device::{PciDeviceHeader, PciDeviceInitError, PciDeviceInitializer};
+use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use crate::vgaprintln;
 use alloc::boxed::Box;
@@ -9,7 +9,7 @@ use core::ops::Add;
 use core::ptr;
 
 pub struct EHCI {
-    header: PciDeviceHeader,
+    header: PciDevice,
     frame_list: Box<[u32; 1024]>,
 }
 
@@ -58,7 +58,7 @@ fn handle_extended_capabilities(
 }
 
 impl PciDeviceInitializer for EHCI {
-    fn initialize(pci_device: &PciDeviceHeader) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
         let bar = PciBAR::get(pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
