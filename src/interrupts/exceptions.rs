@@ -149,8 +149,12 @@ pub extern "x86-interrupt" fn page_fault_handler(
 ) {
     LAST_EXCEPTION.store(14, Ordering::SeqCst);
     match Cr2::read() {
-        Ok(adress) => vgaprintln!("CR2 (Accesed adress): {:?}", adress),
-        Err(e) => vgaprintln!("Could not read Cr2 register: {:?}", e),
+        Ok(adress) => {
+            // vgaprintln!("CR2 (Accesed adress): {:?}", adress)
+        },
+        Err(e) => {
+            // vgaprintln!("Could not read Cr2 register: {:?}", e)
+        },
     }
     vgaprintln!(
         "EXCEPTION: PAGE FAULT (_e:{:#?}): \n {:#?}",

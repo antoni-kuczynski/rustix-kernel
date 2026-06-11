@@ -1,3 +1,4 @@
+section .text._start progbits alloc exec nowrite align=16
 BITS 32
 global _start
 
@@ -11,7 +12,7 @@ extern endKernel
 ; ====================================================
 _start:
     mov esp, V2P(stack_top)  ; set up the stack
-    mov ah, 0   ; error code
+;    mov ah, 0   ; error code
     mov esi, ebx    ; store the multiboot struct address in esi
 
     call checkMultiboot
@@ -22,8 +23,8 @@ _start:
     call setupPageTables
     call enable64BitPaging
 
-    lgdt [V2P(GDT.Pointer)]
-    jmp 0x08:V2P(LongMode)
+    lgdt [GDT.Pointer]
+    jmp 0x08:LongMode
 
     hlt
 ; ====================================================
@@ -72,7 +73,7 @@ setupPageTables:
 ; ====================================================
 checkMultiboot:
     cmp eax, 0x36d76289
-    jz .notMultibootError
+    jnz .notMultibootError
     ret
     .notMultibootError:
         mov ah, "M"
@@ -127,12 +128,16 @@ checkCPUID:
 checkA20:
     pushad  ; push all 8 general purpose registers onto stack
     mov edi, 0x112345   ; odd megabyte address
-    mov ebx, 0x012345   ; even megabyte address
+    mov esi, 0x012345   ; even megabyte address
 
-    ; move the values to both addresses and make sure they contain a different value
-    mov [ebx], ebx
-    mov [edi], edi
-    cmpsd   ; compare ebx and edi
+    ; save old values and check if the addresses alias when A20 is disabled
+    mov eax, [esi]
+    mov edx, [edi]
+    mov dword [esi], 0x11223344
+    mov dword [edi], 0x55667788
+    cmp dword [esi], 0x55667788
+    mov [edi], edx
+    mov [esi], eax
     popad   ; restore registers
     je enableA20
     ret
@@ -209,7 +214,7 @@ GDT:
 ALIGN 4
 .Pointer:
     dw $ - GDT - 1
-    dd V2P(GDT)
+    dd GDT
 ; ====================================================
 [BITS 64]
 LongMode:
@@ -224,30 +229,6 @@ LongMode:
 
     movabs rax, higherHalfMemory
     jmp rax
-
-    hlt
-; ====================================================
-higherHalfMemory:
-    ; add kernel offset to stack pointer
-    mov rax, KERNEL_OFFSET
-    add rsp, rax
-
-    ; remove the idendity mapping
-    mov rax, 0
-    mov rdi, V2P(l4_pml4)
-    mov [rdi], rax
-
-    ; flush page table
-    mov rax, cr3
-    mov cr3, rax
-
-    mov rdi, __oldMultibootPhysAddr
-    mov [rdi], esi   ; restore the multiboot struct address
-
-    call vgaInit
-
-    extern rust_main
-    call rust_main
 
     hlt
 ; ====================================================
@@ -331,6 +312,32 @@ setupPageTablesLongMode:
         ; ===========================
     ; --------------------------------------------
     ret
+; ====================================================
+section .text
+[BITS 64]
+higherHalfMemory:
+    ; add kernel offset to stack pointer
+    mov rax, KERNEL_OFFSET
+    add rsp, rax
+
+    ; remove the idendity mapping
+    mov rax, 0
+    mov rdi, V2P(l4_pml4)
+    mov [rdi], rax
+
+    ; flush page table
+    mov rax, cr3
+    mov cr3, rax
+
+    mov rdi, __oldMultibootPhysAddr
+    mov [rdi], esi   ; restore the multiboot struct address
+
+    call vgaInit
+
+    extern rust_main
+    call rust_main
+
+    hlt
 ; ====================================================
 vgaInit:
     ; clear the screen

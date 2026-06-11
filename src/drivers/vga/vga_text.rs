@@ -282,39 +282,43 @@ lazy_static! {
 
 #[macro_export]
 macro_rules! vgaprint {
-    ($($arg:tt)*) => ($crate::drivers::vga::vga_text::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ();
+    // ($($arg:tt)*) => ($crate::drivers::vga::vga_text::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
 macro_rules! vgaprintln {
-    () => ($crate::vgaprint!("\n"));
-    ($($arg:tt)*) => ($crate::vgaprint!("{}\n", format_args!($($arg)*)));
+    ($($arg:tt)*) => ();
+    // () => ($crate::vgaprint!("\n"));
+    // ($($arg:tt)*) => ($crate::vgaprint!("{}\n", format_args!($($arg)*)));
 }
 
 #[macro_export]
 macro_rules! print_ok_msg {
-    () => {
-        let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
-        VGAWRITER
-            .lock()
-            .change_foreground_color(ColorTextMode::Green);
-        $crate::vgaprintln!(" OK!");
-        VGAWRITER.lock().change_foreground_color(prev_fg_color);
-    };
+    () => ();
+    // () => {
+    //     let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
+    //     VGAWRITER
+    //         .lock()
+    //         .change_foreground_color(ColorTextMode::Green);
+    //     $crate::vgaprintln!(" OK!");
+    //     VGAWRITER.lock().change_foreground_color(prev_fg_color);
+    // };
 }
 
 #[macro_export]
 macro_rules! print_fail_msg {
-    () => {
-        let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
-        VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
-        $crate::vgaprintln!(" FAIL!");
-        VGAWRITER.lock().change_foreground_color(prev_fg_color);
-    };
+    () => ();
+    // () => {
+    //     let prev_fg_color: ColorTextMode = VGAWRITER.lock().color_code.foreground();
+    //     VGAWRITER.lock().change_foreground_color(ColorTextMode::Red);
+    //     $crate::vgaprintln!(" FAIL!");
+    //     VGAWRITER.lock().change_foreground_color(prev_fg_color);
+    // };
 }
 
 #[doc(hidden)]
 pub fn _print(args: Arguments) {
-    use core::fmt::Write;
-    VGAWRITER.lock().write_fmt(args).unwrap();
+    // use core::fmt::Write;
+    // VGAWRITER.lock().write_fmt(args).unwrap();
 }

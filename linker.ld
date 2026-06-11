@@ -1,41 +1,47 @@
-ENTRY(_start)
-
 KERNEL_OFFSET = 0xFFFFFFFF80000000;
+KERNEL_PHYS_BASE = 0x00100000;
 
 SECTIONS {
-    /* Physical load address */
-    . = 0x00100000;
+    . = KERNEL_PHYS_BASE;
 
-
-    /* First loadable segment */
-    .boot :
+    .boot ALIGN(4K) : AT(ADDR(.boot))
     {
         KEEP(*(.multiboot2_header))
         KEEP(*(.multiboot2))
-        *(.text._start)
+        KEEP(*(.text._start))
+        KEEP(*(.boot .boot.*))
     }
+
+    . = ALIGN(4K);
+    boot_end = .;
 
     . += KERNEL_OFFSET;
 
-    .text ALIGN (4K) : AT (ADDR (.text) - KERNEL_OFFSET)
+    . = ALIGN(4K);
+    .text : AT(ADDR(.text) - KERNEL_OFFSET)
     {
-        *(.text)
+        *(.text .text.*)
     }
 
-    .rodata ALIGN (4K) : AT (ADDR (.rodata) - KERNEL_OFFSET)
+    . = ALIGN(4K);
+    .rodata : AT(ADDR(.rodata) - KERNEL_OFFSET)
     {
-        *(.rodata*)
+        *(.rodata .rodata.*)
     }
 
-    .data ALIGN (4K) : AT (ADDR (.data) - KERNEL_OFFSET)
+    . = ALIGN(4K);
+    .data : AT(ADDR(.data) - KERNEL_OFFSET)
     {
-        *(.data*)
+        *(.data .data.*)
     }
 
-    .bss ALIGN (4K) : AT (ADDR (.bss) - KERNEL_OFFSET)
+    . = ALIGN(4K);
+    .bss : AT(ADDR(.bss) - KERNEL_OFFSET)
     {
-        *(.bss*)
         *(COMMON)
-        endKernel = . - KERNEL_OFFSET;
+        *(.bss .bss.*)
     }
+
+    . = ALIGN(4K);
+    endKernel = . - KERNEL_OFFSET;
 }

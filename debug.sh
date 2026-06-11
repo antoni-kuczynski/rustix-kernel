@@ -12,7 +12,7 @@ GDB_PORT="1234"
 
 mkdir -p boot/o
 
-nasm -felf64 ./boot/multiboot.asm -o boot/o/multiboot.o
+nasm -felf64 ./boot/multiboot_header.asm -o boot/o/multiboot_header.o
 nasm -felf64 ./boot/entry.asm -o boot/o/entry.o
 
 cargo build
@@ -47,7 +47,9 @@ EOF
 qemu-system-x86_64 \
     -cdrom "${ISO_FILE}" \
     -device qemu-xhci \
-    -m 16 \
+    -m 128 \
+    -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF_CODE.4m.fd \
+    -drive if=pflash,format=raw,file=./iso/OVMF_VARS.4m.fd \
     -d int,cpu_reset,guest_errors \
     -no-reboot \
     -no-shutdown \

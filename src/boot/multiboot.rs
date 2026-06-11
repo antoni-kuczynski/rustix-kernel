@@ -5,7 +5,7 @@ pub(crate) use crate::boot::multiboot_tag::{
     MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag,
     MultibootModulesTag, MultibootTagBase, MultibootTagStruct, mb_tag_as_u32,
 };
-use crate::boot::multiboot_tag::{MultibootNewRsdpTag, MultibootOldRsdpTag};
+use crate::boot::multiboot_tag::{FramebufferView, MultibootFramebufferInfoTag, MultibootNewRsdpTag, MultibootOldRsdpTag};
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::PageSize;
@@ -265,6 +265,18 @@ impl MultibootInfoView {
     ) -> Option<&'static mut MultibootModulesTag> {
         self.get_tag_addr_by_type::<MultibootModulesTag>(search_start_addr)
     }
+    //==================================================================================================
+    fn get_framebuffer_info(&self) -> Option<FramebufferView> {
+        unsafe {
+            if let Some(framebuffer_tag) = self.get_tag_addr_by_type::<MultibootFramebufferInfoTag>(self.tags) {
+                Some(FramebufferView::from_multiboot_tag(framebuffer_tag))
+            } else {
+                return None;
+            }
+        }
+    }
+
+
     //==================================================================================================
     unsafe fn get_old_rsdp(&self) -> Option<&'static RSDP> {
         let tag = self.get_tag_addr_by_type::<MultibootOldRsdpTag>(self.tags)?;
@@ -561,6 +573,11 @@ impl MemoryRegionType {
     }
 }
 //==================================================================================================
+
+
+
+
+//==================================================================================================
 // the struct is read only (well, except the init part at least)
 // so this is already thread safe so this should be fine i guess
 unsafe impl Send for MultibootInfoView {}
@@ -631,4 +648,11 @@ pub fn multiboot2_logical_end() -> VirtAddr {
         .get()
         .expect("Multiboot was not initialized yet!");
     VirtAddr::new(info.multiboot_end_logical)
+}
+
+pub fn multiboot2_get_framebuffer_info() -> Option<FramebufferView> {
+    let info = MULTIBOOT_INFO
+        .get()
+        .expect("Multiboot was not initialized yet!");
+    info.get_framebuffer_info()
 }

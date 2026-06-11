@@ -5,7 +5,8 @@ build-std = ["core", "compiler_builtins", "alloc"]
 target = "x86_64-rustix.json"
 [target.'cfg(target_os = "none")']
 rustflags = [
-    "-C", "link-arg=boot/o/multiboot.o",
+    "-C", "link-arg=boot/o/multiboot_header.o",
     "-C", "link-arg=boot/o/entry.o",
+    "-C", "link-arg=boot/o/entry_efi.o",
     "-C", "link-arg=-Tlinker.ld"
 ]
