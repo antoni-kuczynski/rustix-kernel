@@ -2,10 +2,9 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use core::ptr::null_mut;
 use core::slice;
-use x86_64::PhysAddr;
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
-use crate::memory::dir_mapping::physical_to_virtual;
 
 //==================================================================================================
 //Multiboot information structures
@@ -156,7 +155,12 @@ u8      | reserved           |
 varies  | color_info         |
         +--------------------+
 
-The field ‘framebuffer_addr’ contains framebuffer physical address. This field is 64-bit wide but bootloader should set it under 4GiB if possible for compatibility with payloads which aren’t aware of PAE or amd64. The field ‘framebuffer_pitch’ contains pitch in bytes. The fields ‘framebuffer_width’, ‘framebuffer_height’ contain framebuffer dimensions in pixels. The field ‘framebuffer_bpp’ contains number of bits per pixel. ‘reserved’ always contains 0 in current version of specification and must be ignored by OS image. If ‘framebuffer_type’ is set to 0 it means indexed color. In this case color_info is defined as follows:
+The field ‘framebuffer_addr’ contains framebuffer physical address.
+This field is 64-bit wide but bootloader should set it under 4GiB if possible for compatibility with payloads which aren’t aware of PAE or amd64.
+The field ‘framebuffer_pitch’ contains pitch in bytes. The fields ‘framebuffer_width’, ‘framebuffer_height’ contain framebuffer dimensions in pixels.
+The field ‘framebuffer_bpp’ contains number of bits per pixel. ‘reserved’ always contains 0 in
+current version of specification and must be ignored by OS image. If ‘framebuffer_type’ is set to 0 it means indexed color.
+In this case color_info is defined as follows:
 
         +----------------------------------+
 u32     | framebuffer_palette_num_colors   |
@@ -202,9 +206,9 @@ impl MultibootFramebufferInfoTag {
     #[inline(always)]
     pub unsafe fn color_info_ptr(&self) -> *const u8 {
         (self as *const Self as *const u8)
-            .add(size_of::<MultibootFramebufferInfoTag>())
+            .add(size_of::<MultibootFramebufferInfoTag>() + 1)
     }
-    pub unsafe fn color_info(&self) -> MultibootFramebufferColorInfo {
+    pub unsafe fn color_info(&self) -> MultibootFramebufferColorInfo<'_> {
         match self.framebuffer_type {
             FRAMEBUFFER_TYPE_INDEXED => {
                 let info_ptr =
@@ -260,7 +264,7 @@ struct MultibootFbColorInfo {
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-struct MultibootFbColorDescriptor {
+pub(crate) struct MultibootFbColorDescriptor {
     red_value: u8,
     green_value: u8,
     blue_value: u8
@@ -269,12 +273,12 @@ struct MultibootFbColorDescriptor {
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct MultibootFramebufferRgbInfo {
-    pub framebuffer_red_field_position: u8,
-    pub framebuffer_red_mask_size: u8,
-    pub framebuffer_green_field_position: u8,
-    pub framebuffer_green_mask_size: u8,
-    pub framebuffer_blue_field_position: u8,
-    pub framebuffer_blue_mask_size: u8,
+    pub red_pos: u8,
+    pub red_mask_size: u8,
+    pub green_pos: u8,
+    pub green_mask_size: u8,
+    pub blue_pos: u8,
+    pub blue_mask_size: u8,
 }
 
 pub enum MultibootFramebufferColorInfo<'a> {
@@ -289,93 +293,9 @@ pub enum MultibootFramebufferColorInfo<'a> {
     Unknown(u8),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FramebufferKind {
-    Indexed,
-    Rgb {
-        red_pos: u8,
-        red_size: u8,
-        green_pos: u8,
-        green_size: u8,
-        blue_pos: u8,
-        blue_size: u8,
-    },
-    EgaText,
-    Unknown(u8),
-}
-
-pub struct FramebufferView {
-    pub base: *mut u8,
-
-    pub phys_addr: u64,
-    pub pitch: usize,
-    pub width: usize,
-    pub height: usize,
-    pub bpp: u8,
-    pub kind: FramebufferKind,
-}
-
-impl FramebufferView {
-
-    pub unsafe fn new(
-        base: *mut u8,
-        phys_addr: u64,
-        pitch: usize,
-        width: usize,
-        height: usize,
-        bpp: u8,
-        kind: FramebufferKind,
-    ) -> Self {
-        Self {
-            base,
-            phys_addr,
-            pitch,
-            width,
-            height,
-            bpp,
-            kind,
-        }
-    }
-    pub unsafe fn from_multiboot_tag(
-        tag: &MultibootFramebufferInfoTag) -> Self {
-        let kind = match tag.color_info() {
-            MultibootFramebufferColorInfo::Rgb { info } => {
-                FramebufferKind::Rgb {
-                    red_pos: info.framebuffer_red_field_position,
-                    red_size: info.framebuffer_red_mask_size,
-                    green_pos: info.framebuffer_green_field_position,
-                    green_size: info.framebuffer_green_mask_size,
-                    blue_pos: info.framebuffer_blue_field_position,
-                    blue_size: info.framebuffer_blue_mask_size,
-                }
-            }
-
-            MultibootFramebufferColorInfo::Indexed { .. } => {
-                FramebufferKind::Indexed
-            }
-
-            MultibootFramebufferColorInfo::EgaText => {
-                FramebufferKind::EgaText
-            }
-
-            MultibootFramebufferColorInfo::Unknown(t) => {
-                FramebufferKind::Unknown(t)
-            }
-        };
-
-        //TODO: this is temp
-        let framebuffer_virt = physical_to_virtual(PhysAddr::new(tag.framebuffer_addr));
-        Self::new(
-            framebuffer_virt.as_mut_ptr::<u8>(),
-            tag.framebuffer_addr,
-            tag.framebuffer_pitch as usize,
-            tag.framebuffer_width as usize,
-            tag.framebuffer_height as usize,
-            tag.framebuffer_bpp,
-            kind,
-        )
-    }
-}
+const FRAMEBUFFER_TYPE_INDEXED: u8 = 0;
+const FRAMEBUFFER_TYPE_RGB: u8 = 1;
+const FRAMEBUFFER_TYPE_EGA_TEXT: u8 = 2;
 
 //==================================================================================================
 //  ACPI STUFF

@@ -1,17 +1,16 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::ColorTextMode;
 pub(crate) use crate::boot::multiboot_tag::{
     MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag,
     MultibootModulesTag, MultibootTagBase, MultibootTagStruct, mb_tag_as_u32,
 };
-use crate::boot::multiboot_tag::{FramebufferView, MultibootFramebufferInfoTag, MultibootNewRsdpTag, MultibootOldRsdpTag};
+use crate::boot::multiboot_tag::{MultibootFramebufferInfoTag, MultibootNewRsdpTag, MultibootOldRsdpTag};
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
 use crate::memory::{_V2P_kernel, KERNEL_VIRT_BASE, SizeUnit};
-use crate::{__oldMultibootPhysAddr, VGAWRITER, earlyHeapEnd, vgaprint};
+use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint};
 use crate::{print_ok_msg, vgaprintln};
 use core::ptr;
 use core::ptr::read_volatile;
@@ -266,13 +265,11 @@ impl MultibootInfoView {
         self.get_tag_addr_by_type::<MultibootModulesTag>(search_start_addr)
     }
     //==================================================================================================
-    fn get_framebuffer_info(&self) -> Option<FramebufferView> {
-        unsafe {
-            if let Some(framebuffer_tag) = self.get_tag_addr_by_type::<MultibootFramebufferInfoTag>(self.tags) {
-                Some(FramebufferView::from_multiboot_tag(framebuffer_tag))
-            } else {
-                return None;
-            }
+    fn get_framebuffer_tag(&self) -> Option<&'static mut MultibootFramebufferInfoTag> {
+        if let Some(framebuffer_tag) = self.get_tag_addr_by_type::<MultibootFramebufferInfoTag>(self.tags) {
+            Some(framebuffer_tag)
+        } else {
+            None
         }
     }
 
@@ -650,9 +647,9 @@ pub fn multiboot2_logical_end() -> VirtAddr {
     VirtAddr::new(info.multiboot_end_logical)
 }
 
-pub fn multiboot2_get_framebuffer_info() -> Option<FramebufferView> {
+pub fn multiboot2_get_framebuffer_tag() -> Option<&'static mut MultibootFramebufferInfoTag> {
     let info = MULTIBOOT_INFO
         .get()
         .expect("Multiboot was not initialized yet!");
-    info.get_framebuffer_info()
+    info.get_framebuffer_tag()
 }

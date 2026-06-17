@@ -34,7 +34,6 @@ use x86_64::{
 };
 
 use crate::{
-    drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
     print_ok_msg, vgaprint,
 };
 

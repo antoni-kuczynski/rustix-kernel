@@ -2,7 +2,6 @@ use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 use crate::{
-    drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
     interrupts::{
         exceptions::*,
         gdt::DOUBLE_FAULT_IST_INDEX,

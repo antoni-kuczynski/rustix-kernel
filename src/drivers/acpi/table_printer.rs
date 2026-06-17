@@ -1,10 +1,8 @@
-use crate::asm::inw;
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use crate::vgaprintln;
-use alloc::string::String;
 
 #[allow(dead_code)]
 pub trait ACPITablePrinter {
@@ -134,11 +132,9 @@ impl ACPITablePrinter for FADT {
     fn print(&self) {
         let a = self.smi_command_port;
         let b = self.pm1a_control_block;
-        unsafe {
-            vgaprintln!("FADT smi command port:");
-            vgaprintln!("{}", inw(a as u16));
-            vgaprintln!("FADT pm1a control block:");
-            vgaprintln!("{}", inw(b as u16));
-        }
+        vgaprintln!("FADT smi command port:");
+        vgaprintln!("{}", inw(a as u16));
+        vgaprintln!("FADT pm1a control block:");
+        vgaprintln!("{}", inw(b as u16));
     }
 }

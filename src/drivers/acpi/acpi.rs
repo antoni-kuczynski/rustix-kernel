@@ -7,8 +7,6 @@ use crate::drivers::acpi::acpi_tables::{ACPI_TABLES, ACPISignature, acpi_get_sdt
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{DSDT, S5Obj};
 use crate::drivers::acpi::tables::fadt::FADT;
-use crate::drivers::vga::vga_text::ColorTextMode;
-use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::{print_fail_msg, print_ok_msg, vgaprint};
 use core::fmt::Error;

@@ -4,9 +4,8 @@
  * Created by Antoni Kuczyński
  * 16/04/2026
  */
-use crate::ColorTextMode;
 use crate::print_ok_msg;
-use crate::{VGAWRITER, vgaprint};
+use crate::{vgaprint};
 use core::arch::x86_64::{__cpuid, CpuidResult};
 use spin::Once;
 

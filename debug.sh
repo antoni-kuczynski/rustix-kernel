@@ -1,72 +1,110 @@
 #!/bin/bash
-set -e
+set -euo pipefail
+# Uses old grub for booting - see prepare_old_grub for info
 
-KERNEL_NAME="rustix"
-TARGET="x86_64-rustix"
-PROFILE="debug"
+UEFI_DIR="uefi"
+ISO_ROOT="target/uefi-iso-root"
+ISO_OUT="uefi.iso"
+EFI_IMG="${ISO_ROOT}/efi.img"
+GRUB_CFG="${ISO_ROOT}/grub.cfg"
+GRUB_EFI="${ISO_ROOT}/BOOTX64.EFI"
+KERNEL="target/x86_64-rustix/release/rustix"
+OVMF_CODE="ovmf/OVMF_CODE.fd"
+OVMF_VARS="ovmf/OVMF_VARS.fd"
+GRUB_ROOT="${GRUB_ROOT:-target/grub-old/root}"
+GRUB_MKSTANDALONE="${GRUB_MKSTANDALONE:-${GRUB_ROOT}/usr/bin/grub-mkstandalone}"
+GRUB_MODULE_DIR="${GRUB_MODULE_DIR:-${GRUB_ROOT}/usr/lib/grub/x86_64-efi}"
 
-KERNEL_ELF="target/${TARGET}/${PROFILE}/${KERNEL_NAME}"
-ISO_KERNEL="iso/boot/${KERNEL_NAME}"
-ISO_FILE="rustix.iso"
-GDB_PORT="1234"
+if [[ ! -x "${GRUB_MKSTANDALONE}" ]]; then
+  GRUB_MKSTANDALONE="grub-mkstandalone"
+  GRUB_MODULE_DIR="/usr/lib/grub/x86_64-efi"
+fi
 
 mkdir -p boot/o
+mkdir -p "${UEFI_DIR}/boot/grub"
 
 nasm -felf64 ./boot/multiboot_header.asm -o boot/o/multiboot_header.o
 nasm -felf64 ./boot/entry.asm -o boot/o/entry.o
+nasm -felf64 ./boot/entry_efi.asm -o boot/o/entry_efi.o
 
-cargo build
+rm -f target/x86_64-rustix/release/rustix target/x86_64-rustix/release/deps/rustix-*
 
-cp "${KERNEL_ELF}" "${ISO_KERNEL}"
+cargo build --release
 
-grub-mkrescue -o "${ISO_FILE}" iso
+rm -rf "${ISO_ROOT}"
+mkdir -p "${ISO_ROOT}/boot/grub"
+cp "${KERNEL}" "${ISO_ROOT}/boot/rustix"
 
-cat > /tmp/rustix-gdb.gdb <<EOF
-set architecture i386:x86-64
-set disassembly-flavor intel
-set pagination off
-target remote :${GDB_PORT}
+cat > "${GRUB_CFG}" <<'EOF'
+set timeout=0
+set default=0
 
-layout split
-layout regs
+set root=(memdisk)
+insmod all_video
+set gfxpayload=1024x768x32,auto
 
-define pf
-    echo \\n--- PAGE FAULT DEBUG ---\\n
-    info registers
-    echo \\nCR2:\\n
-    p/x \$cr2
-    echo \\nCR3:\\n
-    p/x \$cr3
-    echo \\nRIP instruction:\\n
-    x/8i \$rip
-    echo \\nStack:\\n
-    x/16gx \$rsp
-end
+multiboot2 /boot/rustix
+boot
 EOF
 
+cp "${GRUB_CFG}" "${UEFI_DIR}/boot/grub/grub.cfg"
+
+echo "Using $(${GRUB_MKSTANDALONE} --version)"
+
+"${GRUB_MKSTANDALONE}" \
+  -O x86_64-efi \
+  -d "${GRUB_MODULE_DIR}" \
+  -o "${GRUB_EFI}" \
+  --locales='' \
+  --fonts='' \
+  --themes='' \
+  --install-modules="multiboot2 boot all_video efi_gop efi_uga video video_fb normal configfile" \
+  "/boot/grub/grub.cfg=${GRUB_CFG}" \
+  "/boot/rustix=${KERNEL}"
+
+objcopy \
+  --set-section-flags .text=alloc,load,code,data \
+  --set-section-flags mods=alloc,load,code,data \
+  "${GRUB_EFI}"
+
+rm -f "${EFI_IMG}"
+mformat -C -T 32768 -i "${EFI_IMG}" ::
+mmd -i "${EFI_IMG}" ::/EFI ::/EFI/BOOT
+mcopy -i "${EFI_IMG}" "${GRUB_EFI}" ::/EFI/BOOT/BOOTX64.EFI
+mkdir -p "${ISO_ROOT}/EFI/BOOT"
+cp "${GRUB_EFI}" "${ISO_ROOT}/EFI/BOOT/BOOTX64.EFI"
+
+xorriso \
+  -as mkisofs \
+  -R -J \
+  -e efi.img \
+  -no-emul-boot \
+  -o "${ISO_OUT}" \
+  "${ISO_ROOT}"
+
+echo "Starting QEMU with GDB..."
+
 qemu-system-x86_64 \
-    -cdrom "${ISO_FILE}" \
-    -device qemu-xhci \
-    -m 128 \
-    -drive if=pflash,format=raw,readonly=on,file=/usr/share/ovmf/x64/OVMF_CODE.4m.fd \
-    -drive if=pflash,format=raw,file=./iso/OVMF_VARS.4m.fd \
-    -d int,cpu_reset,guest_errors \
-    -no-reboot \
-    -no-shutdown \
-    -D log.txt \
-    -S \
-    -s &
+  -cpu qemu64 \
+  -m 512M \
+  -machine q35 \
+  -vga std \
+  -drive if=pflash,format=raw,readonly=on,file="${OVMF_CODE}" \
+  -drive if=pflash,format=raw,file="${OVMF_VARS}" \
+  -cdrom "${ISO_OUT}" \
+  -boot d \
+  -D log.txt \
+  -device qemu-xhci \
+  -serial file:serial.log \
+  -s -S &
 
 QEMU_PID=$!
 
-cleanup() {
-    kill "${QEMU_PID}" 2>/dev/null || true
-}
+trap "kill -9 $QEMU_PID 2>/dev/null" EXIT
 
-trap cleanup EXIT
+sleep 1
 
-if command -v rust-gdb >/dev/null 2>&1; then
-    rust-gdb -tui "${KERNEL_ELF}" -x /tmp/rustix-gdb.gdb
-else
-    gdb -tui "${KERNEL_ELF}" -x /tmp/rustix-gdb.gdb
-fi
+gdb -tui \
+    -ex "target remote localhost:1234" \
+    -ex "layout src" \
+    "${KERNEL}"

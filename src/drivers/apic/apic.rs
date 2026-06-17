@@ -273,17 +273,19 @@ pub fn apic_bsp_init() {
     }
 
     unsafe {
-        let addr = acpi_get_sdt_table(ACPISignature::MADT).expect("No MADT found on the system!");
-        let madt = Madt::new_from_virt_addr(addr);
+        //todo: uncomment
+        
+        // let addr = acpi_get_sdt_table(ACPISignature::MADT).expect("No MADT found on the system!");
+        // let madt = Madt::new_from_virt_addr(addr);
 
         let msr_addr = rdmsr(IA32_APIC_BASE_MSR) & IA32_APIC_BASE_ADDR_MASK;
-        let madt_addr = madt.parse().local_apic_physical_address;
-
-        if msr_addr != madt_addr {
-            print_fail_msg!();
-            vgaprintln!("MSR: {:#011x} | MADT: {:#011x}", msr_addr, madt_addr);
-            panic!(" [APIC] Apic base address mismatch (MADT / MSR)!");
-        }
+        // let madt_addr = madt.parse().local_apic_physical_address;
+        //
+        // if msr_addr != madt_addr {
+        //     print_fail_msg!();
+        //     vgaprintln!("MSR: {:#011x} | MADT: {:#011x}", msr_addr, madt_addr);
+        //     panic!(" [APIC] Apic base address mismatch (MADT / MSR)!");
+        // }
 
         let mut apic = Apic::new(PhysAddr::new(msr_addr));
         apic.enable();
