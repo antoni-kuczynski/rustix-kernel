@@ -7,11 +7,20 @@
 use alloc::vec::Vec;
 use core::{ptr};
 use spin::{Mutex, Once};
-use x86_64::{PhysAddr};
+use x86_64::{PhysAddr, VirtAddr};
 use crate::boot::multiboot::multiboot2_get_framebuffer_tag;
 use crate::boot::multiboot_tag::{MultibootFramebufferColorInfo, MultibootFramebufferInfoTag, MultibootFramebufferRgbInfo};
-use crate::memory::dir_mapping::physical_to_virtual;
+use crate::memory::page_tables::{PageSize, PageTableEntry};
+use crate::memory::paging::{vmm_eba_map_range_ext};
+use crate::{__oldMultibootPhysAddr, kprintln_ok};
+use crate::memory::_P2V_kernel;
+use crate::memory::pat::PatIndex;
 use crate::video::bitmap_font::{BitmapFont};
+
+
+const FRAMEBUFFER_START: u64 = 0xFFFF_800f_b000_0000;
+const FRAMEBUFFER_MAX_SIZE: u64 = 0x6400000000; //around 400gb
+const FRAMEBUFFER_MAX_END: u64 = 0xFFFF_800f_b000_0000 + FRAMEBUFFER_MAX_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FramebufferKind {
@@ -57,8 +66,11 @@ pub struct Framebuffer {
     pub cursor_pos_x_px: usize,
     pub cursor_pos_y_px: usize,
     pub font: BitmapFont,
+    pub current_foreground: FramebufferColor,
+    pub current_background: FramebufferColor,
 
-    pub back_buffer: Vec<u8>
+    pub back_buffer: Vec<u8>,
+    pub is_double_buffered: bool
 }
 
 impl Framebuffer {
@@ -77,14 +89,13 @@ impl Framebuffer {
             cursor_pos_y_px: 0,
             font: BitmapFont::null_font(),
             back_buffer: Vec::new(),
+            current_foreground: FramebufferColor::new_raw(0xFF_FF_FF_FF),
+            current_background: FramebufferColor::new_raw(0x00_00_00_00),
+            is_double_buffered: false
         }
     }
 
-    pub unsafe fn from_multiboot_tag(tag: &MultibootFramebufferInfoTag) -> Self {
-        //TODO: temp
-        let framebuffer_virt = physical_to_virtual(PhysAddr::new(tag.framebuffer_addr))
-            .as_mut_ptr::<u8>();
-
+    pub unsafe fn from_multiboot_tag(tag: &MultibootFramebufferInfoTag, virt_addr: VirtAddr) -> Self {
         //TODO: a method to tell the framebuffer is invalid
         let info = match tag.color_info() {
             MultibootFramebufferColorInfo::Rgb { info } => info,
@@ -99,7 +110,7 @@ impl Framebuffer {
             }
         };
 
-        let mut fb = Self::new_rgb(tag, &info, framebuffer_virt);
+        let mut fb = Self::new_rgb(tag, &info, virt_addr.as_mut_ptr::<u8>());
         fb.init_text_cursor();
         fb
     }
@@ -152,14 +163,8 @@ impl Framebuffer {
         }
     }
 
-    pub fn fb_write(&mut self, base_offset: usize, val: u8) {
-        let is_double_buffered = !self.back_buffer.is_empty();
-
-        if is_double_buffered {
-            self.back_buffer[base_offset] = val;
-        } else {
-            unsafe { ptr::write_volatile(self.base.add(base_offset), val) };
-        }
+    pub fn clear(&mut self) {
+        self.back_buffer.fill(0)
     }
 
     pub fn swap_buffers(&mut self) {
@@ -174,19 +179,29 @@ impl Framebuffer {
         }
     }
 
-    fn width(&self) -> usize {
+    pub fn fb_write(&mut self, base_offset: usize, val: u8) {
+        let is_double_buffered = !self.back_buffer.is_empty();
+
+        if is_double_buffered {
+            self.back_buffer[base_offset] = val;
+        } else {
+            unsafe { ptr::write_volatile(self.base.add(base_offset), val) };
+        }
+    }
+
+    pub(crate) fn width(&self) -> usize {
         self._pixel_info.width
     }
 
-    fn height(&self) -> usize {
+    pub(crate) fn height(&self) -> usize {
         self._pixel_info.height
     }
 
-    pub(crate) fn pitch(&self) -> usize {
+    pub fn pitch(&self) -> usize {
         self._pixel_info.pitch
     }
 
-    pub(crate) fn bpp(&self) -> u8 {
+    pub fn bpp(&self) -> u8 {
         self._pixel_info.bpp
     }
 }
@@ -230,6 +245,7 @@ impl FramebufferPixelInfo {
 
 //==================================================================================================
 //==================================================================================================
+#[derive(Copy, Clone)]
 pub struct FramebufferColor {
     pub data: u32 // default is 1 byte per each RGB color, 4byte is unused
 }
@@ -255,11 +271,24 @@ impl FramebufferColor {
 //==================================================================================================
 unsafe impl Send for Framebuffer {}
 
-pub fn framebuffer_init() {
-    let fb_tag = multiboot2_get_framebuffer_tag()
-        .expect("framebuffer tag not found");
 
-    let framebuffer_view = unsafe { Framebuffer::from_multiboot_tag(fb_tag) };
+pub fn framebuffer_init() {
+    let fb_tag: &mut MultibootFramebufferInfoTag = multiboot2_get_framebuffer_tag().unwrap();
+
+    let fb_length = fb_tag.framebuffer_height as u64 * fb_tag.framebuffer_pitch as u64;
+    if fb_length > FRAMEBUFFER_MAX_SIZE {
+        panic!("Framebuffer a little bit too large! (over 400gb)");
+    }
+
+    let virt_addr = VirtAddr::new(FRAMEBUFFER_START);
+    let phys_addr = PhysAddr::new(fb_tag.framebuffer_addr);
+    let page_table_flags = PatIndex::get_u64_page_flags(PatIndex::WRITE_COMBINING, PageSize::Size2Mb);
+
+    unsafe {
+        vmm_eba_map_range_ext(virt_addr, phys_addr, fb_length, &PageSize::Size2Mb, false, page_table_flags);
+    }
+
+    let framebuffer_view = unsafe { Framebuffer::from_multiboot_tag(fb_tag, virt_addr) };
 
     if framebuffer_view.base as u64 == 0 {
         panic!("Framebuffer's ptr is null!");
@@ -277,11 +306,28 @@ pub fn framebuffer_init() {
 pub fn double_buffering_init() {
     let mut guard = FRAMEBUFFER.lock();
     let fb = guard.as_mut().unwrap();
-    fb.back_buffer.reserve(fb_height() * fb_pitch());
+    let total_bytes = fb_height() * fb_pitch();
+
+    fb.back_buffer.reserve(total_bytes);
 
     for i in 0..fb_height() * fb_pitch() {
         fb.back_buffer.push(0x0u8);
     }
+
+    unsafe {
+        ptr::copy_nonoverlapping(
+            fb.base,
+            fb.back_buffer.as_mut_ptr(),
+            total_bytes
+        );
+    }
+
+    fb.is_double_buffered = true;
+
+    //this shit's here to prevent deadlocks when calling kprint in this function afterwards... this sucks
+    unsafe { FRAMEBUFFER.force_unlock() };
+
+    kprintln_ok!("Enabled double buffering.");
 }
 
 pub fn fb_plot_pixel(x: usize, y: usize, color: &FramebufferColor) {
@@ -290,6 +336,14 @@ pub fn fb_plot_pixel(x: usize, y: usize, color: &FramebufferColor) {
         .as_mut()
         .unwrap()
         .plot_pixel(x, y, color);
+}
+
+pub fn fb_clear() {
+    FRAMEBUFFER
+        .lock()
+        .as_mut()
+        .unwrap()
+        .clear();
 }
 
 pub fn fb_swap_buffers() {

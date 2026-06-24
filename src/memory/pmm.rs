@@ -1,8 +1,6 @@
 #![allow(unused)]
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::ColorTextMode;
-use crate::VGAWRITER;
 use crate::boot::multiboot::{
     MULTIBOOT_INFO, MemoryRegionType, MultibootInfoView, MultibootMemoryMapEntry,
     MultibootMemoryMapTag, multiboot2_logical_end, multiboot2_memory_map_tag,
@@ -10,12 +8,14 @@ use crate::boot::multiboot::{
 use crate::memory::page_tables::{PageSize, PageTable};
 use crate::memory::paging::vmm_eba_map_range;
 use crate::memory::{_P2V_kernel, _V2P_kernel, Cr3, FRAME_SIZE, KERNEL_VIRT_BASE, SizeUnit};
-use crate::{print_ok_msg, vgaprint, vgaprintln};
+use crate::{kprintln, kprintln_failed, kprintln_ok};
 use core::sync::atomic::{AtomicPtr, AtomicU8, AtomicU64, Ordering};
 use core::{fmt, ptr};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
+use crate::video::kprint::LogLevel::Info;
+
 //==================================================================================================
 const USED: u8 = 1;
 const FREE: u8 = 0;
@@ -200,7 +200,7 @@ impl PmmBitmap {
     pub unsafe fn print(&self, range: usize) {
         let base_ptr = self.ptr.load(Ordering::Acquire);
         for i in 0..range {
-            vgaprintln!("{}:    {:#08b}", i, *base_ptr.add(i));
+            kprintln!("{}:    {:#08b}", i, *base_ptr.add(i));
         }
     }
 
@@ -273,15 +273,16 @@ impl PmmBitmap {
 //==================================================================================================
 /// Initializes the PMM
 pub fn pmm_init() {
-    vgaprint!("Initializing physical frame allocator...");
     let mem_map = match multiboot2_memory_map_tag() {
         None => {
+            kprintln_failed!("Initialized physical frame manager.");
             panic!("PMM init: Mb2 memory map tag doesn't exist!")
         }
         Some(x) => x,
     };
     unsafe {
         let mem_size = mem_map.get_high_usable_memory_address();
+        kprintln!(Info, "Memory size is {} MiB and {} KiB.", mem_size.as_u64() / SizeUnit::Megabyte.as_u64(), (mem_size.as_u64() / SizeUnit::Kilobyte.as_u64()) % 1024);
 
         let amount_of_frames = mem_size.as_u64() / FRAME_SIZE;
         let bitmap_size_bytes = ((amount_of_frames + 63) / 64) * size_of::<u64>() as u64; //one bit per frame
@@ -306,8 +307,10 @@ pub fn pmm_init() {
         lock.length = bitmap_size_bytes;
         lock.frame_count = amount_of_frames;
         lock.alloc_used_memory_regions(&mem_map);
+
+        kprintln!(Info, "PMM bitmap size is {} bytes.", bitmap_size_bytes);
     }
-    print_ok_msg!();
+    kprintln_ok!("Initialized physical frame manager.");
 }
 //==================================================================================================
 lazy_static! {

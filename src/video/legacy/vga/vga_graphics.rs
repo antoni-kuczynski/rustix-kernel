@@ -7,10 +7,10 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::arch::asm;
 use core::{mem, ptr};
-use crate::drivers::vga::CURRENT_VGA_MODE;
-use crate::drivers::vga::vga_fonts::*;
-use crate::drivers::vga::registers::vga_io::*;
 use crate::memory::_P2V_kernel;
+use crate::video::legacy::vga::CURRENT_VGA_MODE;
+use crate::video::legacy::vga::registers::vga_io::*;
+use crate::video::legacy::vga::vga_fonts::VgaFont;
 
 pub struct VgaVideoMode<const BUF_SIZE: usize> {
     pub video_width_px: usize, //res width
@@ -607,6 +607,7 @@ impl<const BUF_SIZE: usize> VgaVideoMode<BUF_SIZE> {
         if xi + wi < 0 || xi - wi >= self.video_width_px as isize || yi + hi < 0 || yi - hi >= self.video_height_px as isize {
             return;
         }
+
 
         let wi2 = wi * wi;
         let hi2 = hi * hi;

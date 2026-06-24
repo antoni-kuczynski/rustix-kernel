@@ -1,4 +1,4 @@
-use crate::{vgaprint};
+use crate::{__vgaprint};
 use core::fmt::Error;
 use crate::drivers::pci::pci_device::PciDeviceHeader;
 use crate::drivers::pci::pci_bar::PciBAR;
@@ -18,20 +18,20 @@ pub trait UsbControllerInitializer {
 pub fn init_usb_controller(pci_dev: &PciDeviceHeader) {
     match pci_dev.prog_info_byte() {
         PIF_UHCI_CONTROLLER => {
-            vgaprint!("Initializing UHCI...TODO\n");
+            __vgaprint!("Initializing UHCI...TODO\n");
             let bar = PciBAR::get(&pci_dev, 4);
             // bar.print();
         },
         PIF_OHCI_CONTROLLER => {
-            vgaprint!("Initializing OHCI...TODO\n");
+            __vgaprint!("Initializing OHCI...TODO\n");
         },
         PIF_EHCI_CONTROLLER => {
-            vgaprint!("Initializing EHCI...TODO\n");
+            __vgaprint!("Initializing EHCI...TODO\n");
             let bar = PciBAR::get(&pci_dev, 0);
             // bar.print();
         },
         PIF_XHCI_CONTROLLER => {
-            vgaprint!("Initializing XHCI...TODO\n");
+            __vgaprint!("Initializing XHCI...TODO\n");
         },
         _ => todo!()
     }

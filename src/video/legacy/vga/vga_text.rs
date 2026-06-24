@@ -5,12 +5,9 @@ use core::fmt::Arguments;
 use core::ptr;
 use lazy_static::lazy_static;
 use spin::Mutex;
-// use crate::drivers::vga::CURRENT_VGA_MODE;
-use crate::drivers::vga::registers::vga_io::{
-    load_4bit_color_palette_into_dac, set_03h_mode_regs, write_fonts,
-};
-use crate::drivers::vga::vga_fonts::*;
 use crate::memory::_P2V_kernel;
+use crate::video::legacy::vga::registers::vga_io::{load_4bit_color_palette_into_dac, set_03h_mode_regs, write_fonts};
+use crate::video::legacy::vga::vga_fonts::VgaFont;
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -281,13 +278,13 @@ lazy_static! {
 }
 
 #[macro_export]
-macro_rules! vgaprint {
+macro_rules! __vgaprint {
     ($($arg:tt)*) => ();
     // ($($arg:tt)*) => ($crate::drivers::vga::vga_text::_print(format_args!($($arg)*)));
 }
 
 #[macro_export]
-macro_rules! vgaprintln {
+macro_rules! __vgaprintln {
     ($($arg:tt)*) => ();
     // () => ($crate::vgaprint!("\n"));
     // ($($arg:tt)*) => ($crate::vgaprint!("{}\n", format_args!($($arg)*)));

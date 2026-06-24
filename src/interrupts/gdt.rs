@@ -33,15 +33,11 @@ use x86_64::{
     },
 };
 
-use crate::{
-    print_ok_msg, vgaprint,
-};
+use crate::{kprintln_ok};
 
 pub const DOUBLE_FAULT_IST_INDEX: u16 = 0;
 
 pub fn gdt_init() {
-    vgaprint!("Initializing global descriptor table...");
-
     GDT.0.load(); // load gdt 
 
     unsafe {
@@ -50,7 +46,7 @@ pub fn gdt_init() {
         load_tss(GDT.1.tss_selector); // set tss selector
     }
 
-    print_ok_msg!();
+    kprintln_ok!("Initialized global descriptor table.");
 }
 
 struct Selectors {
@@ -68,7 +64,7 @@ lazy_static! {
             // setting stack for double fault
             const STACK_SIZE: u64 = 4096 * 16; // 64kB of memory for DOUBLE_FAULT stack
             static mut STACK: [u8; STACK_SIZE as usize] = [0;STACK_SIZE as usize];
-            let stack_start = VirtAddr::from_ptr(&raw const STACK);
+            let stack_start = VirtAddr::from_ptr(unsafe { &raw const STACK });
             let stack_end = stack_start + STACK_SIZE;
             stack_end
         };

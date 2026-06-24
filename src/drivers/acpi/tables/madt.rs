@@ -9,7 +9,7 @@ use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use alloc::vec::Vec;
 use x86_64::VirtAddr;
-use crate::vgaprintln;
+use crate::__vgaprintln;
 
 #[repr(C, packed)]
 pub struct Madt {
@@ -265,27 +265,27 @@ impl MadtParseResult {
     }
 
     pub fn print(&self) {
-        vgaprintln!("MADT parse result:");
-        vgaprintln!(
+        __vgaprintln!("MADT parse result:");
+        __vgaprintln!(
             "  Local APIC physical address: {:#018x}",
             self.local_apic_physical_address
         );
 
-        vgaprintln!("  CPU Local APICs:");
-        vgaprintln!("    total:   {}", self.cpu_apic_count());
-        vgaprintln!("    enabled: {}", self.enabled_cpu_apic_count());
+        __vgaprintln!("  CPU Local APICs:");
+        __vgaprintln!("    total:   {}", self.cpu_apic_count());
+        __vgaprintln!("    enabled: {}", self.enabled_cpu_apic_count());
 
         for (index, apic) in self.cpu_apics.iter().enumerate() {
-            vgaprintln!("    CPU APIC #{}:", index);
-            vgaprintln!("      {:?}", apic);
+            __vgaprintln!("    CPU APIC #{}:", index);
+            __vgaprintln!("      {:?}", apic);
         }
 
-        vgaprintln!("  I/O APICs:");
-        vgaprintln!("    total: {}", self.io_apic_count());
+        __vgaprintln!("  I/O APICs:");
+        __vgaprintln!("    total: {}", self.io_apic_count());
 
         for (index, io_apic) in self.io_apics.iter().enumerate() {
-            vgaprintln!("    I/O APIC #{}:", index);
-            vgaprintln!("      {:?}", io_apic);
+            __vgaprintln!("    I/O APIC #{}:", index);
+            __vgaprintln!("      {:?}", io_apic);
         }
 
         // vgaprintln!("  Interrupt Source Overrides:");

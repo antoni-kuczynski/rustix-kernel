@@ -4,7 +4,7 @@
  */
 use crate::drivers::pci::pci_device::{PciDeviceHeader};
 use crate::drivers::pci::pci_io::{pci_read16, pci_read8};
-use crate::{vgaprintln};
+use crate::{__vgaprintln};
 use crate::drivers::usb;
 
 const CFG_HEADER_TYPE: u32 = 0x0E;
@@ -32,7 +32,7 @@ fn init_device(device: &PciDeviceHeader) {
 }
 
 pub fn pci_init() {
-    vgaprintln!("Initializing PCI devices...");
+    __vgaprintln!("Initializing PCI devices...");
     for bus in 0..256 {
         for device in 0..32 {
             let pci_id = PciDeviceHeader::get_pci_id(bus, device, 0);

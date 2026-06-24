@@ -10,7 +10,7 @@ use crate::memory::eba::eba_kmalloc;
 use crate::memory::page_tables::{PageIndexes, PageSize, PageTable, PageTableEntry};
 use crate::memory::pmm::{pmm_free_range, pmm_is_enabled, pmm_reserve_range};
 use crate::memory::{_P2V_kernel, _V2P_kernel, Cr3, SizeUnit, flush_tlb_single_page};
-use crate::vgaprintln;
+use crate::__vgaprintln;
 use core::cmp::PartialEq;
 use core::ops::AddAssign;
 use core::ptr;
@@ -28,6 +28,7 @@ impl PageManager {
         phys: PhysAddr,
         page_size: &PageSize,
         alloc_in_pmm: bool,
+        flags: u64
     ) {
         let indexes = PageIndexes::get_from_virt(virt);
         let pml4 = PageTable::from_cr3();
@@ -39,6 +40,7 @@ impl PageManager {
             entry.set_flag(PageTableEntry::PRESENT, true);
             entry.set_flag(PageTableEntry::WRITABLE, true);
             entry.set_flag(PageTableEntry::HUGE, true);
+            entry.0 |= flags;
             flush_tlb_single_page(virt);
             if alloc_in_pmm {
                 pmm_reserve_range(phys, page_size.as_u64());
@@ -54,6 +56,7 @@ impl PageManager {
             entry.set_flag(PageTableEntry::PRESENT, true);
             entry.set_flag(PageTableEntry::WRITABLE, true);
             entry.set_flag(PageTableEntry::HUGE, true);
+            entry.0 |= flags;
             flush_tlb_single_page(virt);
             if alloc_in_pmm {
                 pmm_reserve_range(phys, page_size.as_u64());
@@ -69,6 +72,7 @@ impl PageManager {
             entry.set_flag(PageTableEntry::PRESENT, true);
             entry.set_flag(PageTableEntry::WRITABLE, true);
             entry.set_flag(PageTableEntry::HUGE, false);
+            entry.0 |= flags;
             flush_tlb_single_page(virt);
             if alloc_in_pmm {
                 pmm_reserve_range(phys, page_size.as_u64());
@@ -83,6 +87,7 @@ impl PageManager {
         length: u64,
         page_size: &PageSize,
         alloc_in_pmm: bool,
+        flags: u64
     ) {
         let mut mapped_bytes = 0;
         let mut current_virt = virt_start.as_u64();
@@ -95,6 +100,7 @@ impl PageManager {
                 PhysAddr::new_truncate(current_phys),
                 page_size,
                 alloc_in_pmm,
+                flags
             );
             current_virt += step;
             current_phys += step;
@@ -222,7 +228,7 @@ impl PageManager {
             entry.0 = (entry.0 & !0xFFF) | flags;
             flush_tlb_single_page(virt);
         }
-        return true;
+        true
     }
 
     pub unsafe fn map_range_ext(
@@ -379,7 +385,7 @@ pub unsafe fn vmm_eba_map_page(
 ) {
     PAGE_MANAGER
         .lock()
-        .eba_map_page(virt, phys, page_size, alloc_in_pmm);
+        .eba_map_page(virt, phys, page_size, alloc_in_pmm, 0);
 }
 
 pub unsafe fn vmm_eba_map_range(
@@ -391,7 +397,32 @@ pub unsafe fn vmm_eba_map_range(
 ) {
     PAGE_MANAGER
         .lock()
-        .eba_map_range(virt_start, phys_start, length, page_size, alloc_in_pmm);
+        .eba_map_range(virt_start, phys_start, length, page_size, alloc_in_pmm, 0);
+}
+
+pub unsafe fn vmm_eba_map_page_ext(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    page_size: &PageSize,
+    alloc_in_pmm: bool,
+    flags: u64
+) {
+    PAGE_MANAGER
+        .lock()
+        .eba_map_page(virt, phys, page_size, alloc_in_pmm, flags);
+}
+
+pub unsafe fn vmm_eba_map_range_ext(
+    virt_start: VirtAddr,
+    phys_start: PhysAddr,
+    length: u64,
+    page_size: &PageSize,
+    alloc_in_pmm: bool,
+    flags: u64
+) {
+    PAGE_MANAGER
+        .lock()
+        .eba_map_range(virt_start, phys_start, length, page_size, alloc_in_pmm, flags);
 }
 
 pub unsafe fn vmm_early_unmap_page(
@@ -416,7 +447,7 @@ pub unsafe fn early_unmap_range(
         .lock()
         .early_unmap_range(virt_start, phys_start, length, page_size, free_in_pmm);
 }
-
+//==================================================================================================
 pub unsafe fn vmm_map_page(virt: VirtAddr, phys: PhysAddr, page_size: &PageSize) -> bool {
     vmm_map_page_ext(
         virt,

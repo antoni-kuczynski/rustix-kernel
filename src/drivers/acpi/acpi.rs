@@ -8,14 +8,14 @@ use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{DSDT, S5Obj};
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::memory::dir_mapping::physical_to_virtual;
-use crate::{print_fail_msg, print_ok_msg, vgaprint};
+use crate::{print_fail_msg, print_ok_msg, __vgaprint};
 use core::fmt::Error;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 
 #[allow(dead_code)]
 pub fn enable_acpi() -> Result<(), Error> {
-    vgaprint!("Enabling ACPI...");
+    __vgaprint!("Enabling ACPI...");
     let tables = match ACPI_TABLES.get() {
         None => {
             print_fail_msg!();

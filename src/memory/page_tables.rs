@@ -6,7 +6,6 @@ use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::eba::eba_kmalloc;
 use crate::memory::pmm::pmm_allocate_frame;
 use crate::memory::{_P2V_kernel, _V2P_kernel, Cr3, SizeUnit};
-use crate::vgaprintln;
 use alloc::alloc::{Layout, alloc};
 use core::ops::AddAssign;
 use core::ptr;

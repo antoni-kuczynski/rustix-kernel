@@ -4,13 +4,12 @@
  * Created by Antoni Kuczyński
  * 19/05/2026
  */
-use crate::ColorTextMode;
 use crate::memory::SizeUnit;
 use crate::memory::ll_allocator::LinkedListAllocator;
 use crate::memory::page_tables::{PageSize, PageTableEntry};
 use crate::memory::paging::{virtual_to_physical, vmm_map_page_ext};
 use crate::memory::pmm::pmm_allocate_contiguous;
-use crate::{VGAWRITER, print_ok_msg, vgaprint, vgaprintln};
+use crate::{kprintln_ok};
 use core::alloc::Layout;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -96,11 +95,10 @@ impl Drop for DmaAlloc {
 //==================================================================================================
 
 pub fn dma_init() {
-    vgaprint!("Initializing DMA allocator...");
     unsafe {
         DMA_MANAGER.lock().init();
     }
-    print_ok_msg!();
+    kprintln_ok!("Initialized DMA pool.");
 }
 
 pub fn dma_alloc_coherent(size: usize, align: usize) -> Option<DmaAlloc> {

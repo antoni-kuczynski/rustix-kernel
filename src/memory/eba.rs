@@ -1,7 +1,5 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::ColorTextMode;
-use crate::VGAWRITER;
 use core::sync::atomic::Ordering::Acquire;
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 use lazy_static::lazy_static;
@@ -12,7 +10,7 @@ use spin::Mutex;
 //==================================================================================================
 use crate::memory::page_tables::PagingSetupError;
 use crate::memory::{_P2V_kernel, MemoryRange};
-use crate::{earlyHeapEnd, earlyHeapStart, memory, print_ok_msg, vgaprint, vgaprintln};
+use crate::{earlyHeapEnd, earlyHeapStart, memory, print_ok_msg, __vgaprint, __vgaprintln};
 use x86_64::registers::control::Cr3;
 use x86_64::structures::paging::PageTable;
 //==================================================================================================
@@ -69,11 +67,11 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
         let virt_addr = phys_mem_offset + phys_addr.as_u64();
         let pml4_table = &*(virt_addr as *const PageTable);
 
-        vgaprintln!("PML4 (L4) Table at: {:?}", phys_addr);
+        __vgaprintln!("PML4 (L4) Table at: {:?}", phys_addr);
 
         for (i, entry) in pml4_table.iter().enumerate() {
             if !entry.is_unused() {
-                vgaprintln!("  L4 Entry {}: {:?}", i, entry);
+                __vgaprintln!("  L4 Entry {}: {:?}", i, entry);
 
                 let pdpt_phys = entry.addr();
                 let pdpt_virt = phys_mem_offset + pdpt_phys.as_u64();
@@ -81,13 +79,13 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
 
                 for (j, entry_l3) in pdpt_table.iter().enumerate() {
                     if !entry_l3.is_unused() {
-                        vgaprintln!("    L3 Entry {}: {:?}", j, entry_l3);
+                        __vgaprintln!("    L3 Entry {}: {:?}", j, entry_l3);
 
                         if entry_l3
                             .flags()
                             .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
                         {
-                            vgaprintln!("      [1GB Huge Page]");
+                            __vgaprintln!("      [1GB Huge Page]");
                             continue;
                         }
 
@@ -97,13 +95,13 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
 
                         for (k, entry_l2) in pd_table.iter().enumerate() {
                             if !entry_l2.is_unused() {
-                                vgaprintln!("      L2 Entry {}: {:?}", k, entry_l2);
+                                __vgaprintln!("      L2 Entry {}: {:?}", k, entry_l2);
 
                                 if entry_l2
                                     .flags()
                                     .contains(x86_64::structures::paging::PageTableFlags::HUGE_PAGE)
                                 {
-                                    vgaprintln!("        [2MB Huge Page]");
+                                    __vgaprintln!("        [2MB Huge Page]");
                                     continue;
                                 }
 
@@ -113,7 +111,7 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
 
                                 for (l, entry_l1) in pt_table.iter().enumerate() {
                                     if !entry_l1.is_unused() {
-                                        vgaprintln!("        L1 Entry {}: {:?}", l, entry_l1);
+                                        __vgaprintln!("        L1 Entry {}: {:?}", l, entry_l1);
                                     } //WHYYYYYYYY
                                 } //AREEEE
                             } //THEEERE
@@ -127,7 +125,7 @@ pub unsafe fn print_page_table_tree(phys_mem_offset: u64) {
 //finally.
 
 pub fn eba_init() {
-    vgaprint!("Initializing early bumb allocator...");
+    __vgaprint!("Initializing early bumb allocator...");
     let start = _P2V_kernel(unsafe { earlyHeapStart });
     let end = _P2V_kernel(unsafe { earlyHeapEnd });
 

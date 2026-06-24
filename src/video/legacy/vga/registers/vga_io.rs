@@ -1,8 +1,8 @@
 use crate::asm::*;
-use crate::drivers::vga::registers::vga_regs::*;
-use crate::drivers::vga::registers::*;
-use crate::drivers::vga::vga_fonts::VgaFont;
 use core::arch::asm;
+use crate::video::legacy::vga::registers::*;
+use crate::video::legacy::vga::registers::vga_regs::*;
+use crate::video::legacy::vga::vga_fonts::VgaFont;
 
 //  *REG WRITE FUNCTIONS*
 pub unsafe fn graphics_controller_write(index: u8, value: u8) {

@@ -7,14 +7,13 @@
  */
 use core::cmp::max;
 use core::ops::Add;
-use crate::{print_fail_msg, vgaprintln, VGAWRITER};
-use crate::ColorTextMode;
+use crate::{kprintln, kprintln_ok};
 use core::ptr;
 use spin::Mutex;
 use core::sync::atomic::AtomicPtr;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::memory::page_tables::{PageSize, PageTableEntry};
-use crate::{print_ok_msg, vgaprint};
+use crate::{print_ok_msg};
 use crate::boot::cpuid::{CpuId, CPU_ID};
 use crate::memory::align_up;
 use crate::memory::paging::{vmm_map_range, vmm_map_range_ext};
@@ -40,7 +39,7 @@ impl IoRemapManager {
     const fn new() -> IoRemapManager {
         IoRemapManager {
             alloc_ptr: IOREMAP_START as *mut u8,
-            flags: PageTableEntry::WRITABLE | PageTableEntry::PRESENT | PageTableEntry::CACHE_DISABLE
+            flags: PageTableEntry::WRITABLE | PageTableEntry::PRESENT | PageTableEntry::CACHE_DISABLE | PageTableEntry::WRITE_THROUGH
         }
     }
 
@@ -85,13 +84,12 @@ unsafe impl Send for IoRemapManager {}
 pub static IOREMAP_MANAGER: Mutex<IoRemapManager> = Mutex::new(IoRemapManager::new());
 
 pub fn ioremap_init() {
-    vgaprint!("Initializing ioremap...");
-
     if CpuId::has_xd() {
+        kprintln!(Info, "Using no execute flag for ioremap allocations.");
         IOREMAP_MANAGER.lock().flags |= PageTableEntry::NO_EXECUTE;
     }
 
-    print_ok_msg!();
+    kprintln_ok!("Initialized ioremap region.");
 }
 
 pub fn ioremap_permanent(phys_addr: PhysAddr, size: u64, align: usize) -> IoAlloc {

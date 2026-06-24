@@ -6,6 +6,7 @@
  * 13/06/2026
  */
 use core::ops::Deref;
+use core::ptr::read_volatile;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use crate::video::bitmap_font::{BitmapFont, BYTES_PER_CHAR_14PX, FONT_14PX, FONT_HEIGHT_14PX_PX, FONT_WIDTH_14PX_PX, HICHAR_14PX, LOCHAR_14PX};
@@ -16,7 +17,7 @@ const CURSOR_Y_START: usize = 2;
 const CURSOR_X_END_OFFSET: usize = 2;
 const CURSOR_Y_END_OFFSET: usize = 2;
 const ROW_SPACING: usize = 2;
-const CHAR_OVERLAP: usize = 5;
+const CHAR_OVERLAP: usize = 8;
 const TAB_SPACES: usize = 4;
 
 impl Framebuffer {
@@ -38,11 +39,12 @@ impl Framebuffer {
         &mut self,
         x: usize,
         y: usize,
-        foreground: &FramebufferColor,
-        background: &FramebufferColor,
         c: char,
         transparent: bool,
     ) {
+        let mut bg = self.current_background.data;
+        let mut fg = self.current_foreground.data;
+
         if x >= self._pixel_info.width || y >= self._pixel_info.height {
             return;
         }
@@ -87,9 +89,9 @@ impl Framebuffer {
                         let base_offset = (dest_y as usize * pitch) + (dest_x as usize* bpp);
 
                         if is_set {
-                            self.write_raw_pixel(base_offset, foreground.data, bpp);
+                            self.write_raw_pixel_24(base_offset, fg, bpp);
                         } else if !transparent {
-                            self.write_raw_pixel(base_offset, background.data, bpp);
+                            self.write_raw_pixel_24(base_offset, bg, bpp);
                         }
                     }
                 }
@@ -100,12 +102,35 @@ impl Framebuffer {
         }
     }
 
+    pub fn put_string(&mut self, x: usize, y: usize, string: &str) {
+        let mut future_pos = x;
+        for c in string.chars() {
+            self.putchar(future_pos,y, c, false);
+            future_pos += (self.font.width - CHAR_OVERLAP);
+        }
+    }
+
+    pub fn put_string_no_bg(&mut self, x: usize, y: usize, string: &str) {
+        let mut future_pos = x;
+        for c in string.chars() {
+            self.putchar(future_pos,y, c, true);
+            future_pos += (self.font.width - CHAR_OVERLAP);
+        }
+    }
+
     #[inline(always)]
-    unsafe fn write_raw_pixel(&mut self, base_offset: usize, color_data: u32, bpp: usize) {
+    unsafe fn write_raw_pixel_24(&mut self, base_offset: usize, color_data: u32, bpp: usize) {
         //TODO: color bpp matching
         self.fb_write(base_offset, color_data as u8);
         self.fb_write(base_offset + 1, (color_data >> 8) as u8);
         self.fb_write(base_offset + 2, (color_data >> 16) as u8);
+    }
+
+    #[inline(always)]
+    unsafe fn write_raw_pixel(&mut self, base_offset: usize, color_data: u32, _bpp: usize) {
+        //TODO: color bpp matching
+        let pixel_ptr = self.base.add(base_offset) as *mut u32;
+        pixel_ptr.write_volatile(color_data);
     }
 
     fn cursor_new_row(&mut self) {
@@ -153,13 +178,13 @@ impl Framebuffer {
         }
     }
 
-    pub fn put_string_at_cursor(&mut self, string: &str, foreground: &FramebufferColor, background: Option<&FramebufferColor>) {
+    pub fn put_string_at_cursor(&mut self, string: &str) {
         for c in string.chars() {
-            self.put_char_at_cursor(c, foreground, background);
+            self.put_char_at_cursor(c);
         }
     }
 
-    pub fn put_char_at_cursor(&mut self, char: char, foreground: &FramebufferColor, background: Option<&FramebufferColor>) {
+    pub fn put_char_at_cursor(&mut self, char: char) {
         let font_width = self.font.width;
         let font_height = self.font.height;
 
@@ -172,34 +197,46 @@ impl Framebuffer {
             return;
         }
 
-        if let Some(bg) = background {
-            self.putchar(
-                self.cursor_pos_x_px,
-                self.cursor_pos_y_px,
-                foreground,
-                bg,
-                char,
-                false
-            );
-        } else {
-            self.putchar(
-                self.cursor_pos_x_px,
-                self.cursor_pos_y_px,
-                foreground,
-                &FramebufferColor::from_rgb(0,0,0), //unused
-                char,
-                true
-            );
-        }
+        //TODO: non transparent backgrounds, for now they're broken as hell
+        self.putchar(
+            self.cursor_pos_x_px,
+            self.cursor_pos_y_px,
+            char,
+            true
+        );
 
         self.cursor_push_by(1);
     }
 }
 
-pub fn put_string(s: &str, foreground: &FramebufferColor, background: &FramebufferColor) {
-    FRAMEBUFFER.lock().as_mut().unwrap().put_string_at_cursor(s, foreground, Some(background));
+pub fn fb_set_foreground(foreground_color: FramebufferColor) {
+    FRAMEBUFFER.lock().as_mut().unwrap().current_foreground = foreground_color;
 }
 
-pub fn put_string_no_bg(s: &str, foreground: &FramebufferColor) {
-    FRAMEBUFFER.lock().as_mut().unwrap().put_string_at_cursor(s, foreground, None);
+pub fn fb_set_background(background_color: FramebufferColor) {
+    FRAMEBUFFER.lock().as_mut().unwrap().current_background = background_color;
+}
+
+pub fn fb_get_foreground() -> FramebufferColor {
+    FRAMEBUFFER.lock().as_mut().unwrap().current_foreground
+}
+
+pub fn fb_get_background() -> FramebufferColor {
+    FRAMEBUFFER.lock().as_mut().unwrap().current_background
+}
+
+pub fn fb_put_string_at(x: usize, y: usize, s: &str) {
+    FRAMEBUFFER.lock().as_mut().unwrap().put_string(x, y, s);
+}
+
+pub fn fb_put_string_at_no_bg(x: usize, y: usize, s: &str) {
+    FRAMEBUFFER.lock().as_mut().unwrap().put_string_no_bg(x,y, s);
+}
+
+pub fn fb_put_string(s: &str) {
+    FRAMEBUFFER.lock().as_mut().unwrap().put_string_at_cursor(s);
+}
+
+pub fn fb_put_string_no_bg(s: &str) {
+    FRAMEBUFFER.lock().as_mut().unwrap().put_string_at_cursor(s);
 }

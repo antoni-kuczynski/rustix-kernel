@@ -5,8 +5,6 @@
  * Created by Antoni Kuczyński
  * 30/05/2026
  */
-use crate::{print_ok_msg, vgaprintln, VGAWRITER};
-use crate::ColorTextMode;
 use core::ops::Add;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +18,7 @@ use crate::drivers::acpi::tables::madt::Madt;
 use crate::drivers::apic::disable_pic;
 use crate::memory::ioremap::{ioremap_permanent, IoAlloc};
 use crate::memory::page_tables::PageSize;
-use crate::{print_fail_msg, vgaprint};
+use crate::{kprintln, kprintln_failed, kprintln_ok};
 use crate::drivers::apic::pit::_pit_wait_ms;
 // ============================================================================
 // Local APIC / xAPIC constants
@@ -266,9 +264,8 @@ impl Apic {
 
 
 pub fn apic_bsp_init() {
-    vgaprint!("Initializng APIC for BSP...");
     if !CpuId::has_apic() {
-        print_fail_msg!();
+        kprintln_failed!("Found and enabled BSP APIC.");
         panic!(" [APIC] Apic is not present on the system!");
     }
 
@@ -292,18 +289,18 @@ pub fn apic_bsp_init() {
         LAPIC.call_once(|| apic);
 
     }
-    print_ok_msg!();
+    kprintln_ok!("Found and enabled BSP APIC.");
 }
 
 pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 pub static LAPIC: Once<Apic> = Once::new();
 
 pub extern "x86-interrupt" fn apic_spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    vgaprintln!("NOT IMPLEMENTED YET - spurious vector");
+    kprintln!(Debug, "NOT IMPLEMENTED YET - spurious vector");
 }
 
 pub extern "x86-interrupt" fn apic_error_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    vgaprintln!("NOT IMPLEMENTED YET - error vector");
+    kprintln!(Debug, "NOT IMPLEMENTED YET - error vector");
 }
 
 pub extern "x86-interrupt" fn lapic_timer_interrupt_handler(

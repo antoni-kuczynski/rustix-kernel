@@ -10,8 +10,8 @@ use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
 use crate::memory::{_V2P_kernel, KERNEL_VIRT_BASE, SizeUnit};
-use crate::{__oldMultibootPhysAddr, earlyHeapEnd, vgaprint};
-use crate::{print_ok_msg, vgaprintln};
+use crate::{__oldMultibootPhysAddr, earlyHeapEnd, __vgaprint};
+use crate::{print_ok_msg, __vgaprintln};
 use core::ptr;
 use core::ptr::read_volatile;
 use spin::Once;
@@ -81,7 +81,7 @@ impl MultibootInfoView {
         );
 
         //copy mb struct
-        vgaprint!("Initializing multiboot2 and modules...");
+        __vgaprint!("Initializing multiboot2 and modules...");
         Self::copy_mb_struct(original_virt_address, virt_address_to_copy_to);
 
         let copied_base = &*(virt_address_to_copy_to as *const MultibootInfo);
@@ -291,10 +291,10 @@ impl MultibootInfoView {
             let mut tags = self.tags as *const MultibootTagBase;
             let tags_end = tags.byte_add(self.tags_size_bytes);
 
-            vgaprintln!("Multiboot info structure:");
-            vgaprintln!("===================================");
-            vgaprintln!("Total size: {}", total_size);
-            vgaprintln!("Tags:");
+            __vgaprintln!("Multiboot info structure:");
+            __vgaprintln!("===================================");
+            __vgaprintln!("Total size: {}", total_size);
+            __vgaprintln!("Tags:");
             while tags < tags_end {
                 let tag_base = read_volatile(tags);
                 let tag_type = tag_base.tag_type;
@@ -306,7 +306,7 @@ impl MultibootInfoView {
 
                 tags = tags.byte_add(length);
             }
-            vgaprintln!("end");
+            __vgaprintln!("end");
         }
     }
     //==================================================================================================
@@ -452,7 +452,7 @@ impl MultibootMemoryMapTag {
 
                 // vgaprintln!("Memory map entry:");
                 // vgaprintln!("========================");
-                vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
+                __vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
                 // vgaprintln!("Length: {:#011x}", length);
                 // vgaprintln!("Region type: {:#06x}", region_type);
                 // vgaprintln!("========================");
@@ -468,13 +468,13 @@ impl MultibootMemoryMapTag {
         let entry_size = self.entry_size;
         let entry_version = self.entry_version;
 
-        vgaprintln!("Multiboot memory map tag:");
-        vgaprintln!("===================================");
-        vgaprintln!("Type: {:#02x}", tag_type);
-        vgaprintln!("Size: {}", tag_size);
-        vgaprintln!("Entry size: {}", entry_size);
-        vgaprintln!("Entry version: {}", entry_version);
-        vgaprintln!("===================================");
+        __vgaprintln!("Multiboot memory map tag:");
+        __vgaprintln!("===================================");
+        __vgaprintln!("Type: {:#02x}", tag_type);
+        __vgaprintln!("Size: {}", tag_size);
+        __vgaprintln!("Entry size: {}", entry_size);
+        __vgaprintln!("Entry version: {}", entry_version);
+        __vgaprintln!("===================================");
         self.print_memory_map();
     }
 
@@ -516,14 +516,14 @@ impl MultibootModulesTag {
         let mod_start = self.mod_start;
         let mod_end = self.mod_end;
 
-        vgaprintln!("===================================");
-        vgaprintln!("Multiboot modules tag:");
-        vgaprintln!("===================================");
-        vgaprintln!("Type: {:#02x}", tag_type);
-        vgaprintln!("Size: {}", tag_size);
-        vgaprintln!("Mod start: {:#011x}", mod_start);
-        vgaprintln!("Mod end: {:#011x}", mod_end);
-        vgaprintln!("===================================");
+        __vgaprintln!("===================================");
+        __vgaprintln!("Multiboot modules tag:");
+        __vgaprintln!("===================================");
+        __vgaprintln!("Type: {:#02x}", tag_type);
+        __vgaprintln!("Size: {}", tag_size);
+        __vgaprintln!("Mod start: {:#011x}", mod_start);
+        __vgaprintln!("Mod end: {:#011x}", mod_end);
+        __vgaprintln!("===================================");
     }
 
     pub fn header(&self) -> MultibootTagBase {

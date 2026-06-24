@@ -4,14 +4,12 @@
  * Created by Antoni Kuczyński
  * 20/04/2026
  */
-use crate::ColorTextMode;
 use crate::memory::ll_allocator::LinkedListAllocator;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::{vmm_eba_map_page, vmm_map_page};
 use crate::memory::pmm::{pmm_allocate_contiguous, pmm_allocate_frame};
 use crate::memory::{FRAME_SIZE, SizeUnit};
-use crate::{VGAWRITER, vgaprint};
-use crate::{print_ok_msg, vgaprintln};
+use crate::{kprintln_ok};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ops::{Div, Mul};
 use spin::Mutex;
@@ -41,15 +39,12 @@ impl<A> Locked<A> {
 pub static ALLOCATOR: Locked<LinkedListAllocator> = Locked::new(LinkedListAllocator::new());
 
 pub fn kheap_init() {
-    vgaprint!("Initializing kernel heap...");
-
     unsafe {
         ALLOCATOR
             .lock()
             .init(KHEAP_START as usize, KHEAP_LENGTH as usize);
     }
-
-    print_ok_msg!();
+    kprintln_ok!("Enabled kernel heap.");
 }
 
 unsafe impl GlobalAlloc for Locked<LinkedListAllocator> {

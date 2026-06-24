@@ -4,7 +4,7 @@
  */
 use crate::drivers::pci::pci_device::PciDeviceHeader;
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
-use crate::vgaprintln;
+use crate::__vgaprintln;
 
 pub struct PciBAR {
     base_address: u64,
@@ -124,10 +124,10 @@ impl PciBAR {
             BarType::Io => "I/O",
         };
 
-        vgaprintln!("PCI BAR:");
-        vgaprintln!("  Type         : {}", bar_type_str);
-        vgaprintln!("  Base Address : 0x{:016x}", self.base_address);
-        vgaprintln!("  Size         : 0x{:x} ({} bytes)", self.size, self.size);
-        vgaprintln!("  Prefetchable : {}", self.prefetchable);
+        __vgaprintln!("PCI BAR:");
+        __vgaprintln!("  Type         : {}", bar_type_str);
+        __vgaprintln!("  Base Address : 0x{:016x}", self.base_address);
+        __vgaprintln!("  Size         : 0x{:x} ({} bytes)", self.size, self.size);
+        __vgaprintln!("  Prefetchable : {}", self.prefetchable);
     }
 }
