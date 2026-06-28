@@ -5,7 +5,7 @@
  * 03/06/2026
  */
 use crate::drivers::pci::mmio_read;
-use crate::vgaprintln;
+use crate::{kprintln};
 use alloc::vec::Vec;
 use core::fmt;
 use x86_64::VirtAddr;
@@ -332,7 +332,7 @@ pub unsafe fn parse_xhci_supported_protocols(
     let mut guard = 0usize;
     loop {
         if guard > 256 {
-            vgaprintln!("Exceeded chain length of 256 - the ext cap chain is corrupted!");
+            kprintln!(Warn,"Exceeded chain length of 256 - the ext cap chain is corrupted!");
             break;
         }
 

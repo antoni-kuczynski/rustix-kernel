@@ -4,7 +4,7 @@
  * 24/12/2025
  */
 use crate::drivers::pci::pci_io::pci_read16;
-use crate::vgaprintln;
+use crate::kprintln;
 
 #[repr(C, packed)]
 pub struct PciDevice {
@@ -82,14 +82,14 @@ impl PciDevice {
         let header_type = self.header_type;
         let base_id = self.base_id;
 
-        vgaprintln!("PCI Device Header:");
-        vgaprintln!("  Vendor ID   : 0x{:04x}", vendor_id);
-        vgaprintln!("  Device ID   : 0x{:04x}", device_id);
-        vgaprintln!("  Class Code  : 0x{:02x}", class_code);
-        vgaprintln!("  Subclass    : 0x{:02x}", sub_class);
-        vgaprintln!("  Prog IF     : 0x{:02x}", prog_if);
-        vgaprintln!("  Header Type : 0x{:02x}", header_type);
-        vgaprintln!("  Base ID : 0x{:08x}", base_id);
+        kprintln!(Debug, "PCI Device Header:");
+        kprintln!(Debug, "  Vendor ID   : 0x{:04x}", vendor_id);
+        kprintln!(Debug, "  Device ID   : 0x{:04x}", device_id);
+        kprintln!(Debug, "  Class Code  : 0x{:02x}", class_code);
+        kprintln!(Debug, "  Subclass    : 0x{:02x}", sub_class);
+        kprintln!(Debug, "  Prog IF     : 0x{:02x}", prog_if);
+        kprintln!(Debug, "  Header Type : 0x{:02x}", header_type);
+        kprintln!(Debug, "  Base ID : 0x{:08x}", base_id);
     }
 
     pub fn prog_info_byte(&self) -> u8 {

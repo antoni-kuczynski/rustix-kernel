@@ -7,9 +7,9 @@
 use crate::drivers::apic::apic::LAPIC;
 use crate::interrupts::install_dynamic_idt_route;
 use crate::interrupts::vector::{IDT_VECTOR_COUNT, InterruptVector};
-use crate::vgaprintln;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+use crate::kprintln;
 
 pub type RoutedInterruptHandler = fn(InterruptVector, InterruptStackFrame);
 pub type RoutedInterruptHandlerWithContext = fn(InterruptVector, InterruptStackFrame, usize);
@@ -65,7 +65,7 @@ fn dispatch(vector_raw: u8, stack_frame: InterruptStackFrame) {
 
     let handler = ROUTES[vector.as_u8() as usize].load(Ordering::Acquire);
     if handler == 0 {
-        vgaprintln!("Unhandled interrupt vector {:#04x}", vector_raw);
+        kprintln!(Warn, "Unhandled interrupt vector {:#04x}", vector_raw);
         unsafe {
             if let Some(lapic) = LAPIC.get() {
                 lapic.eoi();
