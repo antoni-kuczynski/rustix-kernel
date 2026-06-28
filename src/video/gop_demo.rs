@@ -199,8 +199,6 @@ fn draw(delta_time: f32, balls: &Vec<Ball>, fb_copy: &mut Vec<u8>, fb_length: us
     }
     fb.swap_buffers();
     unsafe { ptr::copy_nonoverlapping(fb_copy.as_mut_ptr(), fb.back_buffer.as_mut_ptr(), fb_length) };
-
-    // fb.clear();
 }
 
 pub static IS_DEMO_RUNNING: bool = true;
@@ -221,35 +219,13 @@ pub fn demo() {
     unsafe { ptr::copy_nonoverlapping(fb.base, fb_copy.as_mut_ptr(), fb_length) };
 
     let running = true;
-    let mut counter = 0;
-    let counter_max = 15;
-    let mut prev_fps = 0;
-
     fb.current_foreground = FramebufferColor::from_rgb(255,255,255);
     fb.current_background = FramebufferColor::from_rgb(0,0,0);
 
-    let str = "FPS: ";
-    let str1 = "DTIME: ";
-    let mode = fb.width().to_string() + "x" + &*fb.height().to_string() + "x" + &*fb.bpp().to_string();
     let mut previous_time = timer_lapic_uptime_ms();
     while running {
         let current_time = timer_lapic_uptime_ms();
         let delta_time: f32 = (current_time - previous_time) as f32 / 1000f32;
-
-        if counter < counter_max {
-            counter += 1;
-        } else {
-            prev_fps = (1.0 / delta_time) as usize; //on qemu with kvm delta_time = 0 most of the time, it's always nice having infinite FPS
-            counter = 0;
-        }
-
-        fb.put_string_no_bg(fb.width() - 55 - 80,5, str);
-        fb.put_string_no_bg(fb.width() - 85,5, prev_fps.to_string().as_str());
-
-        fb.put_string_no_bg(fb.width() - 55 - 80,20, str1);
-        fb.put_string_no_bg(fb.width() - 75,20, delta_time.to_string().as_str());
-
-        fb.put_string_no_bg(fb.width() - 55 - 80,36, mode.as_str());
 
         update(delta_time, &mut balls, &fb);
         draw(delta_time, &balls, &mut fb_copy, fb_length, fb);
