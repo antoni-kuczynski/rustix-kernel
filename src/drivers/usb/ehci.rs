@@ -3,10 +3,10 @@ use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType};
 use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
-use crate::vgaprintln;
 use alloc::boxed::Box;
 use core::ops::Add;
 use core::ptr;
+use crate::kprintln;
 
 pub struct EHCI {
     header: PciDevice,
@@ -78,7 +78,7 @@ impl PciDeviceInitializer for EHCI {
                 match a {
                     Ok(x) => {
                         if x == 0 {
-                            vgaprintln!("BIOS didnt own the EHCI");
+                            kprintln!(Info,"BIOS didnt own the EHCI");
                         }
                     }
                     Err(e) => return Err(InitializationFailure),

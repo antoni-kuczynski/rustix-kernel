@@ -5,8 +5,8 @@
 use crate::drivers::pci::pci_device::PciDevice;
 use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use crate::memory::ioremap::{IoAlloc, ioremap_permanent};
-use crate::vgaprintln;
 use x86_64::PhysAddr;
+use crate::kprintln;
 
 #[derive(PartialEq, Eq)]
 
@@ -145,11 +145,11 @@ impl PciBAR {
             BarType::Io => "I/O",
         };
 
-        vgaprintln!("PCI BAR:");
-        vgaprintln!("  Type         : {}", bar_type_str);
-        vgaprintln!("  Base Address : 0x{:016x}", self.base_address);
-        vgaprintln!("  Size         : 0x{:x} ({} bytes)", self.size, self.size);
-        vgaprintln!("  Prefetchable : {}", self.prefetchable);
+        kprintln!(Debug, "PCI BAR:");
+        kprintln!(Debug, "  Type         : {}", bar_type_str);
+        kprintln!(Debug, "  Base Address : 0x{:016x}", self.base_address);
+        kprintln!(Debug, "  Size         : 0x{:x} ({} bytes)", self.size, self.size);
+        kprintln!(Debug, "  Prefetchable : {}", self.prefetchable);
     }
 
     pub fn base_address(&self) -> PhysAddr {

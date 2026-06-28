@@ -23,7 +23,7 @@ op_base = base + caplength
 The Runtime Base shall be 32-
 byte aligned and is calculated by adding the value Runtime Register Space
 Offset register (refer to Section 5.3.8) to the Capability Base address. All
-Runtime registers are multiples of 32 bits in length.
+Runtime registers are multiplevgaprintlns of 32 bits in length.
 
 runtime_base = RTSOFF +
 

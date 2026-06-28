@@ -233,6 +233,11 @@ impl Apic {
     }
 
     #[inline]
+    pub unsafe fn id(&self) -> u8 {
+        (self.lapic_read(LAPIC_ID) >> 24) as u8
+    }
+    
+    #[inline]
     pub unsafe fn lapic_write(&self, reg: usize, value: u32) {
         write_volatile(self.mmio_mapping.virt_addr.add(reg as u64).as_u64() as *mut u32, value);
     }

@@ -38,7 +38,6 @@ use crate::interrupts::router::register_handler_with_context;
 use crate::interrupts::vector::InterruptVector;
 use crate::interrupts::vector::allocate_vectors;
 use crate::memory::dma::DmaAlloc;
-use crate::vgaprintln;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
@@ -47,6 +46,7 @@ use core::ops::Add;
 use core::ptr;
 use x86_64::VirtAddr;
 use x86_64::structures::idt::InterruptStackFrame;
+use crate::kprintln;
 
 const PCI_COMMAND_REGISTER: u32 = 0x04;
 const PCI_COMMAND_MEMORY_SPACE: u16 = 1 << 1;
@@ -222,7 +222,7 @@ unsafe fn xhci_legacy_handoff(first_ext_cap_addr: Option<VirtAddr>) {
                     if timer_lapic_uptime_ms().wrapping_sub(start_ms)
                         >= XHCI_LEGACY_HANDOFF_TIMEOUT_MS
                     {
-                        vgaprintln!("xHCI legacy handoff timeout: USBLEGSUP={:#010x}", current);
+                        kprintln!(Info, "xHCI legacy handoff timeout: USBLEGSUP={:#010x}", current);
                         break;
                     }
                 }
@@ -235,11 +235,6 @@ unsafe fn xhci_legacy_handoff(first_ext_cap_addr: Option<VirtAddr>) {
                 XHCI_LEGACY_CTLSTS_OFFSET,
                 XHCI_LEGACY_CTLSTS_CLEAR,
             );
-            vgaprintln!(
-                "xHCI legacy handoff: USBLEGSUP={:#010x} USBLEGCTLSTS={:#010x}",
-                legsup,
-                legctlsts
-            );
             return;
         }
 
@@ -250,7 +245,7 @@ unsafe fn xhci_legacy_handoff(first_ext_cap_addr: Option<VirtAddr>) {
         cap_addr += (next as u64) * 4;
     }
 
-    vgaprintln!("xHCI legacy handoff: extended capability chain too long");
+    kprintln!(Warn,"xHCI legacy handoff: extended capability chain too long");
 }
 
 fn enable_usb3_port_power(operational_base: VirtAddr, supported_protocols: &[XhciPortInfo]) {
@@ -273,31 +268,34 @@ fn enable_usb3_port_power(operational_base: VirtAddr, supported_protocols: &[Xhc
     }
 
     if powered_ports != 0 {
-        vgaprintln!("xHCI powered {} USB3 root hub ports", powered_ports);
+        kprintln!(Info,"xHCI powered {} USB3 root hub ports", powered_ports);
     }
 }
 
 fn debug_print_supported_protocols(supported_protocols: &[XhciPortInfo]) {
     for port_info in supported_protocols {
         if port_info.protocol == XhciPortProtocol::Unknown {
-            vgaprintln!("  port {}: unknown", port_info.port_id);
+            kprintln!(Debug, "  port {}: unknown", port_info.port_id);
             continue;
         }
 
         match port_info.raw_bps {
-            Some(raw_bps) => vgaprintln!(
-                "  port {}: {} {}.{} {:?} psiv {} {} slot_type {} proto {:#x}",
-                port_info.port_id,
-                port_info.protocol,
-                port_info.major,
-                port_info.minor,
-                port_info.speed,
-                port_info.psiv,
-                raw_bps,
-                port_info.slot_type,
-                port_info.protocol_defined
-            ),
-            None => vgaprintln!(
+            Some(raw_bps) => {
+                kprintln!(Debug,
+                    "  port {}: {} {}.{} {:?} psiv {} {} slot_type {} proto {:#x}",
+                    port_info.port_id,
+                    port_info.protocol,
+                    port_info.major,
+                    port_info.minor,
+                    port_info.speed,
+                    port_info.psiv,
+                    raw_bps,
+                    port_info.slot_type,
+                    port_info.protocol_defined
+                );
+            }
+            None => {
+                kprintln!(Debug,
                 "  port {}: {} {}.{} {:?} psiv {} unknown slot_type {} proto {:#x}",
                 port_info.port_id,
                 port_info.protocol,
@@ -307,7 +305,8 @@ fn debug_print_supported_protocols(supported_protocols: &[XhciPortInfo]) {
                 port_info.psiv,
                 port_info.slot_type,
                 port_info.protocol_defined
-            ),
+            );
+            }
         }
     }
 }
@@ -319,7 +318,7 @@ fn debug_print_usb3_portsc(operational_base: VirtAddr, supported_protocols: &[Xh
         }
 
         let portsc = PortStatusControl::from_port(operational_base, port_info.port_id);
-        vgaprintln!(
+        kprintln!(Debug,
             "USB3 port {} PORTSC raw={:#010x} pp={} ccs={} ped={} pls={:?} ps={} cas={} chg[csc={} pec={} wrc={} prc={} plc={} cec={}]",
             port_info.port_id,
             portsc.raw(),
@@ -752,7 +751,7 @@ impl XhciInterrupterState {
             let trb_type = (control >> 10) & 0x3f;
             let cycle = control & 1;
 
-            vgaprintln!(
+            kprintln!(Debug,
                 "xHCI {} event TRB: type={} cycle={} param={:#018x} status={:#010x} control={:#010x} runtime_base={:#011x}",
                 self.name,
                 trb_type,
@@ -767,7 +766,7 @@ impl XhciInterrupterState {
 
     unsafe fn handle_device_attach(&self, controller: &XHCI, port: u8, portsc: PortStatusControl) {
         let Some(port_info) = controller.port_info(port) else {
-            vgaprintln!("Attach detected at port {} with unknown protocol", port);
+            kprintln!(Info,"Attach detected at port {} with unknown protocol", port);
             return;
         };
         // vgaprintln!(
@@ -779,7 +778,7 @@ impl XhciInterrupterState {
 
     unsafe fn handle_device_detach(&self, controller: &XHCI, port: u8, portsc: PortStatusControl) {
         let Some(port_info) = controller.port_info(port) else {
-            vgaprintln!("Detach detected at port {} with unknown protocol", port);
+            kprintln!(Info,"Detach detected at port {} with unknown protocol", port);
             return;
         };
         // vgaprintln!(
@@ -792,7 +791,7 @@ impl XhciInterrupterState {
     unsafe fn handle_port_status_change(&self, trb: PortStatusChangeEventTrb, controller: &XHCI) {
         let port = trb.read_port_id();
         if !controller.is_valid_port(port) {
-            vgaprintln!("Ignoring port status change for invalid port {}", port);
+            kprintln!(Info,"Ignoring port status change for invalid port {}", port);
             return;
         }
 
@@ -848,7 +847,7 @@ impl XhciInterrupterState {
 
 fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) {
     if context == 0 {
-        vgaprintln!("xHCI IRQ without interrupter context");
+        kprintln!(Warn,"xHCI IRQ without interrupter context");
         unsafe {
             if let Some(lapic) = LAPIC.get() {
                 lapic.eoi();
