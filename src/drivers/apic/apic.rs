@@ -5,8 +5,6 @@
  * Created by Antoni Kuczyński
  * 30/05/2026
  */
-use crate::{print_ok_msg, vgaprintln, VGAWRITER};
-use crate::ColorTextMode;
 use core::ops::Add;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -20,7 +18,7 @@ use crate::drivers::acpi::tables::madt::Madt;
 use crate::drivers::apic::disable_pic;
 use crate::memory::ioremap::{ioremap_permanent, IoAlloc};
 use crate::memory::page_tables::PageSize;
-use crate::{print_fail_msg, vgaprint};
+use crate::{kprintln, kprintln_failed, kprintln_ok};
 use crate::drivers::apic::pit::_pit_wait_ms;
 // ============================================================================
 // Local APIC / xAPIC constants
@@ -174,7 +172,8 @@ pub struct Apic {
 
 impl Apic {
     unsafe fn new(phys_addr: PhysAddr) -> Apic {
-        let mmio_mapping = ioremap_permanent(phys_addr, PageSize::SIZE_4KB, 16);
+        //lapic space takes exactly one page and must be aligned to page
+        let mmio_mapping = ioremap_permanent(phys_addr, PageSize::SIZE_4KB, PageSize::SIZE_4KB as usize);
 
         if mmio_mapping.virt_addr.is_null() {
             panic!("mmio mapping for APIC failed!");
@@ -191,7 +190,7 @@ impl Apic {
         disable_pic();
 
         //set idt index and enable apic
-        let mut val = self.lapic_read(LAPIC_SPURIOUS_VECTOR as usize);
+        let mut val = self.lapic_read(LAPIC_SVR);
         val &= LAPIC_SVR_VECTOR_MASK;
         val |= LAPIC_SPURIOUS_VECTOR_IDT_INDEX as u32;
         val |= LAPIC_SVR_APIC_ENABLE;
@@ -206,12 +205,7 @@ impl Apic {
         self.lapic_write(LAPIC_LVT_LINT1, LAPIC_LVT_MASKED);
 
         self.lapic_write(LAPIC_LVT_ERROR, LAPIC_ERROR_VECTOR as u32);
-        self.lapic_write(LAPIC_SPURIOUS_VECTOR as usize, val);
-
-        self.lapic_write(
-            LAPIC_SVR,
-            LAPIC_SVR_APIC_ENABLE | LAPIC_SPURIOUS_VECTOR_IDT_INDEX as u32,
-        );
+        self.lapic_write(LAPIC_SVR, val);
 
         //TIMER
         let calibration_ms = 50;
@@ -266,10 +260,9 @@ impl Apic {
 
 
 pub fn apic_bsp_init() {
-    vgaprint!("Initializng APIC for BSP...");
     if !CpuId::has_apic() {
-        print_fail_msg!();
-        panic!(" [APIC] Apic is not present on the system!");
+        kprintln_failed!("Found and enabled BSP APIC.");
+        panic!("Apic is not present on the system!");
     }
 
     unsafe {
@@ -280,9 +273,9 @@ pub fn apic_bsp_init() {
         let madt_addr = madt.parse().local_apic_physical_address;
 
         if msr_addr != madt_addr {
-            print_fail_msg!();
-            vgaprintln!("MSR: {:#011x} | MADT: {:#011x}", msr_addr, madt_addr);
-            panic!(" [APIC] Apic base address mismatch (MADT / MSR)!");
+            kprintln_failed!("Found and enabled BSP APIC.");
+            kprintln!(Error, "[APIC] MSR: {:#011x} | MADT: {:#011x}", msr_addr, madt_addr);
+            panic!("Apic base address mismatch (MADT / MSR)!");
         }
 
         let mut apic = Apic::new(PhysAddr::new(msr_addr));
@@ -290,18 +283,18 @@ pub fn apic_bsp_init() {
         LAPIC.call_once(|| apic);
 
     }
-    print_ok_msg!();
+    kprintln_ok!("Found and enabled BSP APIC.");
 }
 
 pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 pub static LAPIC: Once<Apic> = Once::new();
 
 pub extern "x86-interrupt" fn apic_spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    vgaprintln!("NOT IMPLEMENTED YET - spurious vector");
+    kprintln!(Debug, "NOT IMPLEMENTED YET - spurious vector");
 }
 
 pub extern "x86-interrupt" fn apic_error_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    vgaprintln!("NOT IMPLEMENTED YET - error vector");
+    kprintln!(Debug, "NOT IMPLEMENTED YET - error vector");
 }
 
 pub extern "x86-interrupt" fn lapic_timer_interrupt_handler(

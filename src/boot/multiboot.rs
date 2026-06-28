@@ -1,18 +1,16 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
-use crate::ColorTextMode;
 pub(crate) use crate::boot::multiboot_tag::{
     MemoryRegionType, MultibootBootloaderName, MultibootMemoryMapEntry, MultibootMemoryMapTag,
     MultibootModulesTag, MultibootTagBase, MultibootTagStruct, mb_tag_as_u32,
 };
-use crate::boot::multiboot_tag::{MultibootNewRsdpTag, MultibootOldRsdpTag};
+use crate::boot::multiboot_tag::{MultibootFramebufferInfoTag, MultibootNewRsdpTag, MultibootOldRsdpTag};
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::memory::_P2V_kernel;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::{vmm_early_unmap_page, vmm_eba_map_page, vmm_eba_map_range};
 use crate::memory::{_V2P_kernel, KERNEL_VIRT_BASE, SizeUnit};
-use crate::{__oldMultibootPhysAddr, VGAWRITER, earlyHeapEnd, vgaprint};
-use crate::{print_ok_msg, vgaprintln};
+use crate::{__kprintln_ok_buf, __oldMultibootPhysAddr, earlyHeapEnd, kprintln};
 use core::ptr;
 use core::ptr::read_volatile;
 use spin::Once;
@@ -82,7 +80,6 @@ impl MultibootInfoView {
         );
 
         //copy mb struct
-        vgaprint!("Initializing multiboot2 and modules...");
         Self::copy_mb_struct(original_virt_address, virt_address_to_copy_to);
 
         let copied_base = &*(virt_address_to_copy_to as *const MultibootInfo);
@@ -106,7 +103,7 @@ impl MultibootInfoView {
         //unmap original
         Self::unmap_mb_region(original_aligned, virt_address_to_copy_to, length_bytes);
 
-        print_ok_msg!();
+        __kprintln_ok_buf!("Initialized Multiboot2 info struct and its modules.");
         view
     }
 
@@ -266,6 +263,16 @@ impl MultibootInfoView {
         self.get_tag_addr_by_type::<MultibootModulesTag>(search_start_addr)
     }
     //==================================================================================================
+    fn get_framebuffer_tag(&self) -> Option<&'static mut MultibootFramebufferInfoTag> {
+        if let Some(framebuffer_tag) = self.get_tag_addr_by_type::<MultibootFramebufferInfoTag>(self.tags) {
+            Some(framebuffer_tag)
+        } else {
+            None
+        }
+    }
+
+
+    //==================================================================================================
     unsafe fn get_old_rsdp(&self) -> Option<&'static RSDP> {
         let tag = self.get_tag_addr_by_type::<MultibootOldRsdpTag>(self.tags)?;
         Some(&(*tag).copy_of_rsdp)
@@ -274,31 +281,6 @@ impl MultibootInfoView {
     unsafe fn get_new_rsdp(&self) -> Option<&'static XSDP> {
         let tag = self.get_tag_addr_by_type::<MultibootNewRsdpTag>(self.tags)?;
         Some(&(*tag).copy_of_xsdp)
-    }
-    //==================================================================================================
-    pub fn print(&self) {
-        unsafe {
-            let total_size = self.base.total_size;
-            let mut tags = self.tags as *const MultibootTagBase;
-            let tags_end = tags.byte_add(self.tags_size_bytes);
-
-            vgaprintln!("Multiboot info structure:");
-            vgaprintln!("===================================");
-            vgaprintln!("Total size: {}", total_size);
-            vgaprintln!("Tags:");
-            while tags < tags_end {
-                let tag_base = read_volatile(tags);
-                let tag_type = tag_base.tag_type;
-                let length = (tag_base.size as usize + 7) & !7;
-
-                if tag_type == 0x00 {
-                    break;
-                }
-
-                tags = tags.byte_add(length);
-            }
-            vgaprintln!("end");
-        }
     }
     //==================================================================================================
     pub fn base(&self) -> &'static MultibootInfo {
@@ -441,13 +423,7 @@ impl MultibootMemoryMapTag {
                     continue;
                 }
 
-                // vgaprintln!("Memory map entry:");
-                // vgaprintln!("========================");
-                vgaprintln!("Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
-                // vgaprintln!("Length: {:#011x}", length);
-                // vgaprintln!("Region type: {:#06x}", region_type);
-                // vgaprintln!("========================");
-
+                kprintln!(Debug, "Base addr: {:#011x}, Length: {:#011x}", base_addr, length);
                 entry1 = entry1.add(1);
             }
         }
@@ -459,13 +435,13 @@ impl MultibootMemoryMapTag {
         let entry_size = self.entry_size;
         let entry_version = self.entry_version;
 
-        vgaprintln!("Multiboot memory map tag:");
-        vgaprintln!("===================================");
-        vgaprintln!("Type: {:#02x}", tag_type);
-        vgaprintln!("Size: {}", tag_size);
-        vgaprintln!("Entry size: {}", entry_size);
-        vgaprintln!("Entry version: {}", entry_version);
-        vgaprintln!("===================================");
+        kprintln!(Debug, "Multiboot memory map tag:");
+        kprintln!(Debug, "===================================");
+        kprintln!(Debug, "Type: {:#02x}", tag_type);
+        kprintln!(Debug, "Size: {}", tag_size);
+        kprintln!(Debug, "Entry size: {}", entry_size);
+        kprintln!(Debug, "Entry version: {}", entry_version);
+        kprintln!(Debug, "===================================");
         self.print_memory_map();
     }
 
@@ -507,14 +483,14 @@ impl MultibootModulesTag {
         let mod_start = self.mod_start;
         let mod_end = self.mod_end;
 
-        vgaprintln!("===================================");
-        vgaprintln!("Multiboot modules tag:");
-        vgaprintln!("===================================");
-        vgaprintln!("Type: {:#02x}", tag_type);
-        vgaprintln!("Size: {}", tag_size);
-        vgaprintln!("Mod start: {:#011x}", mod_start);
-        vgaprintln!("Mod end: {:#011x}", mod_end);
-        vgaprintln!("===================================");
+        kprintln!(Debug, "===================================");
+        kprintln!(Debug, "Multiboot modules tag:");
+        kprintln!(Debug, "===================================");
+        kprintln!(Debug, "Type: {:#02x}", tag_type);
+        kprintln!(Debug, "Size: {}", tag_size);
+        kprintln!(Debug, "Mod start: {:#011x}", mod_start);
+        kprintln!(Debug, "Mod end: {:#011x}", mod_end);
+        kprintln!(Debug, "===================================");
     }
 
     pub fn header(&self) -> MultibootTagBase {
@@ -560,6 +536,11 @@ impl MemoryRegionType {
         }
     }
 }
+//==================================================================================================
+
+
+
+
 //==================================================================================================
 // the struct is read only (well, except the init part at least)
 // so this is already thread safe so this should be fine i guess
@@ -631,4 +612,11 @@ pub fn multiboot2_logical_end() -> VirtAddr {
         .get()
         .expect("Multiboot was not initialized yet!");
     VirtAddr::new(info.multiboot_end_logical)
+}
+
+pub fn multiboot2_get_framebuffer_tag() -> Option<&'static mut MultibootFramebufferInfoTag> {
+    let info = MULTIBOOT_INFO
+        .get()
+        .expect("Multiboot was not initialized yet!");
+    info.get_framebuffer_tag()
 }

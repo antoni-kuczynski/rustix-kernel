@@ -4,14 +4,12 @@
  * Created by Antoni Kuczyński
  * 15/04/2026
  */
-use crate::ColorTextMode;
 use crate::boot::cpuid::CpuId;
 use crate::boot::multiboot::{MULTIBOOT_INFO, multiboot2_memory_map_tag};
 use crate::memory::SizeUnit;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::vmm_eba_map_page;
-use crate::{VGAWRITER, print_fail_msg, vgaprintln};
-use crate::{print_ok_msg, vgaprint};
+use crate::{kprintln, kprintln_failed, kprintln_ok};
 use x86_64::{PhysAddr, VirtAddr};
 
 const DIR_MAP_TOTAL_SIZE: u64 = 64 * 1_099_511_627_776; //64 terabytes
@@ -60,10 +58,10 @@ unsafe fn do_1gb_pages(total: u64, mut mapped: u64) -> u64 {
 
 // If using 2mb pages, cap the memory to like 1tb and use +/- 5mb of page tables
 fn init_2mb(high_addr: PhysAddr) -> u64 {
-    vgaprint!("Initializing direct mapping using 2mb pages...");
+    kprintln!(Info, "Using 2mb pages for direct mapping.");
 
     if high_addr.as_u64() > SizeUnit::Terabyte.as_u64() {
-        print_fail_msg!();
+        kprintln_failed!("Initialized direct mapping.");
         panic!("Memory size > 1tb - yeah thats a little too much memory for me :(((((");
     }
 
@@ -75,16 +73,15 @@ fn init_2mb(high_addr: PhysAddr) -> u64 {
         mapped = do_4kb_pages(total, mapped);
     }
 
-    print_ok_msg!();
     mapped
 }
 
 // If using 1gb pages, we can easily map all 64tb usable memory in just 0,5mb of page tables
 fn init_1gb(high_addr: PhysAddr) -> u64 {
-    vgaprint!("Initializing direct mapping using 1gb pages...");
+    kprintln!(Info, "Using 1gb pages for direct mapping.");
 
     if high_addr.as_u64() > DIR_MAP_TOTAL_SIZE {
-        print_fail_msg!();
+        kprintln_failed!("Initialized direct mapping.");
         panic!("Memory size > 64tb - yeah thats a little too much memory for me :(((((");
     }
 
@@ -97,7 +94,6 @@ fn init_1gb(high_addr: PhysAddr) -> u64 {
         mapped = do_4kb_pages(total, mapped);
     }
 
-    print_ok_msg!();
     mapped
 }
 
@@ -113,6 +109,7 @@ pub fn dir_mapping_init() {
             init_2mb(high_addr); // old CPUs don't support 1gb pages, so use 2mb ones instead
         }
     }
+    kprintln_ok!("Initialized direct mapping.");
 }
 
 pub fn physical_to_virtual(phys: PhysAddr) -> VirtAddr {

@@ -4,9 +4,7 @@
  * Created by Antoni Kuczyński
  * 16/04/2026
  */
-use crate::ColorTextMode;
-use crate::print_ok_msg;
-use crate::{VGAWRITER, vgaprint};
+use crate::{kprintln_ok};
 use core::arch::x86_64::{__cpuid, CpuidResult};
 use spin::Once;
 
@@ -298,11 +296,13 @@ impl CpuId {
     pub fn has_xd() -> bool {
         (Self::ext().edx & (1 << 20)) != 0
     }
+    pub fn has_rdseed() -> bool {
+        (Self::ext().ebx & (1 << 18)) != 0
+    }
 }
 
 pub fn cpuid_init() {
     unsafe {
-        vgaprint!("Initializing CPUID...");
         let base_result = __cpuid(0x01);
         let extended_result = __cpuid(0x8000_0001);
 
@@ -310,7 +310,7 @@ pub fn cpuid_init() {
             base: base_result,
             extended: extended_result,
         });
-        print_ok_msg!();
+        kprintln_ok!("Initialized CPUID info.");
     }
 }
 

@@ -1,0 +1,384 @@
+#![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)]
+/*
+ * Created by Antoni Kuczyński
+ * 14/06/2026
+ */
+use alloc::vec::Vec;
+use core::{ptr};
+use spin::{Mutex, Once};
+use x86_64::{PhysAddr, VirtAddr};
+use crate::boot::multiboot::multiboot2_get_framebuffer_tag;
+use crate::boot::multiboot_tag::{MultibootFramebufferColorInfo, MultibootFramebufferInfoTag, MultibootFramebufferRgbInfo};
+use crate::memory::page_tables::{PageSize};
+use crate::memory::paging::{vmm_eba_map_range_ext};
+use crate::{__kprintln_ok_buf, kprintln_ok};
+use crate::memory::pat::PatFlags;
+use crate::video::bitmap_font::{BitmapFont};
+
+
+const FRAMEBUFFER_START: u64 = 0xFFFF_800f_b000_0000;
+const FRAMEBUFFER_MAX_SIZE: u64 = 0x6400000000; //around 400gb
+const FRAMEBUFFER_MAX_END: u64 = 0xFFFF_800f_b000_0000 + FRAMEBUFFER_MAX_SIZE;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FramebufferKind {
+    Rgb,
+    Indexed,
+    EgaText,
+    Unknown(u8),
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FrameBufferColorInfo {
+    pub red_pos: u8,
+    pub red_size: u8,
+    pub red_mask: u32,
+
+    pub green_pos: u8,
+    pub green_size: u8,
+    pub green_mask: u32,
+
+    pub blue_pos: u8,
+    pub blue_size: u8,
+    pub blue_mask: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct FramebufferPixelInfo {
+    pub pitch: usize,
+    pub width: usize,
+    pub height: usize,
+    pub bpp: u8,
+}
+
+pub struct Framebuffer {
+    pub base: *mut u8,
+    pub kind: FramebufferKind,
+    pub length_bytes: usize,
+
+    /// Use fb_pixel_info() instead
+    pub _pixel_info: FramebufferPixelInfo,
+
+    /// Use fb_color_info() instead
+    pub _color_info: FrameBufferColorInfo,
+
+    pub cursor_pos_x_px: usize,
+    pub cursor_pos_y_px: usize,
+    pub font: BitmapFont,
+    pub current_foreground: FramebufferColor,
+    pub current_background: FramebufferColor,
+
+    pub back_buffer: Vec<u8>,
+    pub is_double_buffered: bool
+}
+
+impl Framebuffer {
+    pub unsafe fn new_rgb(fb_tag: &MultibootFramebufferInfoTag, rgb_info: &MultibootFramebufferRgbInfo, virt_addr: *mut u8) -> Self {
+        Self {
+            base: virt_addr,
+            _pixel_info: FramebufferPixelInfo::new(
+                fb_tag.framebuffer_pitch,
+                fb_tag.framebuffer_width,
+                fb_tag.framebuffer_height,
+                fb_tag.framebuffer_bpp
+            ),
+            kind: FramebufferKind::Rgb,
+            _color_info: FrameBufferColorInfo::new(rgb_info),
+            cursor_pos_x_px: 0,
+            cursor_pos_y_px: 0,
+            font: BitmapFont::null_font(),
+            back_buffer: Vec::new(),
+            current_foreground: FramebufferColor::new_raw(0xFF_FF_FF_FF),
+            current_background: FramebufferColor::new_raw(0x00_00_00_00),
+            is_double_buffered: false,
+            length_bytes: (fb_tag.framebuffer_pitch * fb_tag.framebuffer_pitch) as usize
+        }
+    }
+
+    pub unsafe fn from_multiboot_tag(tag: &MultibootFramebufferInfoTag, virt_addr: VirtAddr) -> Self {
+        //TODO: a method to tell the framebuffer is invalid
+        let info = match tag.color_info() {
+            MultibootFramebufferColorInfo::Rgb { info } => info,
+            MultibootFramebufferColorInfo::Indexed { .. } => {
+                panic!("indexed framebuffer is not supported yet")
+            }
+            MultibootFramebufferColorInfo::EgaText => {
+                panic!("EGA text framebuffer is not supported")
+            }
+            MultibootFramebufferColorInfo::Unknown(t) => {
+                panic!("unknown framebuffer type: {}", t)
+            }
+        };
+
+        let mut fb = Self::new_rgb(tag, &info, virt_addr.as_mut_ptr::<u8>());
+        fb.init_text_cursor();
+        fb
+    }
+
+    //TODO: optimize
+    pub fn plot_pixel(&mut self, x: usize, y: usize, color: &FramebufferColor) {
+        unsafe {
+            let bits_per_px = self.bpp() as usize;
+
+            if bits_per_px == 0 || bits_per_px > 32 {
+                return;
+            }
+
+            let row_bit_offset = x * bits_per_px;
+
+            let mut byte_offset = y * self.pitch() + (row_bit_offset >> 3);
+            let mut bit_in_byte = row_bit_offset & 7;
+
+            let mut remaining_bits = bits_per_px;
+            let mut color_shift = 0usize;
+
+            let color_data = if bits_per_px == 32 {
+                color.data
+            } else {
+                color.data & ((1u32 << bits_per_px) - 1)
+            };
+
+            while remaining_bits > 0 {
+                let bits_available_in_byte = 8 - bit_in_byte;
+                let bits_to_write = core::cmp::min(remaining_bits, bits_available_in_byte);
+
+                let mask_part = ((1u16 << bits_to_write) - 1) as u8;
+                let mask = mask_part << bit_in_byte;
+
+                let color_part = ((color_data >> color_shift) as u8) << bit_in_byte;
+                let color_part = color_part & mask;
+
+                let ptr = self.base.add(byte_offset);
+
+                let old = ptr::read_volatile(ptr);
+                let new = (old & !mask) | color_part;
+
+                self.fb_write(byte_offset, new);
+
+                remaining_bits -= bits_to_write;
+                color_shift += bits_to_write;
+                byte_offset += 1;
+                bit_in_byte = 0;
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.back_buffer.fill(0)
+    }
+
+    pub fn swap_buffers(&mut self) {
+        let total_bytes = self._pixel_info.height * self.pitch();
+
+        unsafe {
+            ptr::copy_nonoverlapping(
+                self.back_buffer.as_ptr(),
+                self.base,
+                total_bytes
+            );
+        }
+    }
+
+    pub fn fb_write(&mut self, base_offset: usize, val: u8) {
+        let is_double_buffered = !self.back_buffer.is_empty();
+
+        if is_double_buffered {
+            self.back_buffer[base_offset] = val;
+        } else {
+            unsafe { ptr::write_volatile(self.base.add(base_offset), val) };
+        }
+    }
+
+    #[inline(always)]
+    pub unsafe fn write_raw_pixel_24(&mut self, base_offset: usize, color_data: u32, bpp: usize) {
+        if base_offset >= self.length_bytes {
+            return;
+        }
+        self.fb_write(base_offset, color_data as u8);
+        self.fb_write(base_offset + 1, (color_data >> 8) as u8);
+        self.fb_write(base_offset + 2, (color_data >> 16) as u8);
+    }
+
+    pub(crate) fn width(&self) -> usize {
+        self._pixel_info.width
+    }
+
+    pub(crate) fn height(&self) -> usize {
+        self._pixel_info.height
+    }
+
+    pub fn pitch(&self) -> usize {
+        self._pixel_info.pitch
+    }
+
+    pub fn bpp(&self) -> u8 {
+        self._pixel_info.bpp
+    }
+}
+
+impl FrameBufferColorInfo {
+    fn new(rgb_info: &MultibootFramebufferRgbInfo) -> FrameBufferColorInfo {
+        FrameBufferColorInfo {
+            red_pos: rgb_info.red_pos,
+            red_size: rgb_info.red_mask_size,
+            red_mask: Self::get_color_mask(rgb_info.red_pos, rgb_info.red_mask_size),
+            green_pos: rgb_info.green_pos,
+            green_size: rgb_info.green_mask_size,
+            green_mask: Self::get_color_mask(rgb_info.green_pos, rgb_info.green_mask_size),
+            blue_pos: rgb_info.blue_pos,
+            blue_size: rgb_info.blue_mask_size,
+            blue_mask: Self::get_color_mask(rgb_info.blue_pos, rgb_info.blue_mask_size),
+        }
+    }
+
+    fn get_color_mask(pos: u8, size: u8) -> u32 {
+        if size == 0 {
+            0
+        } else if size >= 32 {
+            u32::MAX
+        } else {
+            ((1u32 << size) - 1) << pos
+        }
+    }
+}
+
+impl FramebufferPixelInfo {
+    fn new(pitch: u32, width: u32, height: u32, bpp: u8) -> FramebufferPixelInfo {
+        Self {
+            pitch: pitch as usize,
+            width: width as usize,
+            height: height as usize,
+            bpp,
+        }
+    }
+}
+
+//==================================================================================================
+//==================================================================================================
+#[derive(Copy, Clone)]
+pub struct FramebufferColor {
+    pub data: u32 // default is 1 byte per each RGB color, 4byte is unused
+}
+
+impl FramebufferColor {
+    pub fn new_raw(val: u32) -> FramebufferColor {
+        FramebufferColor {
+            data: val
+        }
+    }
+
+    /// Constructs a 24bit color, based on the framebuffer's parameters
+    pub fn from_rgb(r: u32, g: u32, b: u32) -> FramebufferColor {
+        let fb = fb_color_info();
+
+        let red = (r << fb.red_pos) & fb.red_mask;
+        let green = (g << fb.green_pos) & fb.green_mask;
+        let blue = (b << fb.blue_pos) & fb.blue_mask;
+
+        Self::new_raw(red | green | blue)
+    }
+}
+//==================================================================================================
+unsafe impl Send for Framebuffer {}
+
+
+pub fn framebuffer_init() {
+    let fb_tag: &mut MultibootFramebufferInfoTag = multiboot2_get_framebuffer_tag().unwrap();
+
+    let fb_length = fb_tag.framebuffer_height as u64 * fb_tag.framebuffer_pitch as u64;
+    if fb_length > FRAMEBUFFER_MAX_SIZE {
+        panic!("Framebuffer a little bit too large! (over 400gb)");
+    }
+
+    let virt_addr = VirtAddr::new(FRAMEBUFFER_START);
+    let phys_addr = PhysAddr::new(fb_tag.framebuffer_addr);
+    let page_table_flags = PatFlags::get_u64_page_flags(PatFlags::WRITE_COMBINING, &PageSize::Size2Mb);
+
+    unsafe {
+        vmm_eba_map_range_ext(virt_addr, phys_addr, fb_length, &PageSize::Size2Mb, false, page_table_flags);
+    }
+
+    //what a nasty and disgusting way to do this. we need a second framebuffer mutex which is only reserved for
+    //kernel panics so that it can print panic messages while some other stuff is using the framebuffer.
+    //we do not care about safety or other shit this time. we just want a message on the screen.
+    let framebuffer_view = unsafe { Framebuffer::from_multiboot_tag(fb_tag, virt_addr) };
+    let framebuffer_view1 = unsafe { Framebuffer::from_multiboot_tag(fb_tag, virt_addr) };
+
+    if framebuffer_view.base as u64 == 0 {
+        panic!("Framebuffer's ptr is null!");
+    }
+
+    let mut fb = FRAMEBUFFER.lock();
+    let mut fb_unsafe = __FB_PANIC_ONLY.lock();
+    let color_info = framebuffer_view._color_info;
+    let pixel_info = framebuffer_view._pixel_info;
+
+    *fb = Some(framebuffer_view);
+    *fb_unsafe = Some(framebuffer_view1);
+    FRAMEBUFFER_COLOR_INFO.call_once(|| color_info);
+    FRAMEBUFFER_PIXEL_INFO.call_once(|| pixel_info);
+    __kprintln_ok_buf!("Initialized the framebuffer with mode {}x{}x{}.", fb_width(), fb_height(), fb_bpp());
+}
+
+pub fn double_buffering_init() {
+    let mut guard = FRAMEBUFFER.lock();
+    let fb = guard.as_mut().unwrap();
+    let total_bytes = fb_height() * fb_pitch();
+
+    fb.back_buffer.reserve(total_bytes);
+
+    for i in 0..fb_height() * fb_pitch() {
+        fb.back_buffer.push(0x0u8);
+    }
+
+    unsafe {
+        ptr::copy_nonoverlapping(
+            fb.base,
+            fb.back_buffer.as_mut_ptr(),
+            total_bytes
+        );
+    }
+
+    fb.is_double_buffered = true;
+
+    //this shit's here to prevent deadlocks when calling kprint in this function afterwards... this sucks
+    unsafe { FRAMEBUFFER.force_unlock() };
+
+    kprintln_ok!("Enabled double buffering.");
+}
+
+pub fn fb_color_info() -> &'static FrameBufferColorInfo {
+    match FRAMEBUFFER_COLOR_INFO.get() {
+        None => { panic!("Framebuffer color info not initialized!") }
+        Some(x) => { x }
+    }
+}
+
+pub fn fb_pixel_info() -> &'static FramebufferPixelInfo {
+    match FRAMEBUFFER_PIXEL_INFO.get() {
+        None => { panic!("Framebuffer pixel info not initialized!") }
+        Some(x) => { x }
+    }
+}
+
+pub fn fb_width() -> usize {
+    fb_pixel_info().width
+}
+
+pub fn fb_height() -> usize {
+    fb_pixel_info().height
+}
+
+pub fn fb_pitch() -> usize {
+    fb_pixel_info().pitch
+}
+
+pub fn fb_bpp() -> u8 {
+    fb_pixel_info().bpp
+}
+
+pub static __FB_PANIC_ONLY: Mutex<Option<Framebuffer>> = Mutex::new(None);
+pub static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
+pub static FRAMEBUFFER_COLOR_INFO: Once<FrameBufferColorInfo> = Once::new();
+pub static FRAMEBUFFER_PIXEL_INFO: Once<FramebufferPixelInfo> = Once::new();

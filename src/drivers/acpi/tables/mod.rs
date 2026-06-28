@@ -4,6 +4,7 @@ pub mod madt;
 pub mod rsdp;
 pub mod rsdt;
 pub mod sdt_header;
+pub mod mcfg;
 
 #[derive(PartialEq)]
 pub enum AcpiRevision {

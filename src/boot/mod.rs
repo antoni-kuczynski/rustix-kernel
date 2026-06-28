@@ -1,3 +1,3 @@
 pub mod cpuid;
 pub mod multiboot;
-mod multiboot_tag;
+pub mod multiboot_tag;

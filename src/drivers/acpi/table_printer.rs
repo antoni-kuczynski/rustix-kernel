@@ -1,10 +1,10 @@
-use crate::asm::inw;
+use alloc::string::String;
 use crate::drivers::acpi::tables::fadt::FADT;
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 use crate::drivers::acpi::tables::rsdt::{RSDT, XSDT};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
-use crate::vgaprintln;
-use alloc::string::String;
+use crate::{kprintln};
+use crate::asm::inw;
 
 #[allow(dead_code)]
 pub trait ACPITablePrinter {
@@ -19,16 +19,16 @@ impl ACPITablePrinter for RSDP {
         let revision = self.revision;
         let rsdt_address = self.rsdt_address;
 
-        vgaprintln!("==== RSDP Table Descriptor) ====");
-        vgaprintln!(
+        kprintln!(Debug, "==== RSDP Table Descriptor) ====");
+        kprintln!(Debug, 
             "Signature          : {}",
             String::from_utf8_lossy(&signature)
         );
-        vgaprintln!("Checksum           : {:#04x}", checksum);
-        vgaprintln!("OEM ID             : {}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!("Revision           : {}", revision);
-        vgaprintln!("RSDT Address       : {:#010x}", rsdt_address);
-        vgaprintln!("====================================");
+        kprintln!(Debug, "Checksum           : {:#04x}", checksum);
+        kprintln!(Debug, "OEM ID             : {}", String::from_utf8_lossy(&oem_id));
+        kprintln!(Debug, "Revision           : {}", revision);
+        kprintln!(Debug, "RSDT Address       : {:#010x}", rsdt_address);
+        kprintln!(Debug, "====================================");
     }
 }
 
@@ -44,20 +44,20 @@ impl ACPITablePrinter for XSDP {
         let extended_checksum = self.extended_checksum;
         let reserved = self.reserved;
 
-        vgaprintln!("==== XSDP Table Descriptor) ====");
-        vgaprintln!(
+        kprintln!(Debug, "==== XSDP Table Descriptor) ====");
+        kprintln!(Debug, 
             "Signature          : {}",
             String::from_utf8_lossy(&signature)
         );
-        vgaprintln!("Checksum           : {:#04x}", checksum);
-        vgaprintln!("OEM ID             : {}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!("Revision           : {}", revision);
-        vgaprintln!("RSDT Address       : {:#010x}", rsdt_address);
-        vgaprintln!("Length             : {}", length);
-        vgaprintln!("XSDT Address       : {:#018x}", xsdt_address);
-        vgaprintln!("Extended Checksum  : {:#04x}", extended_checksum);
-        vgaprintln!("Reserved           : {:?}", reserved);
-        vgaprintln!("====================================");
+        kprintln!(Debug, "Checksum           : {:#04x}", checksum);
+        kprintln!(Debug, "OEM ID             : {}", String::from_utf8_lossy(&oem_id));
+        kprintln!(Debug, "Revision           : {}", revision);
+        kprintln!(Debug, "RSDT Address       : {:#010x}", rsdt_address);
+        kprintln!(Debug, "Length             : {}", length);
+        kprintln!(Debug, "XSDT Address       : {:#018x}", xsdt_address);
+        kprintln!(Debug, "Extended Checksum  : {:#04x}", extended_checksum);
+        kprintln!(Debug, "Reserved           : {:?}", reserved);
+        kprintln!(Debug, "====================================");
     }
 }
 
@@ -74,24 +74,24 @@ impl ACPITablePrinter for RSDT {
         let creator_id = header.creator_id;
         let creator_revision = header.creator_revision;
 
-        vgaprintln!("RSDT:");
-        vgaprintln!("  Signature: {:?}", signature);
-        vgaprintln!("  Length:    {}", length);
-        vgaprintln!("  Revision:  {}", revision);
-        vgaprintln!("  Checksum:  {}", checksum);
-        vgaprintln!("  OEM ID:    {:?}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!(
+        kprintln!(Debug, "RSDT:");
+        kprintln!(Debug, "  Signature: {:?}", signature);
+        kprintln!(Debug, "  Length:    {}", length);
+        kprintln!(Debug, "  Revision:  {}", revision);
+        kprintln!(Debug, "  Checksum:  {}", checksum);
+        kprintln!(Debug, "  OEM ID:    {:?}", String::from_utf8_lossy(&oem_id));
+        kprintln!(Debug, 
             "  OEM Table ID: {:?}",
             String::from_utf8_lossy(&oem_table_id)
         );
-        vgaprintln!("  OEM Revision: {}", oem_revision);
-        vgaprintln!("  Creator ID:   {:?}", creator_id);
-        vgaprintln!("  Creator Rev:  {}", creator_revision);
+        kprintln!(Debug, "  OEM Revision: {}", oem_revision);
+        kprintln!(Debug, "  Creator ID:   {:?}", creator_id);
+        kprintln!(Debug, "  Creator Rev:  {}", creator_revision);
 
         // let ptrs: [u32] = self.other_sdt_pointers;
         for i in 0..self.get_mapping_length() {
             let addr = self.other_sdt_pointers[i];
-            vgaprintln!("    [{}] 0x{:08X}", i, addr);
+            kprintln!(Debug, "    [{}] 0x{:08X}", i, addr);
         }
     }
 }
@@ -109,23 +109,23 @@ impl ACPITablePrinter for XSDT {
         let creator_id = header.creator_id;
         let creator_revision = header.creator_revision;
 
-        vgaprintln!("XSDT:");
-        vgaprintln!("  Signature: {:?}", signature);
-        vgaprintln!("  Length:    {}", length);
-        vgaprintln!("  Revision:  {}", revision);
-        vgaprintln!("  Checksum:  {}", checksum);
-        vgaprintln!("  OEM ID:    {:?}", String::from_utf8_lossy(&oem_id));
-        vgaprintln!(
+        kprintln!(Debug, "XSDT:");
+        kprintln!(Debug, "  Signature: {:?}", signature);
+        kprintln!(Debug, "  Length:    {}", length);
+        kprintln!(Debug, "  Revision:  {}", revision);
+        kprintln!(Debug, "  Checksum:  {}", checksum);
+        kprintln!(Debug, "  OEM ID:    {:?}", String::from_utf8_lossy(&oem_id));
+        kprintln!(Debug, 
             "  OEM Table ID: {:?}",
             String::from_utf8_lossy(&oem_table_id)
         );
-        vgaprintln!("  OEM Revision: {}", oem_revision);
-        vgaprintln!("  Creator ID:   {:?}", creator_id);
-        vgaprintln!("  Creator Rev:  {}", creator_revision);
+        kprintln!(Debug, "  OEM Revision: {}", oem_revision);
+        kprintln!(Debug, "  Creator ID:   {:?}", creator_id);
+        kprintln!(Debug, "  Creator Rev:  {}", creator_revision);
 
         for i in 0..((length as usize - size_of_val(&header)) >> 3) {
             let addr = self.other_sdt_pointers[i];
-            vgaprintln!("    [{}] 0x{:08X}", i, addr);
+            kprintln!(Debug, "    [{}] 0x{:08X}", i, addr);
         }
     }
 }
@@ -135,10 +135,10 @@ impl ACPITablePrinter for FADT {
         let a = self.smi_command_port;
         let b = self.pm1a_control_block;
         unsafe {
-            vgaprintln!("FADT smi command port:");
-            vgaprintln!("{}", inw(a as u16));
-            vgaprintln!("FADT pm1a control block:");
-            vgaprintln!("{}", inw(b as u16));
+            kprintln!(Debug, "FADT smi command port:");
+            kprintln!(Debug, "{}", inw(a as u16));
+            kprintln!(Debug, "FADT pm1a control block:");
+            kprintln!(Debug, "{}", inw(b as u16));
         }
     }
 }

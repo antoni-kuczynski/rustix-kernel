@@ -16,6 +16,7 @@ pub mod paging;
 pub mod pmm;
 pub mod secure_stack;
 pub mod ioremap;
+pub mod pat;
 
 //==================================================================
 pub const KERNEL_PHYS_BASE: u32 = 0x00100000;

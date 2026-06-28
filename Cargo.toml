@@ -19,7 +19,7 @@ debug = true
 [profile.release]
 panic = "abort"
 opt-level = 3
-debug = true
+debug = false
 
 [[bin]]
 name = "rustix"

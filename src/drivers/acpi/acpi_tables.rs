@@ -15,6 +15,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use spin::Once;
 use x86_64::{PhysAddr, VirtAddr};
+use crate::kprintln;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ACPISignature([u8; 4]); //all signatures are 4 chars (except rsdp)
@@ -26,6 +27,7 @@ impl ACPISignature {
     pub const FADT: ACPISignature = ACPISignature(*b"FACP");
     pub const DSDT: ACPISignature = ACPISignature(*b"DSDT");
     pub const MADT: ACPISignature = ACPISignature(*b"APIC");
+    pub const MCFG: ACPISignature = ACPISignature(*b"MCFG");
 
     pub fn as_str<'a>(&self) -> &'a str {
         match self {
@@ -34,7 +36,20 @@ impl ACPISignature {
             &ACPISignature::FADT => "FADT",
             &ACPISignature::DSDT => "DSDT",
             &ACPISignature::MADT => "APIC",
+            &ACPISignature::MCFG => "MCFG",
             _ => "----",
+        }
+    }
+
+    pub fn table_name<'a>(&self) -> &'a str {
+        match self {
+            &ACPISignature::RSDT => "RSDT",
+            &ACPISignature::XSDT => "XSDT",
+            &ACPISignature::FADT => "FADT",
+            &ACPISignature::DSDT => "DSDT",
+            &ACPISignature::MADT => "MADT",
+            &ACPISignature::MCFG => "MCFG",
+            _ => "",
         }
     }
 }
@@ -107,13 +122,15 @@ pub fn get_acpi_tables() -> Result<ACPITables, AcpiError> {
     let mut rsdp: Option<&RSDP> = None;
 
     if xsdp.is_none() {
+        kprintln!(Info, "Using old rsdp for ACPI.");
         rsdp = multiboot2_old_rsdp();
     } else if !xsdp.unwrap().validate() {
         return Err(AcpiError::InvalidSdpChecksumError());
     }
 
-    if rsdp.is_none() {
+    if rsdp.is_none() && xsdp.is_none() {
         let addr = rsdp_fallback_search_in_bios();
+        kprintln!(Info, "Using legacy bios search method for getting rsdp.");
         if addr.is_none() {
             return Err(AcpiError::RsdpNotFoundError);
         }
@@ -128,6 +145,7 @@ pub fn get_acpi_tables() -> Result<ACPITables, AcpiError> {
     } else {
         rsdp.unwrap().get_revision()
     };
+    kprintln!(Info, "Detected ACPI revision: {}.", revision.as_u8());
 
     let mut acpi_tables;
     match revision {
@@ -173,7 +191,7 @@ pub static ACPI_TABLES: Once<ACPITables> = Once::new();
 pub fn acpi_init() {
     let tables = get_acpi_tables().expect("Acpi tables init failed!");
     ACPI_TABLES.call_once(|| tables);
-    enable_acpi().expect("acpi emabling failed");
+    enable_acpi().expect("acpi enabling failed");
 }
 
 pub fn acpi_get_sdt_table(signature: ACPISignature) -> Option<VirtAddr> {

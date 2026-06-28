@@ -7,20 +7,17 @@ use crate::drivers::acpi::acpi_tables::{ACPI_TABLES, ACPISignature, acpi_get_sdt
 use crate::drivers::acpi::tables::AcpiRevision;
 use crate::drivers::acpi::tables::dsdt::{DSDT, S5Obj};
 use crate::drivers::acpi::tables::fadt::FADT;
-use crate::drivers::vga::vga_text::ColorTextMode;
-use crate::drivers::vga::vga_text::VGAWRITER;
 use crate::memory::dir_mapping::physical_to_virtual;
-use crate::{print_fail_msg, print_ok_msg, vgaprint};
+use crate::{print_fail_msg, kprintln_ok, kprintln_failed};
 use core::fmt::Error;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 
 #[allow(dead_code)]
 pub fn enable_acpi() -> Result<(), Error> {
-    vgaprint!("Enabling ACPI...");
     let tables = match ACPI_TABLES.get() {
         None => {
-            print_fail_msg!();
+            kprintln_failed!("Enabled ACPI.");
             panic!("ACPI tables not initialized!");
         }
         Some(x) => x,
@@ -46,11 +43,11 @@ pub fn enable_acpi() -> Result<(), Error> {
         }
 
         if inw(fadt.pm1a_control_block as u16) & 1 == 0 {
-            print_fail_msg!();
+            kprintln_failed!("Enabled ACPI.");
             return Err(Error);
         }
     }
-    print_ok_msg!();
+    kprintln_ok!("Enabled ACPI.");
     Ok(())
 }
 

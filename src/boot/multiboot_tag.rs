@@ -2,6 +2,8 @@
 #![allow(dead_code)]
 #![allow(unsafe_op_in_unsafe_fn)]
 
+use core::ptr::null_mut;
+use core::slice;
 use crate::drivers::acpi::tables::rsdp::{RSDP, XSDP};
 
 //==================================================================================================
@@ -137,6 +139,165 @@ impl TryFrom<u32> for MultibootTagType {
     }
 }
 //==================================================================================================
+/*
+3.6.12 Framebuffer info
+
+        +--------------------+
+u32     | type = 8           |
+u32     | size               |
+u64     | framebuffer_addr   |
+u32     | framebuffer_pitch  |
+u32     | framebuffer_width  |
+u32     | framebuffer_height |
+u8      | framebuffer_bpp    |
+u8      | framebuffer_type   |
+u8      | reserved           |
+varies  | color_info         |
+        +--------------------+
+
+The field ‘framebuffer_addr’ contains framebuffer physical address.
+This field is 64-bit wide but bootloader should set it under 4GiB if possible for compatibility with payloads which aren’t aware of PAE or amd64.
+The field ‘framebuffer_pitch’ contains pitch in bytes. The fields ‘framebuffer_width’, ‘framebuffer_height’ contain framebuffer dimensions in pixels.
+The field ‘framebuffer_bpp’ contains number of bits per pixel. ‘reserved’ always contains 0 in
+current version of specification and must be ignored by OS image. If ‘framebuffer_type’ is set to 0 it means indexed color.
+In this case color_info is defined as follows:
+
+        +----------------------------------+
+u32     | framebuffer_palette_num_colors   |
+varies  | framebuffer_palette              |
+        +----------------------------------+
+
+‘framebuffer_palette’ is an array of colour descriptors. Each colour descriptor has following structure:
+
+        +-------------+
+u8      | red_value   |
+u8      | green_value |
+u8      | blue_value  |
+        +-------------+
+
+If ‘framebuffer_type’ is set to ‘1’ it means direct RGB color. Then color_type is defined as follows:
+
+       +----------------------------------+
+u8     | framebuffer_red_field_position   |
+u8     | framebuffer_red_mask_size        |
+u8     | framebuffer_green_field_position |
+u8     | framebuffer_green_mask_size      |
+u8     | framebuffer_blue_field_position  |
+u8     | framebuffer_blue_mask_size       |
+       +----------------------------------+
+
+If ‘framebuffer_type’ is set to ‘2’ it means EGA text. In this case ‘framebuffer_width’ and ‘framebuffer_height’ are expressed in characters and not in pixels. ‘framebuffer_bpp’ is equal 16 (16 bits per character) and ‘framebuffer_pitch’ is expressed in bytes per text line. All further values of ‘framebuffer_type’ are reserved for future expansion
+ */
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MultibootFramebufferInfoTag {
+    //type = 8
+    pub(crate) header: MultibootTagBase,
+    pub(crate) framebuffer_addr: u64,
+    pub(crate) framebuffer_pitch: u32,
+    pub(crate) framebuffer_width: u32,
+    pub(crate) framebuffer_height: u32,
+    pub(crate) framebuffer_bpp: u8,
+    pub(crate) framebuffer_type: u8,
+    _reserved: u8,
+}
+
+impl MultibootFramebufferInfoTag {
+    #[inline(always)]
+    pub unsafe fn color_info_ptr(&self) -> *const u8 {
+        (self as *const Self as *const u8)
+            .add(size_of::<MultibootFramebufferInfoTag>() + 1)
+    }
+    pub unsafe fn color_info(&self) -> MultibootFramebufferColorInfo<'_> {
+        match self.framebuffer_type {
+            FRAMEBUFFER_TYPE_INDEXED => {
+                let info_ptr =
+                    self.color_info_ptr() as *const MultibootFbColorInfo;
+
+                let num_colors =
+                    core::ptr::addr_of!((*info_ptr).framebuffer_palette_num_colors)
+                        .read_unaligned();
+
+                let palette_ptr = (info_ptr as *const u8)
+                    .add(size_of::<u32>())
+                    as *const MultibootFbColorDescriptor;
+
+                let palette = slice::from_raw_parts(
+                    palette_ptr,
+                    num_colors as usize,
+                );
+
+                MultibootFramebufferColorInfo::Indexed {
+                    num_colors,
+                    palette,
+                }
+            }
+
+            FRAMEBUFFER_TYPE_RGB => {
+                let info_ptr =
+                    self.color_info_ptr() as *const MultibootFramebufferRgbInfo;
+
+                let info = core::ptr::read_unaligned(info_ptr);
+
+                MultibootFramebufferColorInfo::Rgb {
+                    info,
+                }
+            }
+
+            FRAMEBUFFER_TYPE_EGA_TEXT => {
+                MultibootFramebufferColorInfo::EgaText
+            }
+
+            other => {
+                MultibootFramebufferColorInfo::Unknown(other)
+            }
+        }
+    }
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+struct MultibootFbColorInfo {
+    framebuffer_palette_num_colors: u32,
+    pallete_start: [u8; 0]
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MultibootFbColorDescriptor {
+    red_value: u8,
+    green_value: u8,
+    blue_value: u8
+}
+
+#[repr(C, packed)]
+#[derive(Clone, Copy)]
+pub struct MultibootFramebufferRgbInfo {
+    pub red_pos: u8,
+    pub red_mask_size: u8,
+    pub green_pos: u8,
+    pub green_mask_size: u8,
+    pub blue_pos: u8,
+    pub blue_mask_size: u8,
+}
+
+pub enum MultibootFramebufferColorInfo<'a> {
+    Indexed {
+        num_colors: u32,
+        palette: &'a [MultibootFbColorDescriptor],
+    },
+    Rgb {
+        info: MultibootFramebufferRgbInfo,
+    },
+    EgaText,
+    Unknown(u8),
+}
+
+const FRAMEBUFFER_TYPE_INDEXED: u8 = 0;
+const FRAMEBUFFER_TYPE_RGB: u8 = 1;
+const FRAMEBUFFER_TYPE_EGA_TEXT: u8 = 2;
+
+//==================================================================================================
 //  ACPI STUFF
 //==================================================================================================
 /*
@@ -191,6 +352,10 @@ impl MultibootTagStruct for MultibootModulesTag {
 
 impl MultibootTagStruct for MultibootMemoryMapTag {
     const TAG_TYPE: u32 = 6;
+}
+
+impl MultibootTagStruct for MultibootFramebufferInfoTag {
+    const TAG_TYPE: u32 = 8;
 }
 
 // ===== ACPI =====

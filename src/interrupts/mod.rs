@@ -1,14 +1,10 @@
 use lazy_static::lazy_static;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
-use crate::{
-    drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
-    interrupts::{
-        exceptions::*,
-        gdt::DOUBLE_FAULT_IST_INDEX,
-    },
-    print_ok_msg, vgaprint,
-};
+use crate::{interrupts::{
+    exceptions::*,
+    gdt::DOUBLE_FAULT_IST_INDEX,
+}, kprintln_ok};
 use crate::drivers::apic::apic::{apic_error_interrupt_handler, apic_spurious_interrupt_handler, lapic_timer_interrupt_handler, LAPIC_ERROR_VECTOR, LAPIC_SPURIOUS_VECTOR_IDT_INDEX, LAPIC_TIMER_VECTOR};
 
 pub mod exceptions;
@@ -39,17 +35,11 @@ lazy_static! {
 }
 
 pub fn idt_init() {
-    vgaprint!("Initializing interrupt descriptor table...");
-
     IDT.load();
-
-    print_ok_msg!();
+    kprintln_ok!("Initialized interrupt descriptor table.");
 }
 
 pub fn interrupts_enable() {
-    vgaprint!("Enabling interrupts...");
-
     x86_64::instructions::interrupts::enable();
-
-    print_ok_msg!();
+    kprintln_ok!("Enabled interrupts.");
 }

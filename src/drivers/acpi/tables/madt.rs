@@ -9,7 +9,7 @@ use crate::drivers::acpi::acpi_tables::{ACPISignature, AcpiSdtTable};
 use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use alloc::vec::Vec;
 use x86_64::VirtAddr;
-use crate::vgaprintln;
+use crate::kprintln;
 
 #[repr(C, packed)]
 pub struct Madt {
@@ -265,36 +265,28 @@ impl MadtParseResult {
     }
 
     pub fn print(&self) {
-        vgaprintln!("MADT parse result:");
-        vgaprintln!(
+        kprintln!(Debug, "MADT parse result:");
+        kprintln!(Debug,
             "  Local APIC physical address: {:#018x}",
             self.local_apic_physical_address
         );
 
-        vgaprintln!("  CPU Local APICs:");
-        vgaprintln!("    total:   {}", self.cpu_apic_count());
-        vgaprintln!("    enabled: {}", self.enabled_cpu_apic_count());
+        kprintln!(Debug, "  CPU Local APICs:");
+        kprintln!(Debug, "    total:   {}", self.cpu_apic_count());
+        kprintln!(Debug, "    enabled: {}", self.enabled_cpu_apic_count());
 
         for (index, apic) in self.cpu_apics.iter().enumerate() {
-            vgaprintln!("    CPU APIC #{}:", index);
-            vgaprintln!("      {:?}", apic);
+            kprintln!(Debug, "    CPU APIC #{}:", index);
+            kprintln!(Debug, "      {:?}", apic);
         }
 
-        vgaprintln!("  I/O APICs:");
-        vgaprintln!("    total: {}", self.io_apic_count());
+        kprintln!(Debug, "  I/O APICs:");
+        kprintln!(Debug, "    total: {}", self.io_apic_count());
 
         for (index, io_apic) in self.io_apics.iter().enumerate() {
-            vgaprintln!("    I/O APIC #{}:", index);
-            vgaprintln!("      {:?}", io_apic);
+            kprintln!(Debug, "    I/O APIC #{}:", index);
+            kprintln!(Debug, "      {:?}", io_apic);
         }
-
-        // vgaprintln!("  Interrupt Source Overrides:");
-        // vgaprintln!("    total: {}", self.interrupt_source_overrides.len());
-        //
-        // for (index, iso) in self.interrupt_source_overrides.iter().enumerate() {
-        //     vgaprintln!("    ISO #{}:", index);
-        //     vgaprintln!("      {:?}", iso);
-        // }
     }
 }
 /*

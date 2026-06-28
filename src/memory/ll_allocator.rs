@@ -5,7 +5,6 @@
  * Created by Antoni Kuczyński
  * 20/04/2026
  */
-use crate::drivers::vga::vga_text::{ColorTextMode, VGAWRITER};
 use crate::memory::{align_up, FRAME_SIZE};
 use crate::memory::page_tables::{PageSize, PageTableEntry};
 use crate::memory::paging::{
@@ -14,13 +13,13 @@ use crate::memory::paging::{
 use crate::memory::pmm::{
     pmm_allocate_contiguous, pmm_allocate_frame, pmm_free_frame, pmm_free_range,
 };
-use crate::vgaprintln;
 use core::alloc::Layout;
 use core::cmp::PartialEq;
 use core::ops::Add;
 use core::ptr::{addr_of_mut, null_mut};
 use core::{mem, ptr};
 use x86_64::VirtAddr;
+use crate::kprintln;
 
 pub struct ListNode {
     pub(crate) size: usize,
@@ -157,28 +156,19 @@ impl LinkedListAllocator {
 
     unsafe fn validate_free_node_ptr(&self, node: *mut ListNode, context: &str) -> bool {
         if !self.is_valid_free_node_ptr(node) {
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::LightRed);
-            vgaprintln!(
-                " [ALLOCATOR] Invalid free-list pointer [{}]: ptr=0x{:X}, heap=0x{:X}..0x{:X}",
+            kprintln!(Warn,
+                "[ALLOCATOR] Invalid free-list pointer [{}]: ptr=0x{:X}, heap=0x{:X}..0x{:X}",
                 context,
                 node as usize,
                 self.global_start,
                 self.current_end
             );
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::White);
             return false;
         }
 
         let Some(end) = (*node).checked_end_addr() else {
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::LightRed);
-            vgaprintln!(
-                " [ALLOCATOR] Invalid free-list node overflow [{}]: ptr=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
+            kprintln!(Warn,
+                "[ALLOCATOR] Invalid free-list node overflow [{}]: ptr=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
                 context,
                 node as usize,
                 (*node).size,
@@ -186,18 +176,12 @@ impl LinkedListAllocator {
                 self.debug_last_free_node,
                 self.debug_last_free_size
             );
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::White);
             return false;
         };
 
         if end > self.current_end {
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::LightRed);
-            vgaprintln!(
-                " [ALLOCATOR] Invalid free-list node range [{}]: node=0x{:X}..0x{:X}, heap_end=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
+            kprintln!(Debug,
+                "[ALLOCATOR] Invalid free-list node range [{}]: node=0x{:X}..0x{:X}, heap_end=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
                 context,
                 node as usize,
                 end,
@@ -207,9 +191,6 @@ impl LinkedListAllocator {
                 self.debug_last_free_node,
                 self.debug_last_free_size
             );
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::White);
             return false;
         }
 
@@ -227,20 +208,14 @@ impl LinkedListAllocator {
         }
 
         if (*node).size != self.debug_last_free_size {
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::LightRed);
-            vgaprintln!(
-                " [ALLOCATOR] Last free node changed [{}]: node=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
+            kprintln!(Debug,
+                "[ALLOCATOR] Last free node changed [{}]: node=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
                 context,
                 self.debug_last_free_node,
                 self.debug_last_free_size,
                 (*node).size,
                 (*node).next as usize
             );
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::White);
             return false;
         }
 
@@ -264,13 +239,7 @@ impl LinkedListAllocator {
         let padding = aligned_addr - addr;
 
         if addr < self.global_start || addr > self.global_end {
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::LightRed);
-            vgaprintln!(" [ALLOCATOR] Invalid region address {:#011x}", addr);
-            VGAWRITER
-                .lock()
-                .change_foreground_color(ColorTextMode::White);
+            kprintln!(Warn, "[ALLOCATOR] Invalid region address {:#011x}", addr);
             return;
         }
 
@@ -288,8 +257,8 @@ impl LinkedListAllocator {
         assert!(size >= size_of::<ListNode>());
 
         let Some(region_end) = addr.checked_add(size) else {
-            vgaprintln!(
-                "Invalid region size overflow: addr={:#011x}, size={}",
+            kprintln!(Warn,
+                "[ALLOCATOR] Invalid region size overflow: addr={:#011x}, size={}",
                 addr,
                 size
             );
@@ -297,8 +266,8 @@ impl LinkedListAllocator {
         };
 
         if region_end > self.global_end {
-            vgaprintln!(
-                "Invalid region range: addr={:#011x}, size={}, end={:#011x}",
+            kprintln!(Warn,
+                "[ALLOCATOR] Invalid region range: addr={:#011x}, size={}, end={:#011x}",
                 addr,
                 size,
                 region_end
@@ -323,8 +292,8 @@ impl LinkedListAllocator {
 
         if (*previous_node).size != 0 {
             let Some(previous_end) = (*previous_node).checked_end_addr() else {
-                vgaprintln!(
-                    "Invalid previous free node overflow: addr={:#011x}, size={}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Invalid previous free node overflow: addr={:#011x}, size={}",
                     (*previous_node).start_addr(),
                     (*previous_node).size
                 );
@@ -332,8 +301,8 @@ impl LinkedListAllocator {
             };
 
             if previous_end > addr {
-                vgaprintln!(
-                    "Free region overlaps previous node: prev=0x{:X}..0x{:X}, new=0x{:X}..0x{:X}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Free region overlaps previous node: prev=0x{:X}..0x{:X}, new=0x{:X}..0x{:X}",
                     (*previous_node).start_addr(),
                     previous_end,
                     addr,
@@ -353,8 +322,8 @@ impl LinkedListAllocator {
 
             if region_end > next_start {
                 let next_end = (*next).checked_end_addr().unwrap_or(0);
-                vgaprintln!(
-                    "Free region overlaps next node: new=0x{:X}..0x{:X}, next=0x{:X}..0x{:X}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Free region overlaps next node: new=0x{:X}..0x{:X}, next=0x{:X}..0x{:X}",
                     addr,
                     region_end,
                     next_start,
@@ -372,8 +341,8 @@ impl LinkedListAllocator {
         new_node_ptr.write_volatile(new_node);
 
         if (*new_node_ptr).size != size {
-            vgaprintln!(
-                "Free node changed immediately after write: addr=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
+            kprintln!(Warn,
+                "[ALLOCATOR] Free node changed immediately after write: addr=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
                 new_node_ptr as usize,
                 size,
                 (*new_node_ptr).size,
@@ -390,8 +359,8 @@ impl LinkedListAllocator {
             }
 
             let Some(new_node_end) = (*new_node_ptr).checked_end_addr() else {
-                vgaprintln!(
-                    "Free node overflow before forward merge: addr={:#011x}, size={}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Free node overflow before forward merge: addr={:#011x}, size={}",
                     (*new_node_ptr).start_addr(),
                     (*new_node_ptr).size
                 );
@@ -403,8 +372,8 @@ impl LinkedListAllocator {
             }
 
             let Some(merged_size) = (*new_node_ptr).size.checked_add((*next_node).size) else {
-                vgaprintln!(
-                    "Forward merge size overflow: left=0x{:X} size={}, right=0x{:X} size={}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Forward merge size overflow: left=0x{:X} size={}, right=0x{:X} size={}",
                     (*new_node_ptr).start_addr(),
                     (*new_node_ptr).size,
                     (*next_node).start_addr(),
@@ -426,8 +395,8 @@ impl LinkedListAllocator {
             && (*previous_node).checked_end_addr() == Some((*new_node_ptr).start_addr())
         {
             let Some(merged_size) = (*previous_node).size.checked_add((*new_node_ptr).size) else {
-                vgaprintln!(
-                    "Backward merge size overflow: left=0x{:X} size={}, right=0x{:X} size={}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Backward merge size overflow: left=0x{:X} size={}, right=0x{:X} size={}",
                     (*previous_node).start_addr(),
                     (*previous_node).size,
                     (*new_node_ptr).start_addr(),
@@ -675,17 +644,17 @@ impl LinkedListAllocator {
         if let Some((region_start, region_size, alloc_start)) = self.find_region(size, align) {
             let alloc_end = alloc_start + size;
             let Some(region_end) = region_start.checked_add(region_size) else {
-                vgaprintln!(
-                    "Invalid allocation region overflow: start=0x{:X}, size={}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Invalid allocation region overflow: start=0x{:X}, size={}",
                     region_start,
                     region_size
                 );
-                return ptr::null_mut();
+                return null_mut();
             };
 
             if alloc_end > region_end {
-                vgaprintln!(
-                    "Invalid allocation split: region=0x{:X}..0x{:X}, alloc=0x{:X}..0x{:X}",
+                kprintln!(Warn,
+                    "[ALLOCATOR] Invalid allocation split: region=0x{:X}..0x{:X}, alloc=0x{:X}..0x{:X}",
                     region_start,
                     region_end,
                     alloc_start,
@@ -697,7 +666,7 @@ impl LinkedListAllocator {
             let front_excess_size = alloc_start - region_start;
 
             if alloc_start < region_start {
-                vgaprintln!("ALLOC START < REGION START");
+                kprintln!(Warn, "[ALLOCATOR] ALLOC START < REGION START");
             }
 
             if front_excess_size > 0 {
@@ -707,7 +676,7 @@ impl LinkedListAllocator {
             let back_excess_size = region_end - alloc_end;
 
             if region_end < alloc_end {
-                vgaprintln!("ALLOC END < REGION END");
+                kprintln!(Warn, "[ALLOCATOR] ALLOC END < REGION END");
             }
 
             if back_excess_size > 0 {

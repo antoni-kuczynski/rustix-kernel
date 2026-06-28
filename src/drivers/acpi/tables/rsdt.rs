@@ -7,7 +7,9 @@ use crate::drivers::acpi::tables::sdt_header::ACPISDTHeader;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr::slice_from_raw_parts;
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
+use crate::kprintln;
+use crate::memory::dir_mapping::physical_to_virtual;
 
 // ============================================================
 //               **XSDT & RSDT**
@@ -103,6 +105,13 @@ impl XSDT {
         let mut sdt_ptrs = vec![0; self.get_mapping_length()];
         for i in 0..self.get_mapping_length() {
             sdt_ptrs[i] = self.other_sdt_pointers[i];
+
+            let ptr = physical_to_virtual(PhysAddr::new(sdt_ptrs[i]));
+            let header = ACPISDTHeader::new_from_virt_addr(ptr);
+            let name = header.signature.table_name();
+            if name != "" {
+                kprintln!(Info, "Found {} table at {:#011x}.", name, ptr.as_u64());
+            }
         }
         sdt_ptrs
     }

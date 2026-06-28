@@ -7,17 +7,17 @@
  */
 use core::cmp::max;
 use core::ops::Add;
-use crate::{print_fail_msg, vgaprintln, VGAWRITER};
-use crate::ColorTextMode;
+use crate::{kprintln, kprintln_ok};
 use core::ptr;
 use spin::Mutex;
 use core::sync::atomic::AtomicPtr;
 use x86_64::{PhysAddr, VirtAddr};
 use crate::memory::page_tables::{PageSize, PageTableEntry};
-use crate::{print_ok_msg, vgaprint};
+use crate::{print_ok_msg};
 use crate::boot::cpuid::{CpuId, CPU_ID};
 use crate::memory::align_up;
 use crate::memory::paging::{vmm_map_range, vmm_map_range_ext};
+use crate::memory::pat::PatFlags;
 
 const IOREMAP_START: u64 = 0xffff_e400_0000_0000;
 const IOREMAP_LENGTH: u64 = 16 * 1_099_511_627_776; // 16tb
@@ -40,32 +40,33 @@ impl IoRemapManager {
     const fn new() -> IoRemapManager {
         IoRemapManager {
             alloc_ptr: IOREMAP_START as *mut u8,
-            flags: PageTableEntry::WRITABLE | PageTableEntry::PRESENT | PageTableEntry::CACHE_DISABLE
+            flags: PageTableEntry::WRITABLE | PageTableEntry::PRESENT
         }
     }
 
-    unsafe fn ioremap(&mut self, phys_addr: PhysAddr, size: u64, align: usize, flags: u64) -> IoAlloc {
+    unsafe fn ioremap(&mut self, phys_addr: PhysAddr, size: u64, align: usize, flags: u64, page_size: PageSize) -> IoAlloc {
         assert!(size > 0, "ioremap size must be > 0");
         assert!(align.is_power_of_two(), "ioremap align must be power of two");
 
-        let total_align = max(align, PageSize::SIZE_4KB as usize);
-        let start_phys = phys_addr.align_down(PageSize::SIZE_4KB);
+        let total_align = max(align, page_size.as_usize());
+        let start_phys = phys_addr.align_down(page_size.as_u64());
         let start_ptr = VirtAddr::new(align_up(self.alloc_ptr as usize, total_align) as u64);
-        let page_size = (size + PageSize::SIZE_4KB) & !(PageSize::SIZE_4KB - 1);
-        let end_ptr = start_ptr.add(page_size);
+        let size_aligned = (size + page_size.as_u64()) & !(page_size.as_u64() - 1);
+        let end_ptr = start_ptr.add(size_aligned);
         let phys_offset = phys_addr.as_u64() - start_phys.as_u64();
 
+        let pat_flags = PatFlags::get_u64_page_flags(PatFlags::UNCACHEABLE, &page_size);
 
         if !vmm_map_range_ext(
             start_ptr,
             start_phys,
-            page_size,
-            &PageSize::Size4Kb,
-            self.flags | flags //always use cache disabled and no execute if supported
+            size_aligned,
+            &page_size,
+            self.flags | pat_flags | flags //always use cache disabled and no execute if supported
         ) {
             //mapping the pages failed
-            panic!(" [IOREMAP] Mapping at phys {:#011x}, size {}, align {} at virt {:#011x} failed.",
-            start_phys, size, align, start_ptr)
+            panic!("[IOREMAP] Mapping at phys {:#011x}, size {}, align {} at virt {:#011x} with page_size={} failed.",
+            start_phys, size, align, start_ptr, page_size.as_usize());
         }
 
         let a = IoAlloc {
@@ -85,23 +86,22 @@ unsafe impl Send for IoRemapManager {}
 pub static IOREMAP_MANAGER: Mutex<IoRemapManager> = Mutex::new(IoRemapManager::new());
 
 pub fn ioremap_init() {
-    vgaprint!("Initializing ioremap...");
-
     if CpuId::has_xd() {
+        kprintln!(Info, "Using no execute flag for ioremap allocations.");
         IOREMAP_MANAGER.lock().flags |= PageTableEntry::NO_EXECUTE;
     }
 
-    print_ok_msg!();
+    kprintln_ok!("Initialized ioremap region.");
 }
 
 pub fn ioremap_permanent(phys_addr: PhysAddr, size: u64, align: usize) -> IoAlloc {
     unsafe {
-        IOREMAP_MANAGER.lock().ioremap(phys_addr, size, align, 0)
+        IOREMAP_MANAGER.lock().ioremap(phys_addr, size, align, 0, PageSize::Size4Kb)
     }
 }
 
-pub fn ioremap_ext_permanent(phys_addr: PhysAddr, size: u64, align: usize, flags: u64) {
+pub fn ioremap_ext_permanent(phys_addr: PhysAddr, size: u64, align: usize, flags: u64, page_size: PageSize) -> IoAlloc {
     unsafe {
-        IOREMAP_MANAGER.lock().ioremap(phys_addr, size, align, flags);
+        IOREMAP_MANAGER.lock().ioremap(phys_addr, size, align, flags, page_size)
     }
 }

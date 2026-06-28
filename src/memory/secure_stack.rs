@@ -4,12 +4,10 @@
  * Created by Antoni Kuczyński
  * 18/05/2026
  */
-use crate::ColorTextMode;
 use crate::memory::page_tables::PageSize;
 use crate::memory::paging::vmm_map_page;
 use crate::memory::pmm::{PMM_BITMAP, pmm_allocate_frame};
-use crate::{VGAWRITER, vgaprint};
-use crate::{kernel_main_post_stack, print_ok_msg, vgaprintln};
+use crate::{kernel_main_post_stack, kprintln_ok};
 use core::sync::atomic::Ordering;
 use x86_64::VirtAddr;
 
@@ -30,9 +28,7 @@ pub fn switch_to_secure_stack() -> ! {
     }
 
     let new_stack_top = stack_start_addr + size_in_pages * PageSize::SIZE_4KB;
-
-    vgaprint!("Switching to secure stack at {:#x}...", new_stack_top);
-
+    
     //switch to the new stack
     unsafe {
         core::arch::asm!(
@@ -46,6 +42,6 @@ pub fn switch_to_secure_stack() -> ! {
 }
 
 fn secure_stack_call() {
-    print_ok_msg!(); //for the stack switch
+    kprintln_ok!("Switched to secure stack.");
     kernel_main_post_stack();
 }

@@ -6,7 +6,7 @@ use x86_64::{
     structures::idt::{InterruptStackFrame, PageFaultErrorCode},
 };
 
-use crate::vgaprintln;
+use crate::{kprintln};
 /*
  * Created by Oskar Przybylski
  * 22/09/2025
@@ -82,7 +82,7 @@ static LAST_EXCEPTION: AtomicU8 = AtomicU8::new(0);
 // this handler is invoked when x86_64 int3 is called
 pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
     LAST_EXCEPTION.store(3, Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: BREAKPOINT: \n {:#?}", stack_frame);
+    kprintln!(Error, "EXCEPTION: BREAKPOINT: \n {:#?}", stack_frame);
 }
 
 /* double fault handler can be invoked with this odly specific
@@ -111,8 +111,8 @@ pub extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     _error_code: u64,
 ) -> ! {
-    vgaprintln!("LAST_EXCEPTION: {:?}", LAST_EXCEPTION);
-    vgaprintln!(
+    kprintln!(Error, "LAST_EXCEPTION: {:?}", LAST_EXCEPTION);
+    kprintln!(Error,
         "EXCEPTION: DOUBLE FAULT (_e:{}): \n {:?}",
         _error_code,
         stack_frame
@@ -122,7 +122,7 @@ pub extern "x86-interrupt" fn double_fault_handler(
 
 pub extern "x86-interrupt" fn invalid_optcode_handler(stack_frame: InterruptStackFrame) {
     LAST_EXCEPTION.store(6, Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: INVALID OPTCODE: \n {:?}", stack_frame);
+    kprintln!(Error, "EXCEPTION: INVALID OPTCODE: \n {:?}", stack_frame);
     loop {
         hlt();
     }
@@ -133,7 +133,7 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
     _error_code: u64,
 ) {
     LAST_EXCEPTION.store(13, Ordering::SeqCst);
-    vgaprintln!(
+    kprintln!(Error,
         "EXCEPTION: GENERAL PROTECTION FAULT (_e:{}): \n {:?}",
         _error_code,
         stack_frame
@@ -149,10 +149,14 @@ pub extern "x86-interrupt" fn page_fault_handler(
 ) {
     LAST_EXCEPTION.store(14, Ordering::SeqCst);
     match Cr2::read() {
-        Ok(adress) => vgaprintln!("CR2 (Accesed adress): {:?}", adress),
-        Err(e) => vgaprintln!("Could not read Cr2 register: {:?}", e),
+        Ok(adress) => {
+            kprintln!(Error, "CR2 (Accesed adress): {:?}", adress);
+        },
+        Err(e) => {
+            kprintln!(Error, "Could not read Cr2 register: {:?}", e);
+        },
     }
-    vgaprintln!(
+    kprintln!(Error,
         "EXCEPTION: PAGE FAULT (_e:{:#?}): \n {:#?}",
         _error_code,
         stack_frame
@@ -164,7 +168,7 @@ pub extern "x86-interrupt" fn page_fault_handler(
 
 pub extern "x86-interrupt" fn division_error_handler(stack_frame: InterruptStackFrame) {
     LAST_EXCEPTION.store(0, Ordering::SeqCst);
-    vgaprintln!("EXCEPTION: DIVISION ERROR: \n {:?}", stack_frame);
+    kprintln!(Error, "EXCEPTION: DIVISION ERROR: \n {:?}", stack_frame);
     loop {
         hlt();
     }

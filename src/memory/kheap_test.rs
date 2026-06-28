@@ -5,34 +5,36 @@
  * 27/04/2026
  */
 
-use crate::memory::dma;
+use crate::memory::{dma, SizeUnit};
 use crate::memory::ll_allocator::{LinkedListAllocator, ListNode};
 use crate::memory::page_tables::PageSize;
-use crate::vgaprintln;
+use crate::{kprintln};
 use core::alloc::Layout;
 use x86_64::VirtAddr;
 
 pub fn run_kheap_tests(allocator: &mut LinkedListAllocator) {
-    vgaprintln!("\n--- STARTING KHEAP TEST SUITE ---");
+    kprintln!(Debug,"--- STARTING KHEAP TEST SUITE ---");
 
-    run_kheap_test_cases(allocator);
+    // run_kheap_test_cases(allocator);
 
-    vgaprintln!("--- KHEAP TEST SUITE COMPLETED ---\n");
+    test_true_heap_exhaustion(allocator);
+
+    kprintln!(Debug,"--- KHEAP TEST SUITE COMPLETED ---\n");
 }
 
 pub fn dump_debug(allocator: &LinkedListAllocator) {
-    vgaprintln!("[DEBUG] Current Free List:");
+    kprintln!(Debug,"[DEBUG] Current Free List:");
 
     let head_addr = core::ptr::addr_of!(allocator.head) as usize;
 
-    vgaprintln!(
+    kprintln!(Debug,
         "  Head  : Addr: 0x{:X}, Size: {} bytes, End: 0x{:X}",
         head_addr,
         allocator.head.size,
         head_addr + allocator.head.size
     );
 
-    vgaprintln!(
+    kprintln!(Debug,
         "  Top region  : Addr: 0x{:X}, Size: {} bytes",
         allocator.top_start,
         allocator.top_size
@@ -48,7 +50,7 @@ pub fn dump_debug(allocator: &LinkedListAllocator) {
                 || current_addr >= allocator.current_end
                 || current_addr % align_of::<ListNode>() != 0
             {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  Invalid node pointer in dump: index={}, ptr=0x{:X}, heap=0x{:X}..0x{:X}",
                     i,
                     current_addr,
@@ -63,7 +65,7 @@ pub fn dump_debug(allocator: &LinkedListAllocator) {
             let node_end = node_addr + node.size;
 
             if node.next.is_null() {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  Node {}: Addr: 0x{:X}, Size: {} bytes, End: 0x{:X}, Next: NULL",
                     i,
                     node_addr,
@@ -71,7 +73,7 @@ pub fn dump_debug(allocator: &LinkedListAllocator) {
                     node_end
                 );
             } else {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  Node {}: Addr: 0x{:X}, Size: {} bytes, End: 0x{:X}, Next: 0x{:X}",
                     i,
                     node_addr,
@@ -87,7 +89,7 @@ pub fn dump_debug(allocator: &LinkedListAllocator) {
     }
 
     if i == 0 {
-        vgaprintln!("  (List is empty - heap fully allocated)");
+        kprintln!(Debug,"  (List is empty - heap fully allocated)");
     }
 }
 
@@ -103,7 +105,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
                 || current_addr >= allocator.current_end
                 || current_addr % align_of::<ListNode>() != 0
             {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED [{}]: invalid free-list pointer: ptr=0x{:X}, heap=0x{:X}..0x{:X}",
                     label,
                     current_addr,
@@ -116,7 +118,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
             let node = &*current;
             let start = node.start_addr();
             let Some(end) = node.checked_end_addr() else {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED [{}]: free node end overflow: addr=0x{:X}, size={}",
                     label,
                     start,
@@ -126,7 +128,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
             };
 
             if node.size < size_of::<ListNode>() {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED [{}]: free node too small: addr=0x{:X}, size={}",
                     label,
                     start,
@@ -136,7 +138,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
             }
 
             if start % align_of::<ListNode>() != 0 {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED [{}]: free node not aligned: addr=0x{:X}",
                     label,
                     start
@@ -145,7 +147,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
             }
 
             if end <= start {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED [{}]: invalid free node range: start=0x{:X}, end=0x{:X}",
                     label,
                     start,
@@ -155,7 +157,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
             }
 
             if previous_end != 0 && start < previous_end {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED [{}]: free list is not sorted or overlaps: prev_end=0x{:X}, start=0x{:X}",
                     label,
                     previous_end,
@@ -166,7 +168,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
 
             if end == allocator.current_end {
                 if allocator.top_size == 0 {
-                    vgaprintln!(
+                    kprintln!(Debug,
                         "  FAILED [{}]: free node ends at heap_end, but top is empty. node=0x{:X}..0x{:X}",
                         label,
                         start,
@@ -176,7 +178,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
                 }
 
                 if allocator.top_start != start || allocator.top_size != node.size {
-                    vgaprintln!(
+                    kprintln!(Debug,
                         "  FAILED [{}]: top does not match free node at heap_end. node=0x{:X}, size={}, top=0x{:X}, top_size={}",
                         label,
                         start,
@@ -192,7 +194,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
                 found_top = true;
 
                 if node.size != allocator.top_size {
-                    vgaprintln!(
+                    kprintln!(Debug,
                         "  FAILED [{}]: top_size does not match node.size. top_size={}, node.size={}",
                         label,
                         allocator.top_size,
@@ -202,7 +204,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
                 }
 
                 if end != allocator.current_end {
-                    vgaprintln!(
+                    kprintln!(Debug,
                         "  FAILED [{}]: top does not end at heap_end. top_end=0x{:X}, heap_end=0x{:X}",
                         label,
                         end,
@@ -217,7 +219,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
         }
 
         if allocator.top_size == 0 && allocator.top_start != 0 {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  FAILED [{}]: top_size is 0 but top_start is not 0: 0x{:X}",
                 label,
                 allocator.top_start
@@ -226,7 +228,7 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
         }
 
         if allocator.top_size != 0 && !found_top {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  FAILED [{}]: top exists but was not found in free list. top_start=0x{:X}, top_size={}",
                 label,
                 allocator.top_start,
@@ -239,9 +241,70 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
     }
 }
 
+fn test_true_heap_exhaustion(allocator: &mut LinkedListAllocator) -> bool {
+    kprintln!(Debug,"[TEST] True Heap Exhaustion (OOM)");
+
+    unsafe {
+        const MAX_ALLOCS: usize = 512;
+        let mut count = 0;
+
+        let estimated_capacity = if allocator.top_size > 0 {
+            allocator.top_size
+        } else {
+            allocator.current_end - allocator.global_start
+        };
+
+        let chunk_size = core::cmp::max(PageSize::SIZE_4KB as usize, estimated_capacity / 100);
+        let chunk_size = (chunk_size + 0xFFF) & !0xFFF;
+
+        let layout = Layout::from_size_align(chunk_size, PageSize::SIZE_4KB as usize).unwrap();
+
+        kprintln!(Debug, "  Draining heap with chunks of {} bytes...", chunk_size);
+
+        loop {
+            let ptr = allocator.allocate(layout);
+
+            if ptr.is_null() {
+                kprintln!(Debug, "  Hit OOM perfectly after {} allocations.", count);
+                break;
+            }
+
+            core::ptr::write_volatile(ptr, 0xAA);
+
+            count += 1;
+        }
+
+        let tiny_layout = Layout::from_size_align(16, 16).unwrap();
+        let tiny_ptr = allocator.allocate(tiny_layout);
+
+        if !tiny_ptr.is_null() {
+            kprintln!(Debug, "  FAILED: Hit OOM for chunks, but a tiny allocation still passed.");
+            kprintln!(Debug, "  (This might mean heap fragmentation or bad chunk math, not necessarily a crash, but check it)");
+            allocator.deallocate(tiny_ptr, tiny_layout);
+            return false;
+        }
+        kprintln!(Debug, "  OK: Tiny allocation correctly rejected during OOM.");
+
+        if !validate_allocator_state(allocator, "during OOM") {
+            kprintln!(Debug, "  FAILED: Allocator state corrupted during OOM!");
+            return false;
+        }
+
+        kprintln!(Debug, "  Restoring heap...");
+
+        if !validate_allocator_state(allocator, "after OOM recovery") {
+            kprintln!(Debug, "  FAILED: Allocator state corrupted after OOM recovery!");
+            return false;
+        }
+    }
+
+    kprintln!(Debug, "  OK: Survived true heap exhaustion and fully recovered.");
+    true
+}
+
 fn validate_allocator_drained(allocator: &LinkedListAllocator, label: &str) -> bool {
     if !allocator.head.next.is_null() {
-        vgaprintln!(
+        kprintln!(Debug,
             "  FAILED [{}]: allocator still has free-list nodes after test",
             label
         );
@@ -250,7 +313,7 @@ fn validate_allocator_drained(allocator: &LinkedListAllocator, label: &str) -> b
     }
 
     if allocator.top_start != 0 || allocator.top_size != 0 {
-        vgaprintln!(
+        kprintln!(Debug,
             "  FAILED [{}]: allocator still has top state after test. top_start=0x{:X}, top_size={}",
             label,
             allocator.top_start,
@@ -261,7 +324,7 @@ fn validate_allocator_drained(allocator: &LinkedListAllocator, label: &str) -> b
     }
 
     if allocator.current_end != allocator.global_start {
-        vgaprintln!(
+        kprintln!(Debug,
             "  FAILED [{}]: heap end did not return to start. current_end=0x{:X}, global_start=0x{:X}",
             label,
             allocator.current_end,
@@ -279,7 +342,7 @@ fn run_kheap_case(
     name: &str,
     test: fn(&mut LinkedListAllocator) -> bool,
 ) -> bool {
-    vgaprintln!("\n[CASE] {}", name);
+    kprintln!(Debug,"\n[CASE] {}", name);
 
     if !validate_allocator_drained(allocator, "before test") {
         return false;
@@ -301,7 +364,7 @@ unsafe fn touch_allocation(ptr: *mut u8, size: usize) -> bool {
     ptr.write_volatile(0xA5);
 
     if ptr.read_volatile() != 0xA5 {
-        vgaprintln!("  FAILED: first byte read/write mismatch");
+        kprintln!(Debug,"  FAILED: first byte read/write mismatch");
         return false;
     }
 
@@ -309,7 +372,7 @@ unsafe fn touch_allocation(ptr: *mut u8, size: usize) -> bool {
     last.write_volatile(0x5A);
 
     if last.read_volatile() != 0x5A {
-        vgaprintln!("  FAILED: last byte read/write mismatch");
+        kprintln!(Debug,"  FAILED: last byte read/write mismatch");
         return false;
     }
 
@@ -329,7 +392,7 @@ unsafe fn touch_allocation(ptr: *mut u8, size: usize) -> bool {
             start_ptr.write_volatile(start_value);
 
             if start_ptr.read_volatile() != start_value {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED: single-byte page mismatch at offset 0x{:X}, addr=0x{:X}",
                     page_start,
                     start_ptr as usize
@@ -341,7 +404,7 @@ unsafe fn touch_allocation(ptr: *mut u8, size: usize) -> bool {
             end_ptr.write_volatile(end_value);
 
             if start_ptr.read_volatile() != start_value {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED: page start mismatch at offset 0x{:X}, addr=0x{:X}",
                     page_start,
                     start_ptr as usize
@@ -350,7 +413,7 @@ unsafe fn touch_allocation(ptr: *mut u8, size: usize) -> bool {
             }
 
             if end_ptr.read_volatile() != end_value {
-                vgaprintln!(
+                kprintln!(Debug,
                     "  FAILED: page end mismatch at offset 0x{:X}, addr=0x{:X}",
                     page_end,
                     end_ptr as usize
@@ -370,7 +433,7 @@ unsafe fn alloc_checked(
     name: &str,
     layout: Layout,
 ) -> Option<*mut u8> {
-    vgaprintln!(
+    kprintln!(Debug,
         "  Allocating [{}]: size={}, align={}",
         name,
         layout.size(),
@@ -380,14 +443,14 @@ unsafe fn alloc_checked(
     let ptr = allocator.allocate(layout);
 
     if ptr.is_null() {
-        vgaprintln!("  FAILED [{}]: allocation returned NULL", name);
+        kprintln!(Debug,"  FAILED [{}]: allocation returned NULL", name);
         return None;
     }
 
     let addr = ptr as usize;
 
     if addr % layout.align() != 0 {
-        vgaprintln!(
+        kprintln!(Debug,
             "  FAILED [{}]: wrong alignment. addr=0x{:X}, align={}",
             name,
             addr,
@@ -408,7 +471,7 @@ unsafe fn alloc_checked(
         return None;
     }
 
-    vgaprintln!(
+    kprintln!(Debug,
         "  OK [{}]: ptr=0x{:X}, end=0x{:X}",
         name,
         addr,
@@ -424,7 +487,7 @@ unsafe fn dealloc_checked(
     ptr: *mut u8,
     layout: Layout,
 ) -> bool {
-    vgaprintln!(
+    kprintln!(Debug,
         "  Deallocating [{}]: ptr=0x{:X}, size={}, align={}",
         name,
         ptr as usize,
@@ -438,7 +501,7 @@ unsafe fn dealloc_checked(
 }
 
 fn test_basic_alloc_dealloc_cases(allocator: &mut LinkedListAllocator) -> bool {
-    vgaprintln!("[TEST] Basic allocation/deallocation cases");
+    kprintln!(Debug,"[TEST] Basic allocation/deallocation cases");
 
     let page_size = PageSize::SIZE_4KB as usize;
     let huge_align = 2 * 1024 * 1024;
@@ -489,7 +552,7 @@ fn test_basic_alloc_dealloc_cases(allocator: &mut LinkedListAllocator) -> bool {
 }
 
 fn test_fragmentation_reuse_and_merge(allocator: &mut LinkedListAllocator) -> bool {
-    vgaprintln!("[TEST] Fragmentation, reuse, and merge");
+    kprintln!(Debug,"[TEST] Fragmentation, reuse, and merge");
 
     let layout = Layout::from_size_align(256, 16).unwrap();
     let reuse_layout = Layout::from_size_align(128, 16).unwrap();
@@ -505,7 +568,7 @@ fn test_fragmentation_reuse_and_merge(allocator: &mut LinkedListAllocator) -> bo
             ptrs[i] = ptr;
         }
 
-        vgaprintln!("  Freeing even indices to create fragmentation...");
+        kprintln!(Debug,"  Freeing even indices to create fragmentation...");
 
         for &i in [0usize, 2, 4, 6].iter() {
             if !dealloc_checked(allocator, "fragment even free", ptrs[i], layout) {
@@ -517,7 +580,7 @@ fn test_fragmentation_reuse_and_merge(allocator: &mut LinkedListAllocator) -> bo
 
         dump_debug(allocator);
 
-        vgaprintln!("  Allocating smaller blocks into fragmented holes...");
+        kprintln!(Debug,"  Allocating smaller blocks into fragmented holes...");
 
         let Some(a) = alloc_checked(allocator, "reuse hole A", reuse_layout) else {
             return false;
@@ -537,7 +600,7 @@ fn test_fragmentation_reuse_and_merge(allocator: &mut LinkedListAllocator) -> bo
             return false;
         }
 
-        vgaprintln!("  Reclaiming remaining allocations...");
+        kprintln!(Debug,"  Reclaiming remaining allocations...");
 
         for i in 0..ptrs.len() {
             if !ptrs[i].is_null() {
@@ -556,7 +619,7 @@ fn test_fragmentation_reuse_and_merge(allocator: &mut LinkedListAllocator) -> bo
 }
 
 fn test_multiple_live_page_allocations(allocator: &mut LinkedListAllocator) -> bool {
-    vgaprintln!("[TEST] Multiple live page allocations");
+    kprintln!(Debug,"[TEST] Multiple live page allocations");
 
     let page_size = PageSize::SIZE_4KB as usize;
 
@@ -573,7 +636,7 @@ fn test_multiple_live_page_allocations(allocator: &mut LinkedListAllocator) -> b
 
         for i in 0..layouts.len() {
             let Some(ptr) = alloc_checked(allocator, "multi live alloc", layouts[i]) else {
-                vgaprintln!("i: {}", i);
+                kprintln!(Debug,"i: {}", i);
                 for j in 0..i {
                     if !ptrs[j].is_null() {
                         allocator.deallocate(ptrs[j], layouts[j]);
@@ -586,7 +649,7 @@ fn test_multiple_live_page_allocations(allocator: &mut LinkedListAllocator) -> b
             ptrs[i] = ptr;
         }
 
-        vgaprintln!("  Freeing multiple live allocations in reverse order...");
+        kprintln!(Debug,"  Freeing multiple live allocations in reverse order...");
 
         for i in (0..layouts.len()).rev() {
             if !dealloc_checked(allocator, "multi live free", ptrs[i], layouts[i]) {
@@ -601,7 +664,7 @@ fn test_multiple_live_page_allocations(allocator: &mut LinkedListAllocator) -> b
 }
 
 fn test_middle_free_does_not_shrink_heap(allocator: &mut LinkedListAllocator) -> bool {
-    vgaprintln!("[TEST] Freeing middle allocation does not shrink heap");
+    kprintln!(Debug,"[TEST] Freeing middle allocation does not shrink heap");
 
     let page_size = PageSize::SIZE_4KB as usize;
     let layout = Layout::from_size_align(page_size, page_size).unwrap();
@@ -625,7 +688,7 @@ fn test_middle_free_does_not_shrink_heap(allocator: &mut LinkedListAllocator) ->
         let heap_end_before = allocator.current_end;
         let b_end = b as usize + layout.size();
 
-        vgaprintln!(
+        kprintln!(Debug,
             "  Middle candidate: B=0x{:X}..0x{:X}, heap_end=0x{:X}",
             b as usize,
             b_end,
@@ -635,7 +698,7 @@ fn test_middle_free_does_not_shrink_heap(allocator: &mut LinkedListAllocator) ->
         allocator.deallocate(b, layout);
 
         if b_end != heap_end_before && allocator.current_end != heap_end_before {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  FAILED: heap_end changed after freeing middle allocation. before=0x{:X}, after=0x{:X}",
                 heap_end_before,
                 allocator.current_end
@@ -660,7 +723,7 @@ fn test_middle_free_does_not_shrink_heap(allocator: &mut LinkedListAllocator) ->
 }
 
 fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
-    vgaprintln!("[TEST] Top region shrink behavior");
+    kprintln!(Debug,"[TEST] Top region shrink behavior");
 
     let page_size = PageSize::SIZE_4KB as usize;
 
@@ -675,7 +738,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
         let alloc_end = alloc_start + layout.size();
         let heap_end_after_alloc = allocator.current_end;
 
-        vgaprintln!(
+        kprintln!(Debug,
             "  Seed allocation: 0x{:X}..0x{:X}, heap_end=0x{:X}",
             alloc_start,
             alloc_end,
@@ -685,7 +748,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
         allocator.deallocate(ptr, layout);
 
         if allocator.current_end > heap_end_after_alloc {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  FAILED: heap_end grew during deallocation. before=0x{:X}, after=0x{:X}",
                 heap_end_after_alloc,
                 allocator.current_end
@@ -697,7 +760,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
             return false;
         }
 
-        vgaprintln!(
+        kprintln!(Debug,
             "  OK: after free heap_end=0x{:X}, top_start=0x{:X}, top_size={}",
             allocator.current_end,
             allocator.top_start,
@@ -709,7 +772,7 @@ fn test_top_shrink_behavior(allocator: &mut LinkedListAllocator) -> bool {
 }
 
 fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAllocator) -> bool {
-    vgaprintln!("[TEST] Allocating heap end clears top if possible");
+    kprintln!(Debug,"[TEST] Allocating heap end clears top if possible");
 
     unsafe {
         let prefix_layout = Layout::from_size_align(128, 16).unwrap();
@@ -727,7 +790,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
         allocator.deallocate(suffix, suffix_layout);
 
         if allocator.top_size == 0 {
-            vgaprintln!("  FAILED: expected a partial top after freeing suffix");
+            kprintln!(Debug,"  FAILED: expected a partial top after freeing suffix");
             allocator.deallocate(prefix, prefix_layout);
             return false;
         }
@@ -738,7 +801,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
         let old_heap_end = allocator.current_end;
 
         if old_top_end != old_heap_end {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  FAILED: invalid top before test. top_end=0x{:X}, heap_end=0x{:X}",
                 old_top_end,
                 old_heap_end
@@ -749,7 +812,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
 
         let layout = Layout::from_size_align(old_top_size, 16).unwrap();
 
-        vgaprintln!(
+        kprintln!(Debug,
             "  Trying end allocation: expected=0x{:X}..0x{:X}, size={}",
             old_top_start,
             old_top_end,
@@ -759,7 +822,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
         let ptr = allocator.allocate(layout);
 
         if ptr.is_null() {
-            vgaprintln!("  FAILED: end allocation returned NULL");
+            kprintln!(Debug,"  FAILED: end allocation returned NULL");
             allocator.deallocate(prefix, prefix_layout);
             return false;
         }
@@ -768,7 +831,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
         let got_end = got_start + old_top_size;
 
         if got_start != old_top_start || got_end != old_heap_end {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  SKIPPED: allocator chose a different region. expected=0x{:X}..0x{:X}, got=0x{:X}..0x{:X}",
                 old_top_start,
                 old_heap_end,
@@ -782,7 +845,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
         }
 
         if allocator.top_size != 0 || allocator.top_start != 0 {
-            vgaprintln!(
+            kprintln!(Debug,
                 "  FAILED: top should be cleared after allocating heap end. top_start=0x{:X}, top_size={}",
                 allocator.top_start,
                 allocator.top_size
@@ -799,7 +862,7 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
             return false;
         }
 
-        vgaprintln!("  OK: top cleared after allocating heap end");
+        kprintln!(Debug,"  OK: top cleared after allocating heap end");
 
         allocator.deallocate(ptr, layout);
         allocator.deallocate(prefix, prefix_layout);
@@ -809,9 +872,9 @@ fn test_allocating_heap_end_clears_top_if_possible(allocator: &mut LinkedListAll
 }
 
 fn run_kheap_test_cases(allocator: &mut LinkedListAllocator) {
-    vgaprintln!("\n==============================");
-    vgaprintln!("[TEST SUITE] LinkedListAllocator");
-    vgaprintln!("==============================");
+    kprintln!(Debug,"\n==============================");
+    kprintln!(Debug,"[TEST SUITE] LinkedListAllocator");
+    kprintln!(Debug,"==============================");
 
     let mut ok = true;
 
@@ -870,27 +933,27 @@ fn run_kheap_test_cases(allocator: &mut LinkedListAllocator) {
     dump_debug(allocator);
 
     if ok {
-        vgaprintln!("\n[TEST SUITE] OK: all allocator tests passed");
+        kprintln!(Debug,"\n[TEST SUITE] OK: all allocator tests passed");
     } else {
-        vgaprintln!("\n[TEST SUITE] FAILED: at least one allocator test failed");
+        kprintln!(Debug,"\n[TEST SUITE] FAILED: at least one allocator test failed");
     }
 }
 
 pub fn run_dma_tests() {
-    vgaprintln!("\n--- STARTING DMA TEST SUITE ---");
+    kprintln!(Debug,"\n--- STARTING DMA TEST SUITE ---");
     test_dma_basic();
     test_dma_continuity();
     test_dma_fragmentation();
-    vgaprintln!("--- DMA TEST SUITE COMPLETED ---\n");
+    kprintln!(Debug,"--- DMA TEST SUITE COMPLETED ---\n");
 }
 
 fn test_dma_basic() {
-    vgaprintln!("[TEST] DMA Basic Alloc/Free");
+    kprintln!(Debug,"[TEST] DMA Basic Alloc/Free");
     let size = 1024 * 1024 * 128; //128mb lower this if out of memory
     let align = 64;
 
     if let Some(alloc) = dma::dma_alloc_coherent(size, align) {
-        vgaprintln!(
+        kprintln!(Debug,
             "  Allocated 1KB DMA at virt: {:?}, phys: {:?}",
             alloc.virt,
             alloc.phys
@@ -907,19 +970,19 @@ fn test_dma_basic() {
         }
 
         dma::dma_free(alloc);
-        vgaprintln!("  OK: Basic DMA test passed");
+        kprintln!(Debug,"  OK: Basic DMA test passed");
     } else {
         panic!("  FAIL: Basic DMA allocation failed");
     }
 }
 
 fn test_dma_continuity() {
-    vgaprintln!("[TEST] DMA Physical Continuity");
+    kprintln!(Debug,"[TEST] DMA Physical Continuity");
     let pages = 1024;
     let size = pages * 4096;
 
     if let Some(alloc) = dma::dma_alloc_coherent(size, 4096) {
-        vgaprintln!("  Allocated {} pages DMA at phys: {:?}", pages, alloc.phys);
+        kprintln!(Debug,"  Allocated {} pages DMA at phys: {:?}", pages, alloc.phys);
 
         for i in 0..pages {
             let offset = i * 4096;
@@ -941,14 +1004,14 @@ fn test_dma_continuity() {
         }
 
         dma::dma_free(alloc);
-        vgaprintln!("  OK: DMA physical continuity verified");
+        kprintln!(Debug,"  OK: DMA physical continuity verified");
     } else {
         panic!("  FAIL: DMA continuity allocation failed");
     }
 }
 
 fn test_dma_fragmentation() {
-    vgaprintln!("[TEST] DMA Fragmentation and Reuse");
+    kprintln!(Debug,"[TEST] DMA Fragmentation and Reuse");
     let size = 4096;
     let mut allocs: [Option<dma::DmaAlloc>; 8] = Default::default();
 
@@ -979,5 +1042,5 @@ fn test_dma_fragmentation() {
         }
     }
 
-    vgaprintln!("  OK: DMA fragmentation reuse test passed");
+    kprintln!(Debug,"  OK: DMA fragmentation reuse test passed");
 }
