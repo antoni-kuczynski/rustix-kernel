@@ -16,7 +16,6 @@ mod misc;
 
 use alloc::string::ToString;
 use core::panic::PanicInfo;
-use video::gop_demo;
 use crate::boot::cpuid::cpuid_init;
 use crate::boot::multiboot::multiboot2_init;
 use crate::drivers::acpi::acpi_tables::acpi_init;
@@ -134,8 +133,6 @@ fn emergency_panic(_info: &PanicInfo) {
 
 fn kernel_main_post_stack() -> ! {
     interrupts_enable();
-
-    gop_demo::demo();
 
     loop {
         x86_64::instructions::hlt();

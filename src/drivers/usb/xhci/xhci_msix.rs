@@ -7,8 +7,8 @@
 use crate::drivers::pci::pci_device::PciDevice;
 use crate::drivers::pci::pci_io::pci_write16;
 use crate::interrupts::vector::InterruptVector;
-use crate::vgaprintln;
 use core::ptr;
+use crate::kprintln;
 
 //=======================================================
 //      MSI-X CONFIGURATION CAPABILITY STRUCTURE
@@ -90,19 +90,19 @@ impl MsixCapability {
         let function_mask = (self.message_control & (1 << 14)) != 0;
         let msix_enabled = (self.message_control & (1 << 15)) != 0;
 
-        vgaprintln!("MSI-X Capability:");
-        vgaprintln!("  Cap ID          : 0x{:02X}", self.cap_id);
-        vgaprintln!("  Next Pointer    : 0x{:02X}", self.next);
-        vgaprintln!("  Message Control : 0x{:04X}", msg_control);
-        vgaprintln!("    Table Size    : {}", table_size);
-        vgaprintln!("    Function Mask : {}", function_mask);
-        vgaprintln!("    MSI-X Enabled : {}", msix_enabled);
-        vgaprintln!("  Table:");
-        vgaprintln!("    BIR           : {}", table_bir);
-        vgaprintln!("    Offset        : 0x{:08X}", table_offset);
-        vgaprintln!("  PBA:");
-        vgaprintln!("    BIR           : {}", pba_bir);
-        vgaprintln!("    Offset        : 0x{:08X}", pba_offset);
+        kprintln!(Debug, "MSI-X Capability:");
+        kprintln!(Debug, "  Cap ID          : 0x{:02X}", self.cap_id);
+        kprintln!(Debug, "  Next Pointer    : 0x{:02X}", self.next);
+        kprintln!(Debug, "  Message Control : 0x{:04X}", msg_control);
+        kprintln!(Debug, "    Table Size    : {}", table_size);
+        kprintln!(Debug, "    Function Mask : {}", function_mask);
+        kprintln!(Debug, "    MSI-X Enabled : {}", msix_enabled);
+        kprintln!(Debug, "  Table:");
+        kprintln!(Debug, "    BIR           : {}", table_bir);
+        kprintln!(Debug, "    Offset        : 0x{:08X}", table_offset);
+        kprintln!(Debug, "  PBA:");
+        kprintln!(Debug, "    BIR           : {}", pba_bir);
+        kprintln!(Debug, "    Offset        : 0x{:08X}", pba_offset);
     }
 }
 
@@ -167,7 +167,7 @@ impl MsiXTableView {
             let addr = ((e.msg_addr_high as u64) << 32) | (e.msg_addr_low as u64);
             let masked = if e.is_masked() { "yes" } else { "no" };
 
-            vgaprintln!(
+            kprintln!(Debug,
                 "MSI-X Entry {:>3}: addr=0x{:016x}, data=0x{:08x}, masked={}",
                 i,
                 addr,

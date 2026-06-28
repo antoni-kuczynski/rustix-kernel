@@ -5,11 +5,7 @@ use crate::drivers::apic::apic::{
     LAPIC_ERROR_VECTOR, LAPIC_SPURIOUS_VECTOR_IDT_INDEX, LAPIC_TIMER_VECTOR,
     apic_error_interrupt_handler, apic_spurious_interrupt_handler, lapic_timer_interrupt_handler,
 };
-use crate::{
-    drivers::vga::vga_text::{ColorTextMode, VGAWRITER},
-    interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX},
-    print_ok_msg, vgaprint,
-};
+use crate::{interrupts::{exceptions::*, gdt::DOUBLE_FAULT_IST_INDEX}, kprintln_ok};
 
 pub mod exceptions;
 pub mod gdt;
@@ -54,19 +50,16 @@ pub fn install_dynamic_idt_route(vector: vector::InterruptVector) -> bool {
 }
 
 pub fn idt_init() {
-    vgaprint!("Initializing interrupt descriptor table...");
-
     unsafe {
         let idt = &mut *IDT.0.get();
         init_static_idt(idt);
         idt.load();
     }
 
-    print_ok_msg!();
+    kprintln_ok!("Initialized interrupt descriptor table.");
 }
 
 pub fn interrupts_enable() {
-    vgaprint!("Enabling interrupts...");
-    print_ok_msg!();
     x86_64::instructions::interrupts::enable();
+    kprintln_ok!("Enabled interrupts.");
 }

@@ -8,7 +8,7 @@ use crate::drivers::pci::pci::for_each_pci_device;
 use crate::drivers::pci::pci_device::PciDevice;
 use crate::drivers::pci::pci_io::{PciVendor, pci_read32, pci_write32};
 use crate::drivers::usb::PIF_EHCI_CONTROLLER;
-use crate::vgaprintln;
+use crate::kprintln;
 
 const USB_INTEL_XUSB2PR: u32 = 0xD0;
 const USB_INTEL_USB2PRM: u32 = 0xD4;
@@ -43,11 +43,11 @@ pub fn usb_intel_enable_xhci_ports(device: &PciDevice) {
     pci_write32(device.base_id(), USB_INTEL_USB3_PSSEN, available_ports);
 
     let switched_ports = pci_read32(device.base_id(), USB_INTEL_USB3_PSSEN);
-    vgaprintln!("USB 3.0 ports enabled under XHCI: {}", switched_ports);
+    kprintln!(Info,"USB 3.0 ports enabled under XHCI: {}", switched_ports);
 
     // set usb2 ports to be controller by xhci (usb 2 port routing mask)
     let ports_usb2 = pci_read32(device.base_id(), USB_INTEL_USB2PRM);
     pci_write32(device.base_id(), USB_INTEL_XUSB2PR, ports_usb2);
     let switched_ports_usb2 = pci_read32(device.base_id(), USB_INTEL_XUSB2PR);
-    vgaprintln!("USB 2.0 ports enabled under XHCI: {}", switched_ports_usb2);
+    kprintln!(Info,"USB 2.0 ports enabled under XHCI: {}", switched_ports_usb2);
 }
