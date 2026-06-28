@@ -3,7 +3,7 @@
  * 24/06/2026
  */
 use crate::asm::{rdmsr, wrmsr};
-use crate::kprintln_ok;
+use crate::{__kprintln_ok_buf, kprintln_ok};
 use crate::memory::page_tables::PageSize;
 /*
 Number 	Name 	Description
@@ -18,9 +18,9 @@ Number 	Name 	Description
 7 	UC- — Uncached 	Same as uncacheable, except that this can be overriden by Write-Combining MTRRs.
  */
 
-pub struct PatIndex;
+pub struct PatFlags;
 
-impl PatIndex {
+impl PatFlags {
     ///Reads allocate cache lines on a cache miss, and can allocate to either the shared, exclusive, or modified state. Writes allocate to the modified state on a cache miss.
     pub const WRITE_BACK: u8 = 0;
 
@@ -42,7 +42,7 @@ impl PatIndex {
     pub const _UNCACHED_1: u8 = 7;
 
 
-    pub fn get_u64_page_flags(index: u8, page_table_size: PageSize) -> u64 {
+    pub fn get_u64_page_flags(index: u8, page_table_size: &PageSize) -> u64 {
         let mut flags = 0u64;
 
         if (index & 0x01) != 0 {
@@ -75,5 +75,5 @@ pub fn pat_init() {
 
     let magic = (6u64 | (1u64 << 8) | (4u64 << 16) | (0u64 << 24) | (5u64 << 32) | (7u64 << 40) | (6u64 << 48) | (0u64 << 56));
     unsafe { wrmsr(0x277, magic) };
-    // kprintln_ok!("Configured the Page Attribute Table.");
+    __kprintln_ok_buf!("Configured Page Attribute Table.");
 }

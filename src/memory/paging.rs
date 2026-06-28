@@ -10,7 +10,6 @@ use crate::memory::eba::eba_kmalloc;
 use crate::memory::page_tables::{PageIndexes, PageSize, PageTable, PageTableEntry};
 use crate::memory::pmm::{pmm_free_range, pmm_is_enabled, pmm_reserve_range};
 use crate::memory::{_P2V_kernel, _V2P_kernel, Cr3, SizeUnit, flush_tlb_single_page};
-use crate::__vgaprintln;
 use core::cmp::PartialEq;
 use core::ops::AddAssign;
 use core::ptr;

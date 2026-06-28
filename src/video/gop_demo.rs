@@ -8,8 +8,7 @@ use alloc::vec::Vec;
 use core::ptr;
 use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 use crate::misc::prng::prng_next_isize;
-use crate::video::console::{fb_put_string_at, fb_put_string_at_no_bg, fb_set_background, fb_set_foreground};
-use crate::video::framebuffer::{fb_bpp, fb_clear, fb_height, fb_pitch, fb_swap_buffers, fb_width, Framebuffer, FramebufferColor, FRAMEBUFFER};
+use crate::video::framebuffer::{fb_height, fb_width, Framebuffer, FramebufferColor, FRAMEBUFFER};
 
 
 struct Ball {
@@ -35,11 +34,12 @@ impl Ball {
             dir_y = prng_next_isize(-5, 5);
         }
 
-        let x = prng_next_isize(0, fb_width_isize());
+        let radius = prng_next_isize(10, 15);
+        let x = prng_next_isize(radius, fb_width_isize() - radius);
         let y = prng_next_isize(-1600, -1500);
 
         Self {
-            radius: prng_next_isize(10, 15) as f32,
+            radius: radius as f32,
             color: FramebufferColor::from_rgb(
                 prng_next_isize(0, 255) as u32,
                 prng_next_isize(0, 255) as u32,
@@ -78,10 +78,10 @@ impl Ball {
 
     fn update(&mut self, delta_time: f32) {
         let gravity = 980.0;
-        let dampening = 0.80;
+        let dampening = 0.75;
         let max_velocity = 1500.0;
 
-        let resting_threshold = 100.0;
+        let resting_threshold = 60.0;
 
         self.direction_y += gravity * delta_time;
 
@@ -109,7 +109,7 @@ impl Ball {
 
             if self.direction_y < resting_threshold {
                 self.direction_y = 0.0;
-                self.direction_x *= 0.98;
+                self.direction_x *= 0.90;
             } else {
                 self.direction_y = -self.direction_y.abs() * dampening;
             }
@@ -139,43 +139,48 @@ fn update(delta_time: f32, balls: &mut Vec<Ball>, fb: &Framebuffer) {
         ball.update(delta_time);
     }
 
-
     for i in 0..balls.len() {
         let (left, right) = balls.split_at_mut(i + 1);
         let ball_a = &mut left[i];
+
         for ball_b in right.iter_mut() {
-            if !ball_a.collides_with(ball_b) {
+            let dx = ball_b.x - ball_a.x;
+            let dy = ball_b.y - ball_a.y;
+            let distance_squared = dx * dx + dy * dy;
+            let min_distance = ball_a.radius + ball_b.radius;
+
+            if distance_squared >= min_distance * min_distance || distance_squared == 0.0 {
                 continue;
             }
 
-            // Overlap Resolution
-            let (new_b_x, new_b_y) = point_at_distance(
-                ball_a.x,
-                ball_a.y,
-                ball_b.x,
-                ball_b.y,
-                ball_a.radius as f32 + ball_b.radius as f32
-            );
-            ball_b.x = new_b_x;
-            ball_b.y = new_b_y;
-
-            // Velocity Update
-            let dx = ball_b.x - ball_a.x;
-            let dy = ball_b.y - ball_a.y;
-
-            let distance_squared = (dx * dx + dy * dy) as f32;
             let distance = sqrt_f32(distance_squared);
 
-            let (normal_x, normal_y) = if distance == 0.0 {
-                (1.0, 0.0)
-            } else {
-                (dx as f32 / distance, dy as f32 / distance)
-            };
+            let normal_x = dx / distance;
+            let normal_y = dy / distance;
 
-            let vax = ball_a.direction_x as f32;
-            let vay = ball_a.direction_y as f32;
-            let vbx = ball_b.direction_x as f32;
-            let vby = ball_b.direction_y as f32;
+            let overlap = min_distance - distance;
+
+            let separation_amount = overlap * 0.5;
+
+            ball_a.x -= normal_x * separation_amount;
+            ball_a.y -= normal_y * separation_amount;
+
+            ball_b.x += normal_x * separation_amount;
+            ball_b.y += normal_y * separation_amount;
+
+            let vax = ball_a.direction_x;
+            let vay = ball_a.direction_y;
+            let vbx = ball_b.direction_x;
+            let vby = ball_b.direction_y;
+
+            let rel_vel_x = vbx - vax;
+            let rel_vel_y = vby - vay;
+
+            let velocity_along_normal = rel_vel_x * normal_x + rel_vel_y * normal_y;
+
+            if velocity_along_normal > 0.0 {
+                continue;
+            }
 
             let dot_a = vax * normal_x + vay * normal_y;
             let dot_b = vbx * normal_x + vby * normal_y;
@@ -198,16 +203,18 @@ fn draw(delta_time: f32, balls: &Vec<Ball>, fb_copy: &mut Vec<u8>, fb_length: us
     // fb.clear();
 }
 
-
+pub static IS_DEMO_RUNNING: bool = true;
 
 pub fn demo() {
+    let mut lock = FRAMEBUFFER.lock();
+    let fb = lock.as_mut().unwrap();
+
+    let amount_of_balls = fb.width() / 10;
     let mut balls: Vec<Ball> = vec![];
-    for i in 0..50 {
+    for i in 0..amount_of_balls {
         balls.push(Ball::new_random());
     }
 
-    let mut lock = FRAMEBUFFER.lock();
-    let fb = lock.as_mut().unwrap();
 
     let fb_length = fb.height() * fb.pitch();
     let mut fb_copy: Vec<u8> = Vec::with_capacity(fb_length);
@@ -315,17 +322,17 @@ pub fn max_f32(a: f32, b: f32) -> f32 {
 impl Framebuffer {
     fn draw_filled_circle(&mut self, ball: &Ball) {
         let color = &ball.color;
-        let cx = ball.x;
-        let cy = ball.y;
-        let r = ball.radius;
+        let cx = ball.x as isize;
+        let cy = ball.y as isize;
+        let r = ball.radius as isize;
 
-        if r <= 0.0 {
+        if r <= 0 {
             return;
         }
 
-        let mut x = 0.0;
+        let mut x = 0;
         let mut y = r;
-        let mut d = 3.0 - 2.0 * r;
+        let mut d = 3 - 2 * r;
 
         while x <= y {
             self.draw_h_line(cx - x, cx + x, cy + y, color);
@@ -333,36 +340,47 @@ impl Framebuffer {
             self.draw_h_line(cx - y, cx + y, cy + x, color);
             self.draw_h_line(cx - y, cx + y, cy - x, color);
 
-            if d < 0.0 {
-                d = d + 4.0 * x + 6.0;
+            if d < 0 {
+                d = d + 4 * x + 6;
             } else {
-                d = d + 4.0 * (x - y) + 10.0;
-                y -= 1.0;
+                d = d + 4 * (x - y) + 10;
+                y -= 1;
             }
-            x += 1.0;
+            x += 1;
         }
     }
 
-    fn draw_h_line(&mut self, mut x1: f32, mut x2: f32, y: f32, color: &FramebufferColor) {
+    fn draw_h_line(&mut self, mut x1: isize, mut x2: isize, y: isize, color: &FramebufferColor) {
         if x1 > x2 {
             core::mem::swap(&mut x1, &mut x2);
         }
 
-        if y < 0.0 || y >= self._pixel_info.height as f32 {
+        if y < 0 || y >= self._pixel_info.height as isize {
             return;
         }
 
-        let mut start_x = x1.max(0.0);
-        let end_x = x2.min((self._pixel_info.width - 1) as f32);
+        let start_x = x1.max(0);
+        let end_x = x2.min((self._pixel_info.width - 1) as isize);
 
         if start_x > end_x {
             return;
         }
 
         let safe_y = y as usize;
-        while start_x <= end_x {
-            self.plot_pixel(start_x as usize, safe_y, color);
-            start_x += 1.0;
+        let bpp_bytes = (self.bpp() as usize) >> 3;
+        let mut current_offset = safe_y * self.pitch() + (start_x as usize) * bpp_bytes;
+        let end_offset = safe_y * self.pitch() + (end_x as usize) * bpp_bytes;
+
+        while current_offset <= end_offset {
+            unsafe {
+                self.write_raw_pixel_24(
+                    current_offset,
+                    color.data,
+                    self.bpp() as usize
+                );
+            };
+
+            current_offset += bpp_bytes;
         }
     }
 }

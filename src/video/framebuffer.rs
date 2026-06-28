@@ -10,11 +10,10 @@ use spin::{Mutex, Once};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::boot::multiboot::multiboot2_get_framebuffer_tag;
 use crate::boot::multiboot_tag::{MultibootFramebufferColorInfo, MultibootFramebufferInfoTag, MultibootFramebufferRgbInfo};
-use crate::memory::page_tables::{PageSize, PageTableEntry};
+use crate::memory::page_tables::{PageSize};
 use crate::memory::paging::{vmm_eba_map_range_ext};
-use crate::{__oldMultibootPhysAddr, kprintln_ok};
-use crate::memory::_P2V_kernel;
-use crate::memory::pat::PatIndex;
+use crate::{__kprintln_ok_buf, kprintln_ok};
+use crate::memory::pat::PatFlags;
 use crate::video::bitmap_font::{BitmapFont};
 
 
@@ -56,6 +55,7 @@ pub struct FramebufferPixelInfo {
 pub struct Framebuffer {
     pub base: *mut u8,
     pub kind: FramebufferKind,
+    pub length_bytes: usize,
 
     /// Use fb_pixel_info() instead
     pub _pixel_info: FramebufferPixelInfo,
@@ -91,7 +91,8 @@ impl Framebuffer {
             back_buffer: Vec::new(),
             current_foreground: FramebufferColor::new_raw(0xFF_FF_FF_FF),
             current_background: FramebufferColor::new_raw(0x00_00_00_00),
-            is_double_buffered: false
+            is_double_buffered: false,
+            length_bytes: (fb_tag.framebuffer_pitch * fb_tag.framebuffer_pitch) as usize
         }
     }
 
@@ -189,6 +190,16 @@ impl Framebuffer {
         }
     }
 
+    #[inline(always)]
+    pub unsafe fn write_raw_pixel_24(&mut self, base_offset: usize, color_data: u32, bpp: usize) {
+        if base_offset >= self.length_bytes {
+            return;
+        }
+        self.fb_write(base_offset, color_data as u8);
+        self.fb_write(base_offset + 1, (color_data >> 8) as u8);
+        self.fb_write(base_offset + 2, (color_data >> 16) as u8);
+    }
+
     pub(crate) fn width(&self) -> usize {
         self._pixel_info.width
     }
@@ -282,25 +293,32 @@ pub fn framebuffer_init() {
 
     let virt_addr = VirtAddr::new(FRAMEBUFFER_START);
     let phys_addr = PhysAddr::new(fb_tag.framebuffer_addr);
-    let page_table_flags = PatIndex::get_u64_page_flags(PatIndex::WRITE_COMBINING, PageSize::Size2Mb);
+    let page_table_flags = PatFlags::get_u64_page_flags(PatFlags::WRITE_COMBINING, &PageSize::Size2Mb);
 
     unsafe {
         vmm_eba_map_range_ext(virt_addr, phys_addr, fb_length, &PageSize::Size2Mb, false, page_table_flags);
     }
 
+    //what a nasty and disgusting way to do this. we need a second framebuffer mutex which is only reserved for
+    //kernel panics so that it can print panic messages while some other stuff is using the framebuffer.
+    //we do not care about safety or other shit this time. we just want a message on the screen.
     let framebuffer_view = unsafe { Framebuffer::from_multiboot_tag(fb_tag, virt_addr) };
+    let framebuffer_view1 = unsafe { Framebuffer::from_multiboot_tag(fb_tag, virt_addr) };
 
     if framebuffer_view.base as u64 == 0 {
         panic!("Framebuffer's ptr is null!");
     }
 
     let mut fb = FRAMEBUFFER.lock();
+    let mut fb_unsafe = __FB_PANIC_ONLY.lock();
     let color_info = framebuffer_view._color_info;
     let pixel_info = framebuffer_view._pixel_info;
 
     *fb = Some(framebuffer_view);
+    *fb_unsafe = Some(framebuffer_view1);
     FRAMEBUFFER_COLOR_INFO.call_once(|| color_info);
     FRAMEBUFFER_PIXEL_INFO.call_once(|| pixel_info);
+    __kprintln_ok_buf!("Initialized the framebuffer with mode {}x{}x{}.", fb_width(), fb_height(), fb_bpp());
 }
 
 pub fn double_buffering_init() {
@@ -328,30 +346,6 @@ pub fn double_buffering_init() {
     unsafe { FRAMEBUFFER.force_unlock() };
 
     kprintln_ok!("Enabled double buffering.");
-}
-
-pub fn fb_plot_pixel(x: usize, y: usize, color: &FramebufferColor) {
-    FRAMEBUFFER
-        .lock()
-        .as_mut()
-        .unwrap()
-        .plot_pixel(x, y, color);
-}
-
-pub fn fb_clear() {
-    FRAMEBUFFER
-        .lock()
-        .as_mut()
-        .unwrap()
-        .clear();
-}
-
-pub fn fb_swap_buffers() {
-    FRAMEBUFFER
-        .lock()
-        .as_mut()
-        .unwrap()
-        .swap_buffers();
 }
 
 pub fn fb_color_info() -> &'static FrameBufferColorInfo {
@@ -384,6 +378,7 @@ pub fn fb_bpp() -> u8 {
     fb_pixel_info().bpp
 }
 
+pub static __FB_PANIC_ONLY: Mutex<Option<Framebuffer>> = Mutex::new(None);
 pub static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
 pub static FRAMEBUFFER_COLOR_INFO: Once<FrameBufferColorInfo> = Once::new();
 pub static FRAMEBUFFER_PIXEL_INFO: Once<FramebufferPixelInfo> = Once::new();

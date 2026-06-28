@@ -219,7 +219,7 @@ impl MultibootFramebufferInfoTag {
                         .read_unaligned();
 
                 let palette_ptr = (info_ptr as *const u8)
-                    .add(core::mem::size_of::<u32>())
+                    .add(size_of::<u32>())
                     as *const MultibootFbColorDescriptor;
 
                 let palette = slice::from_raw_parts(
@@ -264,7 +264,7 @@ struct MultibootFbColorInfo {
 
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
-pub(crate) struct MultibootFbColorDescriptor {
+pub struct MultibootFbColorDescriptor {
     red_value: u8,
     green_value: u8,
     blue_value: u8

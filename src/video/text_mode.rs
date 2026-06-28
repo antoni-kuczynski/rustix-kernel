@@ -10,7 +10,7 @@ use core::ptr::read_volatile;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use crate::video::bitmap_font::{BitmapFont, BYTES_PER_CHAR_14PX, FONT_14PX, FONT_HEIGHT_14PX_PX, FONT_WIDTH_14PX_PX, HICHAR_14PX, LOCHAR_14PX};
-use crate::video::framebuffer::{fb_plot_pixel, FramebufferColor, Framebuffer, FRAMEBUFFER};
+use crate::video::framebuffer::{FramebufferColor, Framebuffer, FRAMEBUFFER};
 
 const CURSOR_X_START: usize = 2;
 const CURSOR_Y_START: usize = 2;
@@ -118,21 +118,6 @@ impl Framebuffer {
         }
     }
 
-    #[inline(always)]
-    unsafe fn write_raw_pixel_24(&mut self, base_offset: usize, color_data: u32, bpp: usize) {
-        //TODO: color bpp matching
-        self.fb_write(base_offset, color_data as u8);
-        self.fb_write(base_offset + 1, (color_data >> 8) as u8);
-        self.fb_write(base_offset + 2, (color_data >> 16) as u8);
-    }
-
-    #[inline(always)]
-    unsafe fn write_raw_pixel(&mut self, base_offset: usize, color_data: u32, _bpp: usize) {
-        //TODO: color bpp matching
-        let pixel_ptr = self.base.add(base_offset) as *mut u32;
-        pixel_ptr.write_volatile(color_data);
-    }
-
     fn cursor_new_row(&mut self) {
         self.cursor_pos_x_px = CURSOR_X_START;
         self.cursor_pos_y_px += self.font.height + ROW_SPACING;
@@ -207,36 +192,20 @@ impl Framebuffer {
 
         self.cursor_push_by(1);
     }
-}
 
-pub fn fb_set_foreground(foreground_color: FramebufferColor) {
-    FRAMEBUFFER.lock().as_mut().unwrap().current_foreground = foreground_color;
-}
+    pub fn get_background(&mut self) -> FramebufferColor {
+        self.current_background
+    }
 
-pub fn fb_set_background(background_color: FramebufferColor) {
-    FRAMEBUFFER.lock().as_mut().unwrap().current_background = background_color;
-}
+    pub fn set_background(&mut self, bg : FramebufferColor) {
+        self.current_background = bg;
+    }
 
-pub fn fb_get_foreground() -> FramebufferColor {
-    FRAMEBUFFER.lock().as_mut().unwrap().current_foreground
-}
+    pub fn get_foreground(&mut self) -> FramebufferColor {
+        self.current_foreground
+    }
 
-pub fn fb_get_background() -> FramebufferColor {
-    FRAMEBUFFER.lock().as_mut().unwrap().current_background
-}
-
-pub fn fb_put_string_at(x: usize, y: usize, s: &str) {
-    FRAMEBUFFER.lock().as_mut().unwrap().put_string(x, y, s);
-}
-
-pub fn fb_put_string_at_no_bg(x: usize, y: usize, s: &str) {
-    FRAMEBUFFER.lock().as_mut().unwrap().put_string_no_bg(x,y, s);
-}
-
-pub fn fb_put_string(s: &str) {
-    FRAMEBUFFER.lock().as_mut().unwrap().put_string_at_cursor(s);
-}
-
-pub fn fb_put_string_no_bg(s: &str) {
-    FRAMEBUFFER.lock().as_mut().unwrap().put_string_at_cursor(s);
+    pub fn set_foreground(&mut self, fg: FramebufferColor) {
+        self.current_foreground = fg;
+    }
 }

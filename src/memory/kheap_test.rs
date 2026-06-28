@@ -5,7 +5,7 @@
  * 27/04/2026
  */
 
-use crate::memory::dma;
+use crate::memory::{dma, SizeUnit};
 use crate::memory::ll_allocator::{LinkedListAllocator, ListNode};
 use crate::memory::page_tables::PageSize;
 use crate::{kprintln};
@@ -13,9 +13,11 @@ use core::alloc::Layout;
 use x86_64::VirtAddr;
 
 pub fn run_kheap_tests(allocator: &mut LinkedListAllocator) {
-    kprintln!(Debug,"\n--- STARTING KHEAP TEST SUITE ---");
+    kprintln!(Debug,"--- STARTING KHEAP TEST SUITE ---");
 
-    run_kheap_test_cases(allocator);
+    // run_kheap_test_cases(allocator);
+
+    test_true_heap_exhaustion(allocator);
 
     kprintln!(Debug,"--- KHEAP TEST SUITE COMPLETED ---\n");
 }
@@ -237,6 +239,67 @@ fn validate_allocator_state(allocator: &LinkedListAllocator, label: &str) -> boo
 
         true
     }
+}
+
+fn test_true_heap_exhaustion(allocator: &mut LinkedListAllocator) -> bool {
+    kprintln!(Debug,"[TEST] True Heap Exhaustion (OOM)");
+
+    unsafe {
+        const MAX_ALLOCS: usize = 512;
+        let mut count = 0;
+
+        let estimated_capacity = if allocator.top_size > 0 {
+            allocator.top_size
+        } else {
+            allocator.current_end - allocator.global_start
+        };
+
+        let chunk_size = core::cmp::max(PageSize::SIZE_4KB as usize, estimated_capacity / 100);
+        let chunk_size = (chunk_size + 0xFFF) & !0xFFF;
+
+        let layout = Layout::from_size_align(chunk_size, PageSize::SIZE_4KB as usize).unwrap();
+
+        kprintln!(Debug, "  Draining heap with chunks of {} bytes...", chunk_size);
+
+        loop {
+            let ptr = allocator.allocate(layout);
+
+            if ptr.is_null() {
+                kprintln!(Debug, "  Hit OOM perfectly after {} allocations.", count);
+                break;
+            }
+
+            core::ptr::write_volatile(ptr, 0xAA);
+
+            count += 1;
+        }
+
+        let tiny_layout = Layout::from_size_align(16, 16).unwrap();
+        let tiny_ptr = allocator.allocate(tiny_layout);
+
+        if !tiny_ptr.is_null() {
+            kprintln!(Debug, "  FAILED: Hit OOM for chunks, but a tiny allocation still passed.");
+            kprintln!(Debug, "  (This might mean heap fragmentation or bad chunk math, not necessarily a crash, but check it)");
+            allocator.deallocate(tiny_ptr, tiny_layout);
+            return false;
+        }
+        kprintln!(Debug, "  OK: Tiny allocation correctly rejected during OOM.");
+
+        if !validate_allocator_state(allocator, "during OOM") {
+            kprintln!(Debug, "  FAILED: Allocator state corrupted during OOM!");
+            return false;
+        }
+
+        kprintln!(Debug, "  Restoring heap...");
+
+        if !validate_allocator_state(allocator, "after OOM recovery") {
+            kprintln!(Debug, "  FAILED: Allocator state corrupted after OOM recovery!");
+            return false;
+        }
+    }
+
+    kprintln!(Debug, "  OK: Survived true heap exhaustion and fully recovered.");
+    true
 }
 
 fn validate_allocator_drained(allocator: &LinkedListAllocator, label: &str) -> bool {

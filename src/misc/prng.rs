@@ -2,9 +2,7 @@
  * Created by Antoni Kuczyński
  * 18/06/2026
  */
-use lazy_static::lazy_static;
 use spin::lock_api::Mutex;
-use spin::Once;
 use crate::boot::cpuid::CpuId;
 use crate::{kprintln_failed, kprintln_ok};
 

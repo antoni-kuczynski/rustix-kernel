@@ -218,6 +218,10 @@ impl PageSize {
             PageSize::Size1Gb => Self::SIZE_1GB,
         }
     }
+
+    pub fn as_usize(&self) -> usize {
+        self.as_u64() as usize
+    }
 }
 
 impl PartialEq<u64> for PageSize {

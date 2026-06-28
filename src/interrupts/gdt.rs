@@ -21,6 +21,8 @@
  * GDT (Global Descritor Table). GDT is used for two things: Switching
  * between user and kernel space and loading a TSS structure
 */
+#![allow(unsafe_op_in_unsafe_fn)]
+#![allow(unused_unsafe)]
 
 use lazy_static::lazy_static;
 use x86_64::{

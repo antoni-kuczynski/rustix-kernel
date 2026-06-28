@@ -1,0 +1,2 @@
+Run prepare_old_grub.sh to prepare older grub version - for arch linux only
+Install ovmf and copy its files to [project root]/ovmf (OVMF.fd, OVMF_CODE.fd, OVMF_VARS.fd)
