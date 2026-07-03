@@ -232,6 +232,7 @@ LongMode:
 
     hlt
 ; ====================================================
+global setupPageTablesLongMode
 setupPageTablesLongMode:
     ;--------------------------------------------
     ; higher half kernel page tables
@@ -332,7 +333,8 @@ higherHalfMemory:
     mov rdi, __oldMultibootPhysAddr
     mov [rdi], esi   ; restore the multiboot struct address
 
-    call vgaInit
+    ; not needed as we're using VBE instead
+    ; call vgaInit
 
     extern rust_main
     call rust_main
@@ -368,6 +370,7 @@ vgaInit:
 ; ====================================================
 section .bss
 ; ====================================================
+global l4_pml4
 align 4096
 l4_pml4:
     RESB 4096

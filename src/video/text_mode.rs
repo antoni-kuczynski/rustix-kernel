@@ -148,11 +148,21 @@ impl Framebuffer {
 
         let bytes_to_move = total_bytes - offset_bytes;
 
-        //move memory upwards
-        self.back_buffer.copy_within(offset_bytes..total_bytes, 0);
 
-        //clear new bottom row
-        self.back_buffer[bytes_to_move..total_bytes].fill(0);
+        if self.is_double_buffered {
+            //move memory upwards
+            self.back_buffer.copy_within(offset_bytes..total_bytes, 0);
+
+            //clear new bottom row
+            self.back_buffer[bytes_to_move..total_bytes].fill(0);
+        } else {
+            unsafe {
+                self.base.add(offset_bytes).copy_to(self.base, bytes_to_move);
+                for i in bytes_to_move..total_bytes {
+                    self.base.add(i).write(0);
+                }
+            }
+        }
 
         self.cursor_pos_x_px = CURSOR_X_START;
 

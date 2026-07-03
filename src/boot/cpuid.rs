@@ -302,16 +302,14 @@ impl CpuId {
 }
 
 pub fn cpuid_init() {
-    unsafe {
-        let base_result = __cpuid(0x01);
-        let extended_result = __cpuid(0x8000_0001);
+    let base_result = __cpuid(0x01);
+    let extended_result = __cpuid(0x8000_0001);
 
-        CPU_ID.call_once(|| CpuId {
-            base: base_result,
-            extended: extended_result,
-        });
-        kprintln_ok!("Initialized CPUID info.");
-    }
+    CPU_ID.call_once(|| CpuId {
+        base: base_result,
+        extended: extended_result,
+    });
+    kprintln_ok!("Initialized CPUID info.");
 }
 
 pub static CPU_ID: Once<CpuId> = Once::new();
