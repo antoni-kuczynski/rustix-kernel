@@ -46,7 +46,10 @@ use core::ops::Add;
 use core::ptr;
 use x86_64::VirtAddr;
 use x86_64::structures::idt::InterruptStackFrame;
+use crate::drivers::usb::xhci::xhci_ext_cap::XhciPortProtocol::Usb2;
+use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::U0;
 use crate::kprintln;
+use crate::video::kprint::LogLevel::Debug;
 
 const PCI_COMMAND_REGISTER: u32 = 0x04;
 const PCI_COMMAND_MEMORY_SPACE: u16 = 1 << 1;
@@ -318,23 +321,23 @@ fn debug_print_usb3_portsc(operational_base: VirtAddr, supported_protocols: &[Xh
         }
 
         let portsc = PortStatusControl::from_port(operational_base, port_info.port_id);
-        kprintln!(Debug,
-            "USB3 port {} PORTSC raw={:#010x} pp={} ccs={} ped={} pls={:?} ps={} cas={} chg[csc={} pec={} wrc={} prc={} plc={} cec={}]",
-            port_info.port_id,
-            portsc.raw(),
-            portsc.pp_read(),
-            portsc.ccs_read(),
-            portsc.ped_read(),
-            portsc.pls_read(),
-            portsc.ps_read(),
-            portsc.cas_read(),
-            portsc.csc_read(),
-            portsc.pec_read(),
-            portsc.wrc_read(),
-            portsc.prc_read(),
-            portsc.plc_read(),
-            portsc.cec_read()
-        );
+        // kprintln!(Debug,
+        //     "USB3 port {} PORTSC raw={:#010x} pp={} ccs={} ped={} pls={:?} ps={} cas={} chg[csc={} pec={} wrc={} prc={} plc={} cec={}]",
+        //     port_info.port_id,
+        //     portsc.raw(),
+        //     portsc.pp_read(),
+        //     portsc.ccs_read(),
+        //     portsc.ped_read(),
+        //     portsc.pls_read(),
+        //     portsc.ps_read(),
+        //     portsc.cas_read(),
+        //     portsc.csc_read(),
+        //     portsc.pec_read(),
+        //     portsc.wrc_read(),
+        //     portsc.prc_read(),
+        //     portsc.plc_read(),
+        //     portsc.cec_read()
+        // );
     }
 }
 
@@ -764,16 +767,32 @@ impl XhciInterrupterState {
         }
     }
 
-    unsafe fn handle_device_attach(&self, controller: &XHCI, port: u8, portsc: PortStatusControl) {
+    unsafe fn handle_device_attach(&self, controller: &XHCI, port: u8) {
         let Some(port_info) = controller.port_info(port) else {
-            kprintln!(Info,"Attach detected at port {} with unknown protocol", port);
+            kprintln!(Debug, "Attach detected at port {} with unknown protocol", port);
             return;
         };
-        // vgaprintln!(
-        //     "Attach detected at port {} and protocol {}",
-        //     port,
-        //     port_info.protocol
-        // );
+
+        kprintln!(Info,
+            "Attach detected at port {} and protocol {:?}",
+            port,
+            port_info.protocol
+        );
+
+        let mut fresh_portsc = PortStatusControl::from_port(controller.operational_base, port);
+
+        if port_info.protocol == Usb2 {
+            let mut clean_cmd = PortStatusControl::write_from_raw(fresh_portsc.raw());
+
+            clean_cmd.change_all_write();
+            clean_cmd.pr_write();
+
+            clean_cmd.write_to_port(controller.operational_base, port);
+            kprintln!(Debug, "Issued Port Reset on port {}", port);
+
+        } else if port_info.protocol == XhciPortProtocol::Usb3 {
+            //TODO: usb3 transition to enabled state
+        }
     }
 
     unsafe fn handle_device_detach(&self, controller: &XHCI, port: u8, portsc: PortStatusControl) {
@@ -788,26 +807,42 @@ impl XhciInterrupterState {
         // );
     }
 
+    unsafe fn handle_port_reset(&self, controller: &XHCI, port: u8) {
+        let portsc = PortStatusControl::from_port(controller.operational_base, port);
+        kprintln!(Debug, "Succesfully reset port {}", port); //TODO: usb3
+
+        
+
+
+    }
+
     unsafe fn handle_port_status_change(&self, trb: PortStatusChangeEventTrb, controller: &XHCI) {
         let port = trb.read_port_id();
+
         if !controller.is_valid_port(port) {
             kprintln!(Info,"Ignoring port status change for invalid port {}", port);
             return;
         }
-
         let portsc = PortStatusControl::from_port(controller.operational_base, port);
+
+        let mut ack = PortStatusControl::write_from_raw(portsc.raw());
+        ack.change_all_write();
+        ack.write_to_port(controller.operational_base, port);
+        kprintln!(Debug, "Cleared port status change event.");
+
+        if portsc.prc_read() == true {
+            self.handle_port_reset(controller, port);
+            return;
+        }
+
         let csc = portsc.csc_read();
         let ccs = portsc.ccs_read();
 
         if csc && ccs {
-            self.handle_device_attach(controller, port, portsc);
+            self.handle_device_attach(controller, port);
         } else if csc && !ccs {
             self.handle_device_detach(controller, port, portsc);
         }
-
-        let mut clear = PortStatusControl::write_from_raw(portsc.raw());
-        clear.change_all_write();
-        clear.write_to_port(controller.operational_base, port);
     }
 
     unsafe fn handle(&self) {
