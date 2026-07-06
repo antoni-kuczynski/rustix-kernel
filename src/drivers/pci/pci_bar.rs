@@ -3,7 +3,6 @@
  * 25/12/2025
  */
 use crate::drivers::pci::pci_device::PciDevice;
-use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use crate::memory::ioremap::{IoAlloc, ioremap_permanent};
 use x86_64::PhysAddr;
 use crate::kprintln;
@@ -41,16 +40,16 @@ const PCI_BAR_MEM_TYPE_MASK: u32 = 0x06;
 const PCI_BAR_MEM_TYPE_64: u32 = 0x04;
 
 impl BarInfo {
-    fn get(bar_index: u8, base_id: u32) -> BarInfo {
+    fn get(bar_index: u8, dev: &PciDevice) -> BarInfo {
         let bar_offset: u32 = (BAR0_OFFSET + (bar_index * 4)) as u32;
 
-        let address = pci_read32(base_id, bar_offset);
+        let address = dev.pci_read32(bar_offset);
 
         //get bitmask and get BARs size
-        pci_write32(base_id, bar_offset, 0xFFFF_FFFF);
-        let mask = pci_read32(base_id, bar_offset);
+        dev.pci_write32(bar_offset, 0xFFFF_FFFF);
+        let mask = dev.pci_read32(bar_offset);
 
-        pci_write32(base_id, bar_offset, address);
+        dev.pci_write32(bar_offset, address);
 
         BarInfo { address, mask }
     }
@@ -67,8 +66,8 @@ I/O Space BAR Layout Bits 31-2 	Bit 1 	Bit 0
 
 #[allow(dead_code)]
 impl PciBAR {
-    pub fn get(device: &PciDevice, bar_index: u8) -> Self {
-        let bar = BarInfo::get(bar_index, device.base_id());
+    pub fn get(dev: &PciDevice, bar_index: u8) -> Self {
+        let bar = BarInfo::get(bar_index, dev);
         let address_low = bar.address;
         let mask_low = bar.mask;
 
@@ -90,7 +89,7 @@ impl PciBAR {
 
         //64bit MMIO
         if mem_type == PCI_BAR_MEM_TYPE_64 {
-            let bar_high = BarInfo::get(bar_index + 1, device.base_id());
+            let bar_high = BarInfo::get(bar_index + 1, dev);
 
             let base = ((bar_high.address as u64) << 32) | ((address_low & !0xF) as u64);
 

@@ -10,6 +10,7 @@ pub mod pci_bar;
 pub mod pci_device;
 pub mod pci_io;
 pub mod pci_quirks;
+pub mod pci_msi;
 
 #[inline(always)]
 pub unsafe fn mmio_read<T: Copy>(base: VirtAddr, offset: u64) -> T {

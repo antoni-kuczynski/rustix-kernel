@@ -71,6 +71,23 @@ impl Trb {
     pub const TRB_DEVICE_NOTIFICATION_EVENT: u8 = 38;
     pub const TRB_MFINDEX_WRAP_EVENT: u8 = 39;
 
+
+    pub const fn new() -> Self {
+        Self {
+            parameter: 0,
+            status: 0,
+            control: 0,
+        }
+    }
+
+    pub const fn new_raw(parameter: u64, status: u32, control: u32) -> Self {
+        Self {
+            parameter,
+            status,
+            control,
+        }
+    }
+
     // ====== PARAMETER ======
     pub fn parameter(&self) -> u64 {
         self.parameter
