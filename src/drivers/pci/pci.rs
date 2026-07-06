@@ -7,7 +7,6 @@ use alloc::vec::Vec;
 use spin::Once;
 use x86_64::PhysAddr;
 use crate::drivers::pci::pci_device::{PciDevice};
-use crate::drivers::pci::pci_io::{pci_read16, pci_read8};
 use crate::{kprintln, kprintln_ok};
 use crate::drivers::acpi::acpi_tables::{acpi_get_sdt_table, ACPISignature};
 use crate::drivers::acpi::tables::mcfg::{McfgAllocation, MCFG};
@@ -37,12 +36,12 @@ pub struct PciMmioInfo {
 }
 
 
-fn init_device(device: &PciDevice) {
+fn init_device(device: PciDevice) {
     //INITIALIZE DEVICES
 
     //USB CONTROLLERS
     if device.class_code() == CLASS_CODE_SERIAL_BUS_CONTROLLER && device.sub_class() == SUBCLASS_USB_CONTROLLER {
-        usb::init_usb_controller(&device)
+        usb::init_usb_controller(device)
     }
 }
 
@@ -82,7 +81,7 @@ pub fn pci_init() {
     };
 
     for_each_pci_device(|dev| {
-        init_device(&dev);
+        init_device(dev);
     });
 
     kprintln_ok!("Finished initializing PCI devices.");
@@ -98,35 +97,39 @@ pub fn for_each_pci_device(mut callback: impl FnMut(PciDevice)) {
             };
 
             let is_multifunction = (function0_dev.header_type() & 0x80) != 0;
-
             callback(function0_dev);
 
             if is_multifunction {
-                for function in 1..8 {
-                    if let Some(dev) = pci_check_device(bus, device, function) {
-                        callback(dev);
-                    }
-                }
+                for_each_function(&mut callback, bus, device);
             }
+        }
+    }
+}
+
+fn for_each_function(callback: &mut impl FnMut(PciDevice), bus: u32, device: u32) {
+    for function in 1..8 {
+        if let Some(dev) = pci_check_device(bus, device, function) {
+            callback(dev);
         }
     }
 }
 
 fn pci_check_device(bus: u32, device: u32, function: u32) -> Option<PciDevice> {
     let base_dev_id = PciDevice::get_pci_id(bus, device, function);
-
-    let vendor_id: u16 = pci_read16(base_dev_id, CFG_VENDOR_ID);
+    let early_dev = PciDevice::new_empty(base_dev_id); //early temp device to be able to use read/write functions
+    
+    let vendor_id: u16 = early_dev.pci_read16(CFG_VENDOR_ID);
 
     if vendor_id == INVALID_VENDOR_ID {
         return None;
     }
 
-    let device_id = pci_read16(base_dev_id, CFG_DEVICE_ID);
+    let device_id = early_dev.pci_read16(CFG_DEVICE_ID);
 
-    let class_code = pci_read8(base_dev_id, CFG_CLASS_CODE);
-    let sub_class = pci_read8(base_dev_id, CFG_SUBCLASS);
-    let prog_info_byte = pci_read8(base_dev_id, CFG_PROG_IF);
-    let header_type = pci_read8(base_dev_id, CFG_HEADER_TYPE);
+    let class_code = early_dev.pci_read8(CFG_CLASS_CODE);
+    let sub_class = early_dev.pci_read8(CFG_SUBCLASS);
+    let prog_info_byte = early_dev.pci_read8(CFG_PROG_IF);
+    let header_type = early_dev.pci_read8(CFG_HEADER_TYPE);
 
     let dev_info = PciDevice::new(
         vendor_id, device_id, class_code, sub_class, prog_info_byte, header_type, base_dev_id

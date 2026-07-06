@@ -17,7 +17,7 @@ pub trait UsbControllerInitializer {
     fn initialize(&self) -> Result<(), Error>;
 }
 
-pub fn init_usb_controller(pci_dev: &PciDevice) {
+pub fn init_usb_controller(pci_dev: PciDevice) {
     let dev_id = pci_dev.device_id();
     match pci_dev.prog_info_byte() {
         PIF_UHCI_CONTROLLER => {

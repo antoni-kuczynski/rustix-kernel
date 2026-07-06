@@ -1,7 +1,6 @@
 pub mod xhci;
 mod xhci_endpoint_context;
 mod xhci_ext_cap;
-mod xhci_msix;
 mod xhci_portsc;
 mod xhci_slot_context;
 mod xhci_trb;

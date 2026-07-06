@@ -2,7 +2,6 @@ use crate::drivers::apic::apic::timer_lapic_uptime_ms;
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{InitializationFailure, InvalidBarType};
 use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceInitializer};
-use crate::drivers::pci::pci_io::{pci_read32, pci_write32};
 use alloc::boxed::Box;
 use core::ops::Add;
 use core::ptr;
@@ -31,14 +30,13 @@ const LEGSUP_HC_OS_OWNED_SEMAPHORE_MASK: u32 = 0x01 << 24;
 
 fn handle_extended_capabilities(
     eecp: u32,
-    base_id: u32,
+    dev: &PciDevice,
 ) -> Result<u32, EhciExtendedCapabilitiesInitError> {
-    let mut legsup = pci_read32(base_id, eecp + EECP_USB_LEGSUP_REG);
+    let mut legsup = dev.pci_read32(eecp + EECP_USB_LEGSUP_REG);
 
     if legsup & LEGSUP_HC_BIOS_OWNED_SEMAPHORE_MASK != 0 {
         //request ownership of EHCI controller
-        pci_write32(
-            base_id,
+        dev.pci_write32(
             eecp + EECP_USB_LEGSUP_REG,
             legsup | LEGSUP_HC_OS_OWNED_SEMAPHORE_MASK,
         );
@@ -47,7 +45,7 @@ fn handle_extended_capabilities(
         let mut current_time = time;
         while current_time - time <= 50 {
             current_time = timer_lapic_uptime_ms();
-            legsup = pci_read32(base_id, eecp + EECP_USB_LEGSUP_REG);
+            legsup = dev.pci_read32(eecp + EECP_USB_LEGSUP_REG);
 
             if legsup & LEGSUP_HC_BIOS_OWNED_SEMAPHORE_MASK == 0 {
                 return Ok(legsup);
@@ -58,8 +56,8 @@ fn handle_extended_capabilities(
 }
 
 impl PciDeviceInitializer for EHCI {
-    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
-        let bar = PciBAR::get(pci_device, 0);
+    fn initialize(pci_device: PciDevice) -> Result<(), PciDeviceInitError> {
+        let bar = PciBAR::get(&pci_device, 0);
 
         if bar.bar_type() == &BarType::Io {
             return Err(InvalidBarType);
@@ -73,7 +71,7 @@ impl PciDeviceInitializer for EHCI {
                 (ptr::read_volatile(base.add(HCCPARAMS_REG).as_ptr::<u32>()) & EECP_MASK) >> 8;
 
             if eecp >= 0x40 {
-                let a = handle_extended_capabilities(eecp, pci_device.base_id());
+                let a = handle_extended_capabilities(eecp, &pci_device);
 
                 match a {
                     Ok(x) => {

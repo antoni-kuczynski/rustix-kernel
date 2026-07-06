@@ -29,7 +29,7 @@ fn io_port(base: PhysAddr, offset: u64) -> u16 {
 }
 
 impl PciDeviceInitializer for UHCI {
-    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: PciDevice) -> Result<(), PciDeviceInitError> {
         let pci_bar = PciBAR::get(&pci_device, 4);
 
         if pci_bar.bar_type() != &BarType::Io {

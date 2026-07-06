@@ -3,8 +3,11 @@
  * Created by Antoni Kuczyński
  * 24/12/2025
  */
-use crate::drivers::pci::pci_io::pci_read16;
 use crate::kprintln;
+
+const PCI_COMMAND_REGISTER: u32 = 0x04;
+const PCI_COMMAND_MEMORY_SPACE: u16 = 1 << 1;
+const PCI_COMMAND_BUS_MASTER: u16 = 1 << 2;
 
 #[repr(C, packed)]
 pub struct PciDevice {
@@ -33,17 +36,18 @@ pub enum PciDeviceInitError {
     XhciMsixCapabilityNotFound,
     XhciMsiCapabilityNotFound,
     XhciNoSupportedInterruptMode,
-    XhciInsufficientMsixVectors,
-    XhciMsixTableBarInvalid,
-    XhciMsixPbaBarInvalid,
+    InsufficientMsixVectors,
+    InsufficientMsiVectors,
+    MsixTableBarInvalid,
+    MsixPbaBarInvalid,
 }
 
 pub trait PciDeviceInitializer {
-    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError>;
+    fn initialize(pci_device: PciDevice) -> Result<(), PciDeviceInitError>;
 }
 
 impl PciDeviceInitializer for PciDevice {
-    fn initialize(pci_device: &PciDevice) -> Result<(), PciDeviceInitError> {
+    fn initialize(pci_device: PciDevice) -> Result<(), PciDeviceInitError> {
         Err(PciDeviceInitError::NotImplemeted)
     }
 }
@@ -73,6 +77,19 @@ impl PciDevice {
         }
     }
 
+    /// Early init for PCI device to be able to use pci_read / write functions early
+    pub fn new_empty(base_id: u32) -> Self {
+        PciDevice {
+            vendor_id: 0,
+            device_id: 0,
+            class_code: 0,
+            sub_class: 0,
+            prog_info_byte: 0,
+            header_type: 0,
+            base_id,
+        }
+    }
+
     pub fn print(&self) {
         let vendor_id = self.vendor_id;
         let device_id = self.device_id;
@@ -90,6 +107,14 @@ impl PciDevice {
         kprintln!(Debug, "  Prog IF     : 0x{:02x}", prog_if);
         kprintln!(Debug, "  Header Type : 0x{:02x}", header_type);
         kprintln!(Debug, "  Base ID : 0x{:08x}", base_id);
+    }
+
+    pub fn enable_pci_mmio_and_bus_mastering(&self) {
+        let command = self.pci_read16(PCI_COMMAND_REGISTER);
+        self.pci_write16(
+            PCI_COMMAND_REGISTER,
+            command | PCI_COMMAND_MEMORY_SPACE | PCI_COMMAND_BUS_MASTER,
+        );
     }
 
     pub fn prog_info_byte(&self) -> u8 {
@@ -121,10 +146,10 @@ impl PciDevice {
     }
 
     pub fn subsystem_vendor_id(&self) -> u16 {
-        pci_read16(self.base_id(), 0x2C)
+        self.pci_read16(0x2C)
     }
 
     pub fn subsystem_device_id(&self) -> u16 {
-        pci_read16(self.base_id(), 0x2E)
+        self.pci_read16(0x2E)
     }
 }
