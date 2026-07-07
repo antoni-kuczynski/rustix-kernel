@@ -4,6 +4,7 @@ mod xhci_ext_cap;
 mod xhci_portsc;
 mod xhci_slot_context;
 mod xhci_trb;
+mod xhci_trb_ring;
 /*
 Base
 │
