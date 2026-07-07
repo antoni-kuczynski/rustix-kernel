@@ -31,7 +31,7 @@ use crate::drivers::usb::xhci::xhci_trb::*;
 use crate::drivers::usb::xhci::*;
 use crate::interrupts::router::register_handler_with_context;
 use crate::interrupts::vector::InterruptVector;
-use crate::memory::dma::DmaAlloc;
+use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
@@ -44,6 +44,7 @@ use x86_64::structures::idt::InterruptStackFrame;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::usb::xhci::xhci_ext_cap::XhciPortProtocol::Usb2;
 use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::U0;
+use crate::drivers::usb::xhci::xhci_trb_ring::{CommandRing, EventRing, Ring, RingError, TrbRing};
 use crate::kprintln;
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
@@ -536,11 +537,11 @@ pub struct XHCI {
     dcbaa_dma: DmaAlloc,
     dcbaa: &'static mut Dcbaa,
     command_ring_dma: DmaAlloc,
-    command_ring: TrbRing,
+    command_ring: UnsafeCell<CommandRing<'static>>,
     event_ring_primary_dma: DmaAlloc,
-    event_ring_primary: UnsafeCell<EventRing>,
+    event_ring_primary: UnsafeCell<EventRing<'static>>,
     event_ring_secondary_dma: DmaAlloc,
-    event_ring_secondary: UnsafeCell<EventRing>,
+    event_ring_secondary: UnsafeCell<EventRing<'static>>,
     erst_primary_dma: DmaAlloc,
     erst_primary: &'static mut ERST,
     erst_secondary_dma: DmaAlloc,
@@ -667,9 +668,15 @@ impl XhciInterrupterState {
             kprintln!(Warn, "Failed to reset port {}", port);
         }
 
+        //we did reset the slot, so now we're in enabled state
+        //TODO: usb3 logic (but it's probably the same, prioritizing usb2 for keyboard support)
+
+
         let mut trb = Trb::new();
         trb.set_trb_type(Trb::TRB_ENABLE_SLOT);
-        xhci.send_command(trb).expect("TODO: panic message");
+        xhci.send_command(trb).expect("Sending enable slot command for XHCI failed.");
+
+
     }
 
     unsafe fn handle_port_status_change(&self, xhci: &mut XHCI, trb: PortStatusChangeEventTrb) {
@@ -736,7 +743,8 @@ impl XhciInterrupterState {
             }
         }
 
-        self.ack(event_ring.dequeue_phys().as_u64());
+        let dequeue_phys = event_ring.get_dequeue_phys().unwrap(); //always returns some
+        self.ack(dequeue_phys.as_u64());
     }
 }
 
@@ -772,7 +780,7 @@ impl XHCI {
     }
 
     fn send_command(&mut self, trb: Trb) -> Result<(), RingError> {
-        self.command_ring.enqueue(trb)
+        self.command_ring.get_mut().enqueue(trb)
     }
 
     fn new(
@@ -783,11 +791,11 @@ impl XHCI {
         dcbaa_dma: DmaAlloc,
         dcbaa: &'static mut Dcbaa,
         command_ring_dma: DmaAlloc,
-        command_ring: TrbRing,
+        command_ring: CommandRing<'static>,
         event_ring_primary_dma: DmaAlloc,
-        event_ring_primary: EventRing,
+        event_ring_primary: EventRing<'static>,
         event_ring_secondary_dma: DmaAlloc,
-        event_ring_secondary: EventRing,
+        event_ring_secondary: EventRing<'static>,
         erst_primary_dma: DmaAlloc,
         erst_primary: &'static mut ERST,
         erst_secondary_dma: DmaAlloc,
@@ -805,7 +813,7 @@ impl XHCI {
             dcbaa_dma,
             dcbaa,
             command_ring_dma,
-            command_ring,
+            command_ring: UnsafeCell::new(command_ring),
             event_ring_primary_dma,
             event_ring_primary: UnsafeCell::new(event_ring_primary),
             event_ring_secondary_dma,
@@ -865,10 +873,10 @@ impl XHCI {
     }
 }
 
-fn alloc_dma_erst() -> Result<(DmaAlloc, &'static mut ERST), PciDeviceInitError> {
+fn alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
     let alloc = dma_alloc_zeroed(size_of::<ERST>(), 64)?;
-    let erst = unsafe { dma_as_mut::<ERST>(&alloc) };
-    Ok((alloc, erst))
+    let erst = unsafe { alloc.as_mut::<ERST>() };
+    Some((alloc, erst))
 }
 
 impl PciDeviceInitializer for XHCI {
@@ -919,21 +927,27 @@ impl PciDeviceInitializer for XHCI {
                 CONTEXT_SIZE_32_BYTES
             };
 
-            let dcbaa_dma = dma_alloc_zeroed(size_of::<Dcbaa>(), align_of::<Dcbaa>())?;
-            let dcbaa = dma_as_mut::<Dcbaa>(&dcbaa_dma);
+            let dcbaa_dma = dma_alloc_zeroed(size_of::<Dcbaa>(), align_of::<Dcbaa>())
+                .expect("Failed to allocate dma for dcbaa.");
+            let dcbaa = dcbaa_dma.as_mut::<Dcbaa>();
             mmio_write::<u64>(
                 operational_base,
                 OP_REG_DCBAAP as u64,
                 dcbaa_dma.phys.as_u64(),
             );
 
-            let (command_ring_dma, trb_arr) = alloc_dma_trb_ring(COMMAND_RING_TRBS)?;
-            let command_ring = TrbRing::new(trb_arr, command_ring_dma.phys)
-                .map_err(|_| XhciCommandRingInitFailure)?;
+            let a = TrbRing::dma_alloc(COMMAND_RING_TRBS);
+            let b = a.unwrap();
+
+
+            let (command_ring_alloc, command_ring_primary) = TrbRing::dma_alloc(EVENT_RING_TRBS).
+                expect("Failed to allocate DMA for command ring.");
+            
+            let command_ring = CommandRing::new(command_ring_primary, command_ring_alloc.phys);
             mmio_write::<u64>(
                 operational_base,
                 OP_REG_CRCR as u64,
-                (command_ring_dma.phys.as_u64() & !COMMAND_RING_RESERVED_BITS)
+                (command_ring_alloc.phys.as_u64() & !COMMAND_RING_RESERVED_BITS)
                     | COMMAND_RING_CYCLE_STATE,
             );
 
@@ -960,13 +974,17 @@ impl PciDeviceInitializer for XHCI {
             an ERST entry.
              */
             //allocate event rings for port data and transfer events
-            let (event_ring_primary_dma, event_ring_primary) = alloc_dma_trb_ring(EVENT_RING_TRBS)?;
+            let (event_ring_primary_dma, event_ring_primary) = TrbRing::dma_alloc(EVENT_RING_TRBS).
+                expect("Failed to allocate dma for event ring (primary).");
             let (event_ring_secondary_dma, event_ring_secondary) =
-                alloc_dma_trb_ring(EVENT_RING_TRBS)?;
+                TrbRing::dma_alloc(EVENT_RING_TRBS).
+                    expect("Failed to allocate dma for event ring (secondary).");
 
             //allocate and initialize erst's
-            let (erst_primary_dma, erst_primary) = alloc_dma_erst()?;
-            let (erst_secondary_dma, erst_secondary) = alloc_dma_erst()?;
+            let (erst_primary_dma, erst_primary) = alloc_dma_erst().
+                expect("Failed to allocate dma for erst (primary).");
+            let (erst_secondary_dma, erst_secondary) = alloc_dma_erst().
+                expect("Failed to allocate dma for erst (secondary).");
 
             *erst_primary = ERST::new(event_ring_primary_dma.phys.as_u64(), EVENT_RING_TRBS as u32);
             *erst_secondary = ERST::new(
@@ -1057,7 +1075,7 @@ impl PciDeviceInitializer for XHCI {
                 context_size,
                 dcbaa_dma,
                 dcbaa,
-                command_ring_dma,
+                command_ring_alloc,
                 command_ring,
                 event_ring_primary_dma,
                 event_ring_primary,

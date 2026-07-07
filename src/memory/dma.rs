@@ -12,6 +12,7 @@ use crate::memory::pmm::pmm_allocate_contiguous;
 use crate::memory::dma32::DMA32_MANAGER;
 use crate::{kprintln, kprintln_ok};
 use core::alloc::Layout;
+use core::ptr;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
@@ -110,6 +111,14 @@ impl DmaAlloc {
     pub fn new(virt: VirtAddr, phys: PhysAddr, layout: Layout, zone: DmaZone) -> Self {
         Self { virt, phys, layout, zone }
     }
+
+    pub unsafe fn as_mut<T>(&self) -> &'static mut T {
+        unsafe { &mut *self.virt.as_mut_ptr::<T>() }
+    }
+
+    pub unsafe fn as_slice_mut<T>(&self, len: usize) -> &'static mut [T] {
+        unsafe { core::slice::from_raw_parts_mut(self.virt.as_mut_ptr::<T>(), len) }
+    }
 }
 
 impl Drop for DmaAlloc {
@@ -136,6 +145,17 @@ pub fn dma_init() {
 
 pub fn dma_alloc_coherent(size: usize, align: usize) -> Option<DmaAlloc> {
     DMA_MANAGER.lock().alloc_coherent(size, align)
+}
+
+pub fn dma_alloc_zeroed(size: usize, align: usize) -> Option<DmaAlloc> {
+    if let Some(alloc) = dma_alloc_coherent(size, align) {
+        unsafe {
+            ptr::write_bytes(alloc.virt.as_mut_ptr::<u8>(), 0, size);
+        }
+        Some(alloc)
+    } else {
+        None
+    }
 }
 
 pub fn dma_free(alloc: DmaAlloc) {
