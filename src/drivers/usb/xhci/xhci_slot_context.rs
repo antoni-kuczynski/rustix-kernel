@@ -40,12 +40,12 @@
  */
 
 #[repr(C, packed)]
-pub struct SlotContext<const CZ: usize> {
-    dword0: u32,
-    dword1: u32,
+pub struct SlotContext {
+    pub(crate) dword0: u32,
+    pub(crate) dword1: u32,
     dword2: u32,
     dword3: u32,
-    reserved: [u32; CZ],
+    reserved: [u32; 4],
 }
 
 /*
@@ -156,7 +156,7 @@ As Input, software shall initialize the field to ‘0’.
 Refer to section 4.5.3 for more information on Slot State.
  */
 
-impl<const CZ: usize> SlotContext<CZ> {
+impl SlotContext {
     /* ================= DWORD 0 ================= */
 
     const ROUTE_STRING_MASK: u32 = 0x000F_FFFF; //bits 0..19
@@ -311,4 +311,23 @@ impl<const CZ: usize> SlotContext<CZ> {
     pub fn get_slot_state(&self) -> u8 {
         ((self.dword3 & Self::SLOT_STATE_MASK) >> Self::SLOT_STATE_SHIFT) as u8
     }
+}
+
+pub struct SlotState;
+
+impl SlotState {
+    pub const DISABLED: u8 = 0;
+    pub const DEFAULT: u8 = 1;
+    pub const ADDRESSED: u8 = 2;
+    pub const CONFIGURED: u8 = 3;
+}
+
+pub struct EndpointState;
+
+impl EndpointState {
+    pub const DISABLED: u32 = 0;
+    pub const RUNNING: u32 = 1;
+    pub const HALTED: u32 = 2;
+    pub const STOPPED: u32 = 3;
+    pub const ERROR: u32 = 4;
 }

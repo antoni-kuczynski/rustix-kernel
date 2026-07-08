@@ -4,6 +4,48 @@
  * Created by Antoni Kuczyński
  * 01/06/2026
  */
+
+pub struct TrbCompletionCode;
+
+impl TrbCompletionCode {
+    pub const INVALID: u8 = 0;
+    pub const SUCCESS: u8 = 1;
+    pub const DATA_BUFFER_ERROR: u8 = 2;
+    pub const BABBLE_DETECTED_ERROR: u8 = 3;
+    pub const USB_TRANSACTION_ERROR: u8 = 4;
+    pub const TRB_ERROR: u8 = 5;
+    pub const STALL_ERROR: u8 = 6;
+    pub const RESOURCE_ERROR: u8 = 7;
+    pub const BANDWIDTH_ERROR: u8 = 8;
+    pub const NO_SLOTS_AVAILABLE_ERROR: u8 = 9;
+    pub const INVALID_STREAM_TYPE_ERROR: u8 = 10;
+    pub const SLOT_NOT_ENABLED_ERROR: u8 = 11;
+    pub const ENDPOINT_NOT_ENABLED_ERROR: u8 = 12;
+    pub const SHORT_PACKET: u8 = 13;
+    pub const RING_UNDERRUN: u8 = 14;
+    pub const RING_OVERRUN: u8 = 15;
+    pub const VF_EVENT_RING_FULL_ERROR: u8 = 16;
+    pub const PARAMETER_ERROR: u8 = 17;
+    pub const BANDWIDTH_OVERRUN_ERROR: u8 = 18;
+    pub const CONTEXT_STATE_ERROR: u8 = 19;
+    pub const NO_PING_RESPONSE_ERROR: u8 = 20;
+    pub const EVENT_RING_FULL_ERROR: u8 = 21;
+    pub const INCOMPATIBLE_DEVICE_ERROR: u8 = 22;
+    pub const MISSED_SERVICE_ERROR: u8 = 23;
+    pub const COMMAND_RING_STOPPED: u8 = 24;
+    pub const COMMAND_ABORTED: u8 = 25;
+    pub const STOPPED: u8 = 26;
+    pub const STOPPED_LENGTH_INVALID: u8 = 27;
+    pub const STOPPED_SHORT_PACKET: u8 = 28;
+    pub const MAX_EXIT_LATENCY_TOO_LARGE_ERROR: u8 = 29;
+    pub const ISOCH_BUFFER_OVERRUN: u8 = 31;
+    pub const EVENT_LOST_ERROR: u8 = 32;
+    pub const UNDEFINED_ERROR: u8 = 33;
+    pub const INVALID_STREAM_ID_ERROR: u8 = 34;
+    pub const SECONDARY_BANDWIDTH_ERROR: u8 = 35;
+    pub const SPLIT_TRANSACTION_ERROR: u8 = 36;
+}
+
 //=========================================
 //  TRB
 //=========================================
@@ -38,7 +80,7 @@ impl Trb {
     pub const TRB_EVENT_DATA: u8 = 7;
     pub const TRB_NO_OP: u8 = 8;
 
-    pub const TRB_ENABLE_SLOT: u8 = 9;
+    pub const TRB_ENABLE_SLOT_COMMAND: u8 = 9;
     pub const TRB_DISABLE_SLOT: u8 = 10;
     pub const TRB_ADDRESS_DEVICE: u8 = 11;
     pub const TRB_CONFIGURE_ENDPOINT: u8 = 12;
@@ -148,6 +190,35 @@ impl Trb {
         self.control = ctrl | ((ty as u32) << Self::TRB_TYPE_SHIFT);
     }
 
+    #[inline]
+    pub fn is_event_trb(&self) -> bool {
+        let t = self.trb_type();
+        t >= 32 && t <= 63
+    }
+
+    #[inline]
+    pub fn is_command_trb(&self) -> bool {
+        let t = self.trb_type();
+        t >= 9 && t <= 31
+    }
+
+    #[inline]
+    pub fn is_transfer_trb(&self) -> bool {
+        let t = self.trb_type();
+        t >= 1 && t <= 8
+    }
+
+    #[inline]
+    pub fn is_control_transfer_trb(&self) -> bool {
+        let t = self.trb_type();
+        t == 2 || t == 3 || t == 4
+    }
+
+    #[inline]
+    pub fn is_link_trb(&self) -> bool {
+        self.trb_type() == 6
+    }
+
     // ====== RAW CONTROL ======
     pub fn control(&self) -> u32 {
         self.control
@@ -170,6 +241,12 @@ impl Trb {
         &self,
     ) -> Result<PortStatusChangeEventTrb, TrbParseError> {
         PortStatusChangeEventTrb::new(*self)
+    }
+
+    pub fn try_as_command_completion_event(
+        &self,
+    ) -> Result<CommandCompletionEventTrb, TrbParseError> {
+        CommandCompletionEventTrb::new(*self)
     }
 }
 
@@ -204,10 +281,6 @@ pub trait TrbTrait {
     }
 }
 
-pub trait EventTrb: TrbTrait {
-
-}
-
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
 pub struct PortStatusChangeEventTrb {
@@ -234,50 +307,8 @@ impl PortStatusChangeEventTrb {
         Ok(Self { raw })
     }
 
-    /// Creates a typed Port Status Change Event TRB without checking the TRB type.
-    ///
-    /// Use this only after checking `Trb::trb_type()` or when the caller already knows the event
-    /// ring entry is type 34.
-    pub const unsafe fn new_unchecked(raw: Trb) -> Self {
-        Self { raw }
-    }
-
-    /// Returns the wrapped raw TRB by value.
-    pub const fn into_raw(self) -> Trb {
-        self.raw
-    }
-
-    /// Returns the Port ID that generated the status change event.
-    ///
-    /// xHCI port IDs are one-based and correspond to the operational port register index plus one.
-    pub fn read_port_id(&self) -> u8 {
+    pub fn port_id(&self) -> u8 {
         ((self.raw.parameter() & Self::PORT_ID_MASK) >> Self::PORT_ID_SHIFT) as u8
-    }
-
-    /// Returns `true` when this event references the given one-based xHCI Port ID.
-    pub fn is_for_port(&self, port_id: u8) -> bool {
-        self.read_port_id() == port_id
-    }
-
-    /// Returns the raw parameter field.
-    ///
-    /// For Port Status Change Event TRBs, the Port ID is encoded in bits 31:24.
-    pub fn read_parameter(&self) -> u64 {
-        self.raw.parameter()
-    }
-
-    /// Returns the raw status field.
-    ///
-    /// The common event TRB Completion Code is available through `read_completion_code`.
-    pub fn read_status(&self) -> u32 {
-        self.raw.status()
-    }
-
-    /// Returns the raw control field.
-    ///
-    /// The common event TRB type and Cycle bit are available through the `EventTrb` helpers.
-    pub fn read_control(&self) -> u32 {
-        self.raw.control()
     }
 }
 
@@ -289,7 +320,214 @@ impl TrbTrait for PortStatusChangeEventTrb {
     }
 }
 
-impl EventTrb for PortStatusChangeEventTrb {
 
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct EnableSlotCommandTrb {
+    raw: Trb,
 }
 
+impl EnableSlotCommandTrb {
+    const SLOT_TYPE_SHIFT: u32 = 16;
+    const SLOT_TYPE_MASK: u32 = 0x1F << Self::SLOT_TYPE_SHIFT;
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_ENABLE_SLOT_COMMAND {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_ENABLE_SLOT_COMMAND,
+                actual,
+            });
+        }
+
+        Ok(Self { raw })
+    }
+
+    pub fn new_command(slot_type: u8) -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_ENABLE_SLOT_COMMAND);
+
+        let mut command = Self { raw };
+        command.set_slot_type(slot_type);
+
+        command
+    }
+
+    pub fn slot_type(&self) -> u8 {
+        ((self.raw.control() & Self::SLOT_TYPE_MASK) >> Self::SLOT_TYPE_SHIFT) as u8
+    }
+
+    pub fn set_slot_type(&mut self, slot_type: u8) {
+        let mut ctrl = self.raw.control();
+        ctrl &= !Self::SLOT_TYPE_MASK;
+        ctrl |= ((slot_type as u32) << Self::SLOT_TYPE_SHIFT) & Self::SLOT_TYPE_MASK;
+
+        self.raw.set_control(ctrl);
+    }
+}
+
+impl TrbTrait for EnableSlotCommandTrb {
+    const TRB_TYPE: u8 = Trb::TRB_ENABLE_SLOT_COMMAND;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct CommandCompletionEventTrb {
+    raw: Trb,
+}
+
+impl CommandCompletionEventTrb {
+    const COMP_PARAM_MASK: u32 = 0x00FF_FFFF;
+    const COMP_CODE_SHIFT: u32 = 24;
+    const COMP_CODE_MASK: u32 = 0xFF << Self::COMP_CODE_SHIFT;
+    const VF_ID_SHIFT: u32 = 16;
+    const VF_ID_MASK: u32 = 0xFF << Self::VF_ID_SHIFT;
+    const SLOT_ID_SHIFT: u32 = 24;
+    const SLOT_ID_MASK: u32 = 0xFF << Self::SLOT_ID_SHIFT;
+
+    pub fn new(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_COMMAND_COMPLETION_EVENT {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_COMMAND_COMPLETION_EVENT,
+                actual,
+            });
+        }
+
+        Ok(Self { raw })
+    }
+
+    pub fn command_trb_pointer(&self) -> u64 {
+        self.raw.parameter() & !0xF
+    }
+
+    pub fn command_completion_parameter(&self) -> u32 {
+        self.raw.status() & Self::COMP_PARAM_MASK
+    }
+
+    pub fn completion_code(&self) -> u8 {
+        ((self.raw.status() & Self::COMP_CODE_MASK) >> Self::COMP_CODE_SHIFT) as u8
+    }
+
+    pub fn vf_id(&self) -> u8 {
+        ((self.raw.control() & Self::VF_ID_MASK) >> Self::VF_ID_SHIFT) as u8
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() & Self::SLOT_ID_MASK) >> Self::SLOT_ID_SHIFT) as u8
+    }
+
+    pub fn cycle(&self) -> bool {
+        (self.raw.control() & 1) != 0
+    }
+}
+
+impl TrbTrait for CommandCompletionEventTrb {
+    const TRB_TYPE: u8 = Trb::TRB_COMMAND_COMPLETION_EVENT;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct AddressDeviceCommandTrb {
+    raw: Trb,
+}
+
+impl AddressDeviceCommandTrb {
+    const BSR_SHIFT: u32 = 9;
+    const BSR_MASK: u32 = 1 << Self::BSR_SHIFT;
+    const TRB_TYPE_SHIFT: u32 = 10;
+    const TRB_TYPE_MASK: u32 = 0x3F << Self::TRB_TYPE_SHIFT;
+    const SLOT_ID_SHIFT: u32 = 24;
+    const SLOT_ID_MASK: u32 = 0xFF << Self::SLOT_ID_SHIFT;
+
+    pub fn new() -> Self {
+        let mut trb = Self { raw: Trb::new() };
+        trb.set_trb_type(11);
+        trb
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != 11 {
+            return Err(TrbParseError::UnexpectedType {
+                expected: 11,
+                actual,
+            });
+        }
+
+        Ok(Self { raw })
+    }
+
+    pub fn input_context_pointer(&self) -> u64 {
+        self.raw.parameter() & !0xF
+    }
+
+    pub fn set_input_context_pointer(&mut self, ptr: u64) {
+        self.raw.set_parameter(ptr & !0xF);
+    }
+
+    pub fn bsr(&self) -> bool {
+        (self.raw.control() & Self::BSR_MASK) != 0
+    }
+
+    pub fn set_bsr(&mut self, bsr: bool) {
+        let mut control = self.raw.control();
+        if bsr {
+            control |= Self::BSR_MASK;
+        } else {
+            control &= !Self::BSR_MASK;
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() & Self::SLOT_ID_MASK) >> Self::SLOT_ID_SHIFT) as u8
+    }
+
+    pub fn set_slot_id(&mut self, slot_id: u8) {
+        let mut control = self.raw.control();
+        control &= !Self::SLOT_ID_MASK;
+        control |= (slot_id as u32) << Self::SLOT_ID_SHIFT;
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        (self.raw.control() & 1) != 0
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        let mut control = self.raw.control();
+        if cycle {
+            control |= 1;
+        } else {
+            control &= !1;
+        }
+        self.raw.set_control(control);
+    }
+
+    fn set_trb_type(&mut self, trb_type: u8) {
+        let mut control = self.raw.control();
+        control &= !Self::TRB_TYPE_MASK;
+        control |= (trb_type as u32) << Self::TRB_TYPE_SHIFT;
+        self.raw.set_control(control);
+    }
+}
+
+impl TrbTrait for AddressDeviceCommandTrb {
+    const TRB_TYPE: u8 = 11;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
