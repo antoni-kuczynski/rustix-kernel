@@ -43,8 +43,8 @@ ring is determined by the number and size of the segments that comprise the
 ring.
 
  */
+use core::mem;
 use x86_64::PhysAddr;
-use crate::drivers::pci::pci_device::PciDeviceInitError;
 use crate::drivers::usb::xhci::xhci_trb::Trb;
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 
@@ -55,96 +55,101 @@ pub struct TrbCreationError();
 pub enum RingError {
     Empty,
     Unsupported,
+    InvalidTrbOnEventRing,
+    InvalidTrbOnCommandRing,
+    InvalidTrbOnTransferRing,
 }
 
-pub trait Ring<'a> {
-    fn new(trbs: &'a mut [Trb], ring_phys: PhysAddr) -> Self;
+pub trait Ring {
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self;
     fn enqueue(&mut self, trb: Trb) -> Result<(), RingError>;
     fn dequeue(&mut self) -> Result<Trb, RingError>;
-    fn get_enqueue_phys(&mut self, trb: Trb) -> Result<PhysAddr, RingError>;
-    fn get_dequeue_phys(&mut self) -> Result<PhysAddr, RingError>;
-    fn ring_mut(&mut self) -> &'a mut TrbRing;
-    fn ring(&self) -> &'a TrbRing;
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError>;
+    fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError>;
+    fn ring_mut(&mut self) -> &mut TrbRing;
+    fn ring(&self) -> &TrbRing;
 
-    fn trbs(&'a mut self) -> &'a mut [Trb] {
-        let ring: &mut TrbRing = self.ring_mut();
-        ring.trbs
+    fn trbs(&mut self) -> *mut [Trb] {
+        self.ring_mut().trbs
     }
 
-    fn enqueue_index(&'a self) -> usize {
+    fn enqueue_index(&self) -> usize {
         self.ring().enqueue_index
     }
 
-    fn dequeue_index(&'a self) -> usize {
+    fn dequeue_index(&self) -> usize {
         self.ring().dequeue_index
     }
 
-    fn cycle_state(&'a self) -> bool {
+    fn cycle_state(&self) -> bool {
         self.ring().cycle_state
     }
 
-    fn advance_dequeue_index(&'a mut self) {
+    fn advance_dequeue_index(&mut self) {
         let ring = self.ring_mut();
+        let len = ring.trbs.len();
+
         ring.dequeue_index += 1;
-        if ring.dequeue_index == ring.trbs.len() {
+        if ring.dequeue_index == len {
             ring.dequeue_index = 0;
             ring.cycle_state = !ring.cycle_state;
         }
     }
 }
 
-pub struct TrbRing<'a> {
-    trbs: &'a mut [Trb],
+pub struct TrbRing {
+    trbs: *mut [Trb],
     ring_phys: PhysAddr,
     enqueue_index: usize,
     dequeue_index: usize,
     cycle_state: bool,
 }
 
-impl<'a> TrbRing<'a> {
-    pub fn new(trbs: &'a mut [Trb], ring_phys: PhysAddr) -> Result<TrbRing, TrbCreationError> {
-        let last_index = trbs.len() - 1;
+impl TrbRing {
+    pub unsafe fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Result<TrbRing, TrbCreationError> {
+        let len = trbs.len();
+        let last_index = len - 1;
 
         //set the last TRB in ring to LINK type
-        trbs[last_index].set_trb_type(Trb::TRB_LINK);
-        trbs[last_index].set_cycle(true);
-        trbs[last_index].set_toggle_cycle(true);
-        trbs[last_index].set_parameter(ring_phys.as_u64());
+        (*trbs)[last_index].set_trb_type(Trb::TRB_LINK);
+        (*trbs)[last_index].set_cycle(true);
+        (*trbs)[last_index].set_toggle_cycle(true);
+        (*trbs)[last_index].set_parameter(ring_phys.as_u64());
 
         Ok(TrbRing {
             trbs,
             ring_phys,
             enqueue_index: 0,
-            dequeue_index: 0, //TODO: this is probably invalid value for that
+            dequeue_index: 0,
             cycle_state: true,
         })
     }
 
-    pub fn dma_alloc(len: usize) -> Option<(DmaAlloc, &'a mut [Trb])> {
-        let alloc = dma_alloc_zeroed(len * size_of::<Trb>(), 64)?;
-        let trbs = unsafe { alloc.as_slice_mut::<Trb>(len) };
+    pub fn dma_alloc(len_in_trbs: usize) -> Option<(DmaAlloc, *mut [Trb])> {
+        let alloc = dma_alloc_zeroed(len_in_trbs * size_of::<Trb>(), 64)?;
+        let trbs = unsafe { alloc.as_slice_mut::<Trb>(len_in_trbs) };
         Some((alloc, trbs))
     }
 
-    fn enqueue(&mut self, mut trb: Trb) -> Result<(), RingError> {
-        let link_index = self.trbs.len() - 1;
+    pub unsafe fn enqueue(&mut self, mut trb: Trb) -> Result<(), RingError> {
+        let len = self.trbs.len();
+        let link_index = len - 1;
+
         if self.enqueue_index == link_index {
-            self.trbs[link_index].set_cycle(self.cycle_state);
+            (*self.trbs)[link_index].set_cycle(self.cycle_state);
             self.enqueue_index = 0;
             self.cycle_state = !self.cycle_state;
         }
 
         trb.set_cycle(self.cycle_state);
-        unsafe {
-            core::ptr::write_volatile(&mut self.trbs[self.enqueue_index], trb);
-        }
+        core::ptr::write_volatile(&mut (*self.trbs)[self.enqueue_index], trb);
         self.enqueue_index += 1;
 
         Ok(())
     }
 
-    fn dequeue(&mut self) -> Result<Trb, RingError> {
-        let trb = unsafe { core::ptr::read_volatile(&self.trbs[self.dequeue_index]) };
+    pub fn dequeue(&mut self) -> Result<Trb, RingError> {
+        let trb = unsafe { core::ptr::read_volatile(&(*self.trbs)[self.dequeue_index]) };
         if trb.cycle() != self.cycle_state {
             return Err(RingError::Empty);
         }
@@ -153,45 +158,40 @@ impl<'a> TrbRing<'a> {
         if self.dequeue_index == self.trbs.len() {
             self.dequeue_index = 0;
             self.cycle_state = !self.cycle_state;
-        }        Ok(trb)
+        }
+
+        Ok(trb)
     }
 
-    fn head_phys(&'a self) -> PhysAddr {
-        let ring_phys = self.ring_phys;
-        let dequeue_index = self.dequeue_index;
-
-        ring_phys + (dequeue_index * size_of::<Trb>()) as u64
+    pub fn head_phys(&self) -> PhysAddr {
+        self.ring_phys + (self.dequeue_index * size_of::<Trb>()) as u64
     }
 
-    fn tail_phys(&'a self) -> PhysAddr {
-        let ring_phys = self.ring_phys;
-        let enqueue_index = self.enqueue_index;
-
-        ring_phys + (enqueue_index * size_of::<Trb>()) as u64
+    pub fn tail_phys(&self) -> PhysAddr {
+        self.ring_phys + (self.enqueue_index * size_of::<Trb>()) as u64
     }
 
-    fn get_enqueue_phys(&self) -> PhysAddr {
+    pub fn get_enqueue_phys(&self) -> PhysAddr {
         self.tail_phys()
     }
 
-    fn get_dequeue_phys(&self) -> PhysAddr {
+    pub fn get_dequeue_phys(&self) -> PhysAddr {
         self.head_phys()
     }
 }
+
 //==================================================================================================
 // EVENT RING
 //==================================================================================================
-pub struct EventRing<'a> {
-    ring: TrbRing<'a>
+pub struct EventRing {
+    ring: TrbRing
 }
 
-impl<'a> Ring<'a> for EventRing<'a> {
-    fn new(trbs: &'a mut [Trb], ring_phys: PhysAddr) -> Self {
-        let ring = TrbRing::new(trbs, ring_phys).
-            expect("Ring creation for event ring failed.");
-        Self {
-            ring
-        }
+impl Ring for EventRing {
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
+        let ring = unsafe { TrbRing::new(trbs, ring_phys) }
+            .expect("Ring creation for event ring failed.");
+        Self { ring }
     }
 
     fn enqueue(&mut self, _: Trb) -> Result<(), RingError> {
@@ -199,64 +199,165 @@ impl<'a> Ring<'a> for EventRing<'a> {
     }
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
-        self.ring.dequeue()
-    }
-
-    fn get_enqueue_phys(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
-        Err(RingError::Unsupported)
-    }
-
-    fn get_dequeue_phys(&mut self) -> Result<PhysAddr, RingError> {
-        Ok(self.ring.get_dequeue_phys())
-    }
-
-
-    fn ring_mut(&mut self) -> &'a mut TrbRing {
-        &mut self.ring
-    }
-
-    fn ring(&self) -> &'_ TrbRing {
-        &self.ring
-    }
-}
-//==================================================================================================
-//  COMMAND RING
-//==================================================================================================
-pub struct CommandRing<'a> {
-    ring: TrbRing<'a>
-}
-
-impl<'a> Ring<'a> for CommandRing<'a> {
-    fn new(trbs: &'a mut [Trb], ring_phys: PhysAddr) -> Self {
-        let ring = TrbRing::new(trbs, ring_phys).
-            expect("Ring creation for event ring failed.");
-        Self {
-            ring
+        let a = self.ring.dequeue()?;
+        if a.is_event_trb() {
+            Ok(a)
+        } else {
+            Err(RingError::InvalidTrbOnEventRing)
         }
     }
 
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
+        Err(RingError::Unsupported)
+    }
+
+    fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
+        Ok(self.ring.get_dequeue_phys())
+    }
+
+    fn ring_mut(&mut self) -> &mut TrbRing {
+        &mut self.ring
+    }
+
+    fn ring(&self) -> &TrbRing {
+        &self.ring
+    }
+}
+
+//==================================================================================================
+//  COMMAND RING
+//==================================================================================================
+pub struct CommandRing {
+    ring: TrbRing
+}
+
+impl Ring for CommandRing {
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
+        let ring = unsafe { TrbRing::new(trbs, ring_phys) }
+            .expect("Ring creation for command ring failed.");
+        Self { ring }
+    }
+
     fn enqueue(&mut self, trb: Trb) -> Result<(), RingError> {
-        self.ring.enqueue(trb)
+        if trb.is_command_trb() {
+            unsafe { self.ring.enqueue(trb) }
+        } else {
+            Err(RingError::InvalidTrbOnCommandRing)
+        }
     }
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
         self.ring.dequeue()
     }
 
-    fn get_enqueue_phys(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
         Ok(self.ring.get_enqueue_phys())
     }
 
-    fn get_dequeue_phys(&mut self) -> Result<PhysAddr, RingError> {
+    fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
         Err(RingError::Unsupported)
     }
 
-    fn ring_mut(&mut self) -> &'a mut TrbRing {
+    fn ring_mut(&mut self) -> &mut TrbRing {
         &mut self.ring
     }
 
-    fn ring(&self) -> &'a TrbRing {
+    fn ring(&self) -> &TrbRing {
+        &self.ring
+    }
+}
+//==================================================================================================
+//  TRANSFER RING
+//==================================================================================================
+pub struct TransferRing {
+    ring: TrbRing
+}
+
+impl Ring for TransferRing {
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
+        let ring = unsafe { TrbRing::new(trbs, ring_phys) }
+            .expect("Ring creation for transfer ring failed.");
+        Self { ring }
+    }
+
+    fn enqueue(&mut self, trb: Trb) -> Result<(), RingError> {
+        if trb.is_transfer_trb() {
+            unsafe { self.ring.enqueue(trb) }
+        } else {
+            Err(RingError::InvalidTrbOnTransferRing)
+        }
+    }
+
+    fn dequeue(&mut self) -> Result<Trb, RingError> {
+        self.ring.dequeue()
+    }
+
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
+        Ok(self.ring.get_enqueue_phys())
+    }
+
+    fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
+        Err(RingError::Unsupported)
+    }
+
+    fn ring_mut(&mut self) -> &mut TrbRing {
+        &mut self.ring
+    }
+
+    fn ring(&self) -> &TrbRing {
         &self.ring
     }
 }
 
+
+pub struct ShadowRing<const SIZE: usize> {
+    entries: [CommandContext; SIZE],
+    command_ring_phys_base: u64,
+}
+
+impl<const SIZE: usize> ShadowRing<SIZE> {
+    pub fn new(command_ring_phys_base: PhysAddr) -> Self {
+        Self {
+            entries: [CommandContext::Empty; SIZE],
+            command_ring_phys_base: command_ring_phys_base.as_u64(),
+        }
+    }
+
+    pub fn save_context(&mut self, index: usize, context: CommandContext) {
+        assert!(index < SIZE, "Shadow ring index out of bounds!");
+        self.entries[index] = context;
+    }
+
+    pub fn take_context_by_phys_addr(&mut self, phys_addr: PhysAddr) -> CommandContext {
+        let index = self.calculate_index(phys_addr.as_u64());
+        mem::replace(&mut self.entries[index], CommandContext::Empty)
+    }
+
+    fn calculate_index(&self, phys_addr: u64) -> usize {
+        assert!(
+            phys_addr >= self.command_ring_phys_base,
+            "TRB address is before command ring address start!"
+        );
+
+        let offset_bytes = phys_addr - self.command_ring_phys_base;
+        let index = (offset_bytes / 16) as usize;
+
+        assert!(index < SIZE, "Shadow ring index out of bounds!");
+
+        index
+    }
+}
+
+// Not quite a ring, but a helper for command ring saving command context for future access
+#[derive(Clone, Copy, Debug)]
+pub enum CommandContext {
+    Empty,
+    EnableSlot { port_id: u8 },
+    AddressDevice { slot_id: u8 },
+}
+
+impl Default for CommandContext {
+    fn default() -> Self {
+        Self::Empty
+    }
+}

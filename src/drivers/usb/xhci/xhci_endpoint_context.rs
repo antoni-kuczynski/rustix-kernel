@@ -41,13 +41,13 @@ DWORD 6-7 (Offset 20h-27h):
 Reserved (xHCI)
 */
 #[repr(C, packed)]
-pub struct EndpointContext<const CZ: usize> {
-    dword0: u32,         // 0x00
-    dword1: u32,         // 0x04
-    dword2: u32,         // 0x08 (TR Dequeue Ptr Lo + DCS)
-    dword3: u32,         // 0x0C (TR Dequeue Ptr Hi)
+pub struct EndpointContext {
+    pub dword0: u32,         // 0x00
+    pub dword1: u32,         // 0x04
+    pub dword2: u32,         // 0x08 (TR Dequeue Ptr Lo + DCS)
+    pub dword3: u32,         // 0x0C (TR Dequeue Ptr Hi)
     dword4: u32,         // 0x10
-    reserved: [u32; CZ], // 0x14–0x1F
+    reserved: [u32; 3], // 0x14–0x1F
 }
 
 /*
@@ -272,7 +272,17 @@ the low order 16 bits of the Max ESIT Payload. The Max ESIT Payload represents t
 number of bytes this endpoint will transfer during an ESIT. This field is only valid for periodic
 endpoints. Refer to section 6.2.3.8 for more information
  */
-impl<const CZ: usize> EndpointContext<CZ> {
+impl EndpointContext {
+    pub const EP_TYPE_NOT_VALID: u32 = 0;
+    pub const EP_TYPE_ISOCH_OUT: u32 = 1;
+    pub const EP_TYPE_BULK_OUT: u32 = 2;
+    pub const EP_TYPE_INTERRUPT_OUT: u32 = 3;
+    pub const EP_TYPE_CONTROL: u32 = 4;
+    pub const EP_TYPE_ISOCH_IN: u32 = 5;
+    pub const EP_TYPE_BULK_IN: u32 = 6;
+    pub const EP_TYPE_INTERRUPT_IN: u32 = 7;
+
+
     /* ================= DWORD 0 (0x00) ================= */
 
     const EP_STATE_MASK: u32 = 0b111;
@@ -291,6 +301,17 @@ impl<const CZ: usize> EndpointContext<CZ> {
 
     const MAX_ESIT_PAYLOAD_HI_MASK: u32 = 0xFF << 24;
     const MAX_ESIT_PAYLOAD_HI_SHIFT: u32 = 24;
+
+    pub fn new() -> Self {
+        Self {
+            dword0: 0,
+            dword1: 0,
+            dword2: 0,
+            dword3: 0,
+            dword4: 0,
+            reserved: [0; 3],
+        }
+    }
 
     pub fn get_ep_state(&self) -> u32 {
         (self.dword0 & Self::EP_STATE_MASK) >> Self::EP_STATE_SHIFT
@@ -369,7 +390,7 @@ impl<const CZ: usize> EndpointContext<CZ> {
         (self.dword1 & Self::CERR_MASK) >> Self::CERR_SHIFT
     }
 
-    pub fn set_cerr(&mut self, val: u32) {
+    pub fn set_error_count(&mut self, val: u32) {
         self.dword1 =
             (self.dword1 & !Self::CERR_MASK) | ((val << Self::CERR_SHIFT) & Self::CERR_MASK);
     }
@@ -421,7 +442,7 @@ impl<const CZ: usize> EndpointContext<CZ> {
         (self.dword2 & Self::DCS_MASK) != 0
     }
 
-    pub fn set_dcs(&mut self, on: bool) {
+    pub fn set_dequeue_cycle_state(&mut self, on: bool) {
         if on {
             self.dword2 |= Self::DCS_MASK;
         } else {
@@ -460,5 +481,15 @@ impl<const CZ: usize> EndpointContext<CZ> {
     pub fn set_max_esit_payload_lo(&mut self, val: u32) {
         self.dword4 = (self.dword4 & !Self::MAX_ESIT_PAYLOAD_LO_MASK)
             | ((val << 16) & Self::MAX_ESIT_PAYLOAD_LO_MASK);
+    }
+}
+
+impl PartialEq<Self> for EndpointContext {
+    fn eq(&self, other: &Self) -> bool {
+        self.dword0 == other.dword0 &&
+            self.dword1 == other.dword1 &&
+            self.dword2 == other.dword2 &&
+            self.dword3 == other.dword3 &&
+            self.dword4 == other.dword4
     }
 }

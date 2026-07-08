@@ -39,13 +39,16 @@ use core::mem::{align_of, size_of};
 use core::ops::Add;
 use core::ptr;
 use core::ptr::null_mut;
-use x86_64::VirtAddr;
+use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::usb::xhci::xhci_ext_cap::XhciPortProtocol::Usb2;
+use crate::drivers::usb::xhci::xhci_input_context::InputContext;
 use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::U0;
-use crate::drivers::usb::xhci::xhci_trb_ring::{CommandRing, EventRing, Ring, RingError, TrbRing};
+use crate::drivers::usb::xhci::xhci_trb_ring::{CommandContext, CommandRing, EventRing, Ring, RingError, ShadowRing, TransferRing, TrbRing};
 use crate::kprintln;
+use crate::memory::dir_mapping::physical_to_virtual;
+use crate::video::kprint::LogLevel::{Debug, Warn};
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -412,10 +415,37 @@ fn xhci_configure_interrupts(dev: &PciDevice) -> Result<XhciInterruptConfig, Pci
 //===================================================================
 //              DEVICE CONTEXT
 //===================================================================
-#[repr(C, packed)]
-pub struct DeviceContext<const CZ: usize> {
-    slot: SlotContext<CZ>,
-    endpoints: [EndpointContext<CZ>; 31],
+#[derive(Clone, Copy)]
+#[repr(C, align(64))]
+pub struct DeviceContext {
+    data: [u8; 2048],
+}
+
+impl DeviceContext {
+    pub fn new() -> Self {
+        Self { data: [0; 2048] }
+    }
+
+    pub fn slot(&self) -> &SlotContext {
+        unsafe { &*(self.data.as_ptr() as *const SlotContext) }
+    }
+
+    pub fn slot_mut(&mut self) -> &mut SlotContext {
+        unsafe { &mut *(self.data.as_mut_ptr() as *mut SlotContext) }
+    }
+
+    pub fn endpoint(&self, dci: usize, context_size: u32) -> &EndpointContext {
+        assert!(dci > 0 && dci <= 31, "DCI dla Endpointu musi być w przedziale 1..=31");
+
+        unsafe { &*(self.data.as_ptr().add(dci * context_size as usize) as *const EndpointContext) }
+    }
+
+    pub fn endpoint_mut(&mut self, dci: usize, csz: bool) -> &mut EndpointContext {
+        assert!(dci > 0 && dci <= 31, "DCI dla Endpointu musi być w przedziale 1..=31");
+
+        let step = if csz { 64 } else { 32 };
+        unsafe { &mut *(self.data.as_mut_ptr().add(dci * step) as *mut EndpointContext) }
+    }
 }
 //===================================================================
 //              Device Context Base Address Array
@@ -426,8 +456,12 @@ pub struct Dcbaa {
 }
 
 impl Dcbaa {
-    pub fn get_context(&self, slot_id: usize) -> u64 {
-        self.entries[slot_id]
+    pub fn get_context(&self, slot_id: usize) -> PhysAddr {
+        PhysAddr::new(self.entries[slot_id])
+    }
+
+    pub fn get_context_virt(&self, slot_id: usize) -> VirtAddr {
+        physical_to_virtual(PhysAddr::new(self.entries[slot_id]))
     }
 
     pub fn set_context(&mut self, slot_id: usize, addr: u64) {
@@ -529,27 +563,26 @@ impl ERST {
     }
 }
 
-pub struct XHCI {
-    pub pci_device: PciDevice,
-    operational_base: VirtAddr,
-    slots: u32,
-    context_size: u32,
-    dcbaa_dma: DmaAlloc,
-    dcbaa: &'static mut Dcbaa,
-    command_ring_dma: DmaAlloc,
-    command_ring: UnsafeCell<CommandRing<'static>>,
-    event_ring_primary_dma: DmaAlloc,
-    event_ring_primary: UnsafeCell<EventRing<'static>>,
-    event_ring_secondary_dma: DmaAlloc,
-    event_ring_secondary: UnsafeCell<EventRing<'static>>,
-    erst_primary_dma: DmaAlloc,
-    erst_primary: &'static mut ERST,
-    erst_secondary_dma: DmaAlloc,
-    erst_secondary: &'static mut ERST,
-    primary_interrupter: XhciInterrupterState,
-    transfer_interrupter: XhciInterrupterState,
-    interrupt_config: XhciInterruptConfig,
-    supported_protocols: Vec<XhciPortInfo>,
+struct XHCIDevice {
+    input_context_dma: DmaAlloc,
+    transfer_ring_dma: DmaAlloc,
+    transfer_ring: TransferRing,
+    device_context_dma: DmaAlloc,
+}
+
+impl XHCIDevice {
+    fn new(input_context_dma: DmaAlloc,
+           transfer_ring_dma: DmaAlloc,
+           transfer_ring: TransferRing,
+           device_context_dma: DmaAlloc) -> Self
+    {
+        XHCIDevice {
+            input_context_dma,
+            transfer_ring_dma,
+            transfer_ring,
+            device_context_dma,
+        }
+    }
 }
 
 pub struct XhciInterrupterState {
@@ -671,16 +704,20 @@ impl XhciInterrupterState {
         //we did reset the slot, so now we're in enabled state
         //TODO: usb3 logic (but it's probably the same, prioritizing usb2 for keyboard support)
 
+        let index = xhci.command_ring.get_mut().enqueue_index();
+        let slot_type = 0; //99,9999999999% cases its just zero
+        let trb = EnableSlotCommandTrb::new_command(slot_type);
+        xhci.send_command(*trb.raw()).expect("Sending enable slot command for XHCI failed.");
 
-        let mut trb = Trb::new();
-        trb.set_trb_type(Trb::TRB_ENABLE_SLOT);
-        xhci.send_command(trb).expect("Sending enable slot command for XHCI failed.");
+        xhci.shadow_ring.save_context(index, CommandContext::EnableSlot {
+            port_id: port,
+        });
 
-
+        xhci.ring_global_doorbell();
     }
 
     unsafe fn handle_port_status_change(&self, xhci: &mut XHCI, trb: PortStatusChangeEventTrb) {
-        let port = trb.read_port_id();
+        let port = trb.port_id();
 
         if !xhci.is_valid_port(port) {
             kprintln!(Info,"Ignoring port status change for invalid port {}", port);
@@ -708,6 +745,204 @@ impl XhciInterrupterState {
         }
     }
 
+    unsafe fn handle_enable_slot_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb, command_context: CommandContext) {
+        let slot_id = trb.slot_id();
+        let port = match command_context {
+            CommandContext::EnableSlot { port_id } => { port_id },
+            _ => { panic!("Invalid command context type! Expected enable slot, found {:?}.", command_context) }
+        };
+
+        if trb.completion_code() == TrbCompletionCode::SUCCESS && slot_id != 0 {
+            kprintln!(Info, "[SLOT {}] Successfully assigned slot for port {}.", trb.slot_id(), port);
+        } else {
+            //TODO: handle these so that the slot allocation doesnt go to waste
+            kprintln!(Warn, "Handling enable slot command resulted in non successful exit code {}", trb.completion_code());
+            return;
+        }
+
+        let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+        let port_speed = portsc.ps_read();
+
+        //now that we have a slot, we can initialize all the required data structures
+        let input_context_dma = dma_alloc_zeroed(size_of::<InputContext>(), 4096).
+            expect("Failed to dma alloc for input context!");
+        let input_context = &mut *(input_context_dma.virt.as_mut_ptr::<InputContext>());
+        let ic_control = input_context.control();
+
+        ic_control.add_context(0);
+        ic_control.add_context(1);
+
+        let input_slot_context =
+            input_context.slot::<SlotContext>(xhci.context_size);
+
+        input_slot_context.set_root_hub_port(port);
+        input_slot_context.set_route_string(0); // here we just handle devices directly connected to root hub, so that's just zero
+        input_slot_context.set_context_entries(1);
+        input_slot_context.set_speed(port_speed);
+
+        let max_packet_size = match port_speed {
+            1 => 8,
+            2 => 8,
+            3 => 64,
+            4 => 512,
+            _ => 8,   //fallback
+        };
+
+        // input slot context initialized, now the transfer ring
+        let alloc_transfer_ring = TrbRing::dma_alloc(TRANSFER_RING_TRBS);
+        if alloc_transfer_ring.is_none() {
+            panic!("Failed to allocate transfer ring for device at port {} slot {}", port, slot_id);
+        }
+
+        let (transfer_ring_dma, transfer_trbs) = alloc_transfer_ring.unwrap();
+        let transfer_ring = TransferRing::new(transfer_trbs, transfer_ring_dma.phys);
+
+        // endpoint context
+        //ici=2 is the index of ep0
+        let ep_0 = input_context.endpoint::<EndpointContext>(2, xhci.context_size);
+        ep_0.set_ep_type(EndpointContext::EP_TYPE_CONTROL);
+        ep_0.set_max_packet_size(max_packet_size);
+        ep_0.set_max_burst(0);
+        ep_0.set_tr_dequeue_ptr(transfer_ring_dma.phys.as_u64());
+        ep_0.set_dequeue_cycle_state(true);
+        ep_0.set_interval(0);
+        ep_0.set_max_pstreams(0);
+        ep_0.set_mult(0);
+        ep_0.set_error_count(3);
+
+        // output device context
+        let device_context_dma = dma_alloc_zeroed(size_of::<DeviceContext>(), 4096).
+            expect("Failed to allocate dma for device context.");
+        let device_context = &*device_context_dma.virt.as_mut_ptr::<DeviceContext>();
+
+        xhci.dcbaa.set_context(slot_id as usize, device_context_dma.phys.as_u64());
+
+        let enqueue_index = xhci.command_ring.get_mut().enqueue_index();
+        xhci.shadow_ring.save_context(enqueue_index,
+            CommandContext::AddressDevice { slot_id }
+        );
+
+        kprintln!(Debug, "[SLOT {}] Succesfully allocated required data structures for device.", slot_id);
+        let mut address_command_trb = AddressDeviceCommandTrb::new();
+        address_command_trb.set_slot_id(slot_id);
+        address_command_trb.set_input_context_pointer(input_context_dma.phys.as_u64());
+        address_command_trb.set_bsr(false);
+
+        xhci.send_command(*address_command_trb.raw()).
+            expect("Failed to send address device command!");
+        xhci.ring_global_doorbell();
+
+        let xhci_device = XHCIDevice::new(
+            input_context_dma,
+            transfer_ring_dma,
+            transfer_ring,
+            device_context_dma
+        );
+
+        xhci.devices.get_mut()[slot_id as usize] = Some(xhci_device);
+    }
+
+    unsafe fn handle_address_device_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb, command_context: CommandContext) {
+        let command_trb_addr = physical_to_virtual(PhysAddr::new(trb.command_trb_pointer()));
+        let command_trb = &*(command_trb_addr.as_mut_ptr::<AddressDeviceCommandTrb>());
+        let slot_id = match command_context {
+            CommandContext::AddressDevice { slot_id } => { slot_id }
+            a => { panic!("Invalid context type! Expected AddressDevice found {:?}.", a) }
+        };
+
+        if slot_id == 0 {
+            panic!("Invalid slot id inside command context!");
+        }
+
+        if trb.completion_code() == TrbCompletionCode::CONTEXT_STATE_ERROR {
+            kprintln!(Error, "[SLOT {}] Not in enabled state!", trb.slot_id());
+            return; //TODO
+        } else if trb.completion_code() == TrbCompletionCode::USB_TRANSACTION_ERROR {
+            kprintln!(Error, "[SLOT {}] SET_ADDRESS request was not successful.", trb.slot_id());
+            return;
+        } else if trb.completion_code() == TrbCompletionCode::SLOT_NOT_ENABLED_ERROR {
+            kprintln!(Error, "[SLOT {}] Was not enabled by enable slot command.", trb.slot_id());
+            return;
+        } else if trb.completion_code() != TrbCompletionCode::SUCCESS {
+            kprintln!(Error, "Address Device Command FAILED with code: {:?}", trb.completion_code());
+            return;
+        }
+
+        let input_ptr = physical_to_virtual(PhysAddr::new(command_trb.input_context_pointer()));
+
+        let bsr = command_trb.bsr();
+        let input_context = &*(input_ptr.as_ptr::<InputContext>());
+
+        let output_device_context = &*(xhci.dcbaa.get_context_virt(slot_id as usize).as_ptr::<DeviceContext>());
+        let input_slot_context = input_context.slot_ref::<SlotContext>(xhci.context_size);
+        let output_slot_context = output_device_context.slot();
+
+        let input_ep0 = input_context.endpoint_ref::<EndpointContext>(2, xhci.context_size);
+        let output_ep0 = output_device_context.endpoint(1, xhci.context_size);
+
+        //stinky packed struct references!
+        let out_dword0 = output_slot_context.dword0;
+        let out_dword1 = output_slot_context.dword1;
+        let in_dword0 = input_slot_context.dword0;
+        let in_dword1 = input_slot_context.dword1;
+
+        let out_ep0_dword0 = output_ep0.dword0;
+        let out_ep0_dword1 = output_ep0.dword1;
+        let out_ep0_dword2 = output_ep0.dword2;
+        let out_ep0_dword3 = output_ep0.dword3;
+
+        let in_ep0_dword0 = input_ep0.dword0;
+        let in_ep0_dword1 = input_ep0.dword1;
+        let in_ep0_dword2 = input_ep0.dword2;
+        let in_ep0_dword3 = input_ep0.dword3;
+
+        //TODO: replace these stupid asserts with some creative error messages
+
+        //compare output and input contexts
+        assert_eq!(out_dword0 & 0xF800_0000, in_dword0 & 0xF800_0000);
+        assert_eq!(out_dword1 & 0x00FF_0000, in_dword1 & 0x00FF_0000);
+
+        //compare input.output ep0 contexts
+        assert_eq!(out_ep0_dword1, in_ep0_dword1);
+        assert_eq!(out_ep0_dword2, in_ep0_dword2);
+        assert_eq!(out_ep0_dword3, in_ep0_dword3);
+
+        assert_eq!(output_ep0.get_ep_state(), EndpointState::RUNNING);
+
+        if bsr == false {
+            assert_eq!(output_slot_context.get_slot_state(), SlotState::ADDRESSED);
+            assert!(output_slot_context.get_usb_address() > 0);
+            kprintln!(Info, "[SLOT {}] SET_ADDRESS request completed successfully.", trb.slot_id());
+        } else {
+            assert_eq!(output_slot_context.get_slot_state(), SlotState::DEFAULT);
+            assert_eq!(output_slot_context.get_usb_address(), 0);
+        }
+
+        kprintln!(Info, "[SLOT {}] Successfully handled address device command.", trb.slot_id());
+
+    }
+
+    unsafe fn handle_command_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb) {
+        let command_trb_pointer = PhysAddr::new(trb.command_trb_pointer());
+        let virt = physical_to_virtual(command_trb_pointer);
+        let command_trb = &*(virt.as_u64() as *const Trb);
+        let context = xhci.shadow_ring.take_context_by_phys_addr(command_trb_pointer);
+
+        if !command_trb.is_command_trb() {
+            panic!("Invalid trb type on command ring! This is probably caused by reading some garbage data.");
+        }
+
+        match command_trb.trb_type() {
+            Trb::TRB_ENABLE_SLOT_COMMAND => {
+                self.handle_enable_slot_completion(xhci, trb, context);
+            },
+            Trb::TRB_ADDRESS_DEVICE => {
+                self.handle_address_device_completion(xhci, trb, context);
+            },
+            0_u8..=8_u8 | 10_u8 | 12_u8..=u8::MAX => todo!()
+        }
+    }
+
     unsafe fn handle(&self) {
         let xhci1 = self.controller;
 
@@ -725,21 +960,19 @@ impl XhciInterrupterState {
 
         while let Ok(trb) = event_ring.dequeue() {
             let trb_type = trb.trb_type();
-            // vgaprintln!(
-            //     "xHCI {} event TRB: type={} cycle={} param={:#018x} status={:#010x} control={:#010x}",
-            //     self.name,
-            //     trb_type,
-            //     trb.cycle(),
-            //     trb.parameter(),
-            //     trb.status(),
-            //     trb.control()
-            // );
 
             if trb_type == Trb::TRB_PORT_STATUS_CHANGE_EVENT {
                 let event_change = trb
                     .try_as_port_status_change_event()
                     .expect("Cannot parse change event TRB!");
                 self.handle_port_status_change(xhci, event_change);
+            } else if trb_type == Trb::TRB_COMMAND_COMPLETION_EVENT {
+                let command_completion = trb
+                    .try_as_command_completion_event()
+                    .expect("Cannot parse completion event TRB!");
+                self.handle_command_completion(xhci, command_completion);
+            } else {
+                kprintln!(Debug, "Trb type {} received.", trb_type);
             }
         }
 
@@ -766,6 +999,33 @@ fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) 
     }
 }
 
+pub struct XHCI {
+    pub pci_device: PciDevice,
+    operational_base: VirtAddr,
+    cap_base: VirtAddr,
+    slots: u32,
+    context_size: u32,
+    dcbaa_dma: DmaAlloc,
+    dcbaa: &'static mut Dcbaa,
+    command_ring_dma: DmaAlloc,
+    command_ring: UnsafeCell<CommandRing>,
+    event_ring_primary_dma: DmaAlloc,
+    event_ring_primary: UnsafeCell<EventRing>,
+    event_ring_secondary_dma: DmaAlloc,
+    event_ring_secondary: UnsafeCell<EventRing>,
+    erst_primary_dma: DmaAlloc,
+    erst_primary: &'static mut ERST,
+    erst_secondary_dma: DmaAlloc,
+    erst_secondary: &'static mut ERST,
+    primary_interrupter: XhciInterrupterState,
+    transfer_interrupter: XhciInterrupterState,
+    interrupt_config: XhciInterruptConfig,
+    supported_protocols: Vec<XhciPortInfo>,
+    doorbell_offset: u32,
+    shadow_ring: ShadowRing<COMMAND_RING_TRBS>,
+    devices: UnsafeCell<[Option<XHCIDevice>; 256]>
+}
+
 impl XHCI {
     fn is_valid_port(&self, port: u8) -> bool {
         port != 0 && (port as usize) <= self.supported_protocols.len()
@@ -779,23 +1039,32 @@ impl XHCI {
         self.supported_protocols.get((port - 1) as usize).copied()
     }
 
+    #[inline(always)]
     fn send_command(&mut self, trb: Trb) -> Result<(), RingError> {
         self.command_ring.get_mut().enqueue(trb)
+    }
+
+    #[inline(always)]
+    fn ring_global_doorbell(&self, ) {
+        unsafe {
+            mmio_write::<u32>(self.cap_base, self.doorbell_offset as u64, 0);
+        }
     }
 
     fn new(
         pci_device: PciDevice,
         operational_base: VirtAddr,
+        cap_base: VirtAddr,
         slots: u32,
         context_size: u32,
         dcbaa_dma: DmaAlloc,
         dcbaa: &'static mut Dcbaa,
         command_ring_dma: DmaAlloc,
-        command_ring: CommandRing<'static>,
+        command_ring: CommandRing,
         event_ring_primary_dma: DmaAlloc,
-        event_ring_primary: EventRing<'static>,
+        event_ring_primary: EventRing,
         event_ring_secondary_dma: DmaAlloc,
-        event_ring_secondary: EventRing<'static>,
+        event_ring_secondary: EventRing,
         erst_primary_dma: DmaAlloc,
         erst_primary: &'static mut ERST,
         erst_secondary_dma: DmaAlloc,
@@ -804,10 +1073,13 @@ impl XHCI {
         transfer_interrupter: XhciInterrupterState,
         interrupt_config: XhciInterruptConfig,
         supported_protocols: Vec<XhciPortInfo>,
+        doorbel_offset: u32,
+        shadow_ring: ShadowRing<COMMAND_RING_TRBS>
     ) -> Self {
         XHCI {
             pci_device,
             operational_base,
+            cap_base,
             slots,
             context_size,
             dcbaa_dma,
@@ -826,6 +1098,9 @@ impl XHCI {
             transfer_interrupter,
             interrupt_config,
             supported_protocols,
+            doorbell_offset: doorbel_offset,
+            shadow_ring,
+            devices: UnsafeCell::new([const { None }; 256])
         }
     }
 
@@ -891,24 +1166,24 @@ impl PciDeviceInitializer for XHCI {
 
         unsafe {
             let iomap = bar.ioremap_checked();
-            let base = iomap.virt_addr;
+            let cap_base = iomap.virt_addr;
 
-            let cap_length = mmio_read::<u8>(base, CAP_REG_CAPLENGTH as u64);
-            let operational_base = base.add(cap_length as u64);
+            let cap_length = mmio_read::<u8>(cap_base, CAP_REG_CAPLENGTH as u64);
+            let operational_base = cap_base.add(cap_length as u64);
 
-            let runtime_offset = mmio_read::<u32>(base, CAP_REG_RTSOFF as u64) as u64;
+            let runtime_offset = mmio_read::<u32>(cap_base, CAP_REG_RTSOFF as u64) as u64;
             let runtime_base =
-                VirtAddr::new((base.as_u64() + runtime_offset) & RUNTIME_BASE_ALIGNMENT_MASK);
+                VirtAddr::new((cap_base.as_u64() + runtime_offset) & RUNTIME_BASE_ALIGNMENT_MASK);
 
-            let hccparams1 = mmio_read::<u32>(base, CAP_REG_HCCPARAMS1 as u64);
-            let ext_cap_address = first_ext_cap_addr(base, hccparams1);
+            let hccparams1 = mmio_read::<u32>(cap_base, CAP_REG_HCCPARAMS1 as u64);
+            let ext_cap_address = first_ext_cap_addr(cap_base, hccparams1);
             xhci_legacy_handoff(ext_cap_address);
 
             stop_controller(operational_base)?;
             reset_controller(operational_base)?;
 
-            let hcsparams1 = mmio_read::<u32>(base, CAP_REG_HCSPARAMS1 as u64);
-            let hccparams1 = mmio_read::<u32>(base, CAP_REG_HCCPARAMS1 as u64);
+            let hcsparams1 = mmio_read::<u32>(cap_base, CAP_REG_HCSPARAMS1 as u64);
+            let hccparams1 = mmio_read::<u32>(cap_base, CAP_REG_HCCPARAMS1 as u64);
 
             //enable all slots
             let max_slots = hcsparams1 & MAX_SLOTS_MASK;
@@ -936,13 +1211,9 @@ impl PciDeviceInitializer for XHCI {
                 dcbaa_dma.phys.as_u64(),
             );
 
-            let a = TrbRing::dma_alloc(COMMAND_RING_TRBS);
-            let b = a.unwrap();
-
-
-            let (command_ring_alloc, command_ring_primary) = TrbRing::dma_alloc(EVENT_RING_TRBS).
+            let (command_ring_alloc, command_ring_primary) = TrbRing::dma_alloc(COMMAND_RING_TRBS).
                 expect("Failed to allocate DMA for command ring.");
-            
+
             let command_ring = CommandRing::new(command_ring_primary, command_ring_alloc.phys);
             mmio_write::<u64>(
                 operational_base,
@@ -1057,7 +1328,7 @@ impl PciDeviceInitializer for XHCI {
             let event_ring_secondary =
                 EventRing::new(event_ring_secondary, event_ring_secondary_dma.phys);
 
-            let ext_cap_address = first_ext_cap_addr(base, hccparams1);
+            let ext_cap_address = first_ext_cap_addr(cap_base, hccparams1);
 
             //fix for intel panther point chipset - switch over usb2 ports to xhci
             if dev.vendor_id() == PciVendor::INTEL {
@@ -1066,11 +1337,15 @@ impl PciDeviceInitializer for XHCI {
             let supported_protocols = parse_xhci_supported_protocols(ext_cap_address, max_ports);
             // debug_print_supported_protocols(&supported_protocols);
             enable_usb3_port_power(operational_base, &supported_protocols);
-            debug_print_usb3_portsc(operational_base, &supported_protocols);
+            // debug_print_usb3_portsc(operational_base, &supported_protocols);
+
+            let doorbell_offset_bytes = mmio_read::<u32>(cap_base, CAP_REG_DBOFF as u64);
+            let shadow_ring: ShadowRing<COMMAND_RING_TRBS> = ShadowRing::new(command_ring_alloc.phys);
 
             let xhci_struct = XHCI::new(
                 dev,
                 operational_base,
+                cap_base,
                 max_slots,
                 context_size,
                 dcbaa_dma,
@@ -1089,6 +1364,8 @@ impl PciDeviceInitializer for XHCI {
                 transfer_interrupter,
                 interrupt_config,
                 supported_protocols,
+                doorbell_offset_bytes,
+                shadow_ring
             );
 
             let xhci_controller = Box::leak(Box::new(xhci_struct));

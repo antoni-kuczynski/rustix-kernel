@@ -5,6 +5,7 @@ mod xhci_portsc;
 mod xhci_slot_context;
 mod xhci_trb;
 mod xhci_trb_ring;
+mod xhci_input_context;
 /*
 Base
 │
@@ -33,6 +34,7 @@ runtime_base = RTSOFF +
 const CAP_REG_CAPLENGTH: u8 = 0x00;
 const CAP_REG_HCSPARAMS1: u8 = 0x04;
 const CAP_REG_HCCPARAMS1: u8 = 0x10;
+const CAP_REG_DBOFF: u8 = 0x14;
 const CAP_REG_RTSOFF: u8 = 0x18;
 
 //OPERATIONAL REGS
@@ -52,6 +54,7 @@ const XHCI_CONTROLLER_NOT_READY: u32 = 1 << 11;
 const XHCI_STATUS_HALTED: u32 = 1 << 0;
 const COMMAND_RING_TRBS: usize = 256;
 const EVENT_RING_TRBS: usize = 256;
+const TRANSFER_RING_TRBS: usize = 256;
 
 //==================================================================================================
 const USB_CMD_RUN_STOP: u32 = 1 << 0;
