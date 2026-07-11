@@ -16,6 +16,7 @@ EFI_SYSTEM_TABLE_CONOUT     equ 64
 EFI_TEXT_OUTPUT_STRING      equ 8
 
 _start_efi_amd64:
+    cli
     call setupPageTablesLongMode
     ; after that new pml4 is set to only have kernel and eba regions mapped
 

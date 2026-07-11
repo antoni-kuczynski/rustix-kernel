@@ -20,6 +20,7 @@ use crate::memory::ioremap::{ioremap_permanent, IoAlloc};
 use crate::memory::page_tables::PageSize;
 use crate::{kprintln, kprintln_failed, kprintln_ok};
 use crate::drivers::apic::pit::_pit_wait_ms;
+use crate::drivers::usb::xhci::xhci::{xhci_timer_tick, XHCI_TICK_LIST};
 // ============================================================================
 // Local APIC / xAPIC constants
 // ============================================================================
@@ -306,6 +307,13 @@ pub extern "x86-interrupt" fn lapic_timer_interrupt_handler(
     _stack_frame: InterruptStackFrame,
 ) {
     let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed) + 1;
+
+    for slot in XHCI_TICK_LIST.iter() {
+        let ptr = slot.load(Ordering::Acquire);
+        if !ptr.is_null() {
+            unsafe { xhci_timer_tick(&mut *ptr) };
+        }
+    }
 
     unsafe {
         let lapic = LAPIC.get().expect("lapic not initialized");
