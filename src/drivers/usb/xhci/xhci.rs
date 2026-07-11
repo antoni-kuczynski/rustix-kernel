@@ -11,7 +11,7 @@
     https://cdrdv2.intel.com/v1/dl/getContent/868296 - XHCI Intel specification Rev 2.0
 ==============================================================
  */
-use crate::drivers::apic::apic::{LAPIC, timer_lapic_uptime_ms};
+use crate::drivers::apic::apic::{LAPIC, timer_lapic_uptime_ms, timer_lapic_sleep};
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{
     InvalidBarType, XhciCommandRingInitFailure, XhciControllerNotReadyTimeout,
@@ -39,6 +39,7 @@ use core::mem::{align_of, size_of};
 use core::ops::Add;
 use core::ptr;
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
@@ -90,6 +91,10 @@ const XHCI_LEGACY_OS_OWNED: u32 = 1 << 24;
 const XHCI_LEGACY_CTLSTS_OFFSET: u64 = 0x04;
 const XHCI_LEGACY_CTLSTS_CLEAR: u32 = 0xE000_0000;
 const XHCI_LEGACY_HANDOFF_TIMEOUT_MS: u64 = 100;
+
+const MAX_XHCI_CONTROLLERS: usize = 4;
+pub static XHCI_TICK_LIST: [AtomicPtr<XHCI>; MAX_XHCI_CONTROLLERS] =
+    [const { AtomicPtr::new(null_mut()) }; MAX_XHCI_CONTROLLERS];
 
 #[derive(Clone, Copy)]
 pub enum XhciInterrupterKind {
@@ -667,10 +672,21 @@ impl XhciInterrupterState {
         let fresh_portsc = PortStatusControl::from_port(xhci.operational_base, port);
 
         if port_info.protocol == Usb2 {
+
+            // timer_lapic_sleep(100); //TODO: replace with somthing not blocking irqs
             let mut clean_cmd = PortStatusControl::write_from_raw(fresh_portsc.raw());
 
             clean_cmd.change_all_write();
             clean_cmd.pr_write();
+
+            // let safe_portsc_mask: u32 = !((1 << 1) | 0x00FE0000);
+            // let raw_read = clean_cmd.raw();
+            // let mut safe_write = raw_read & safe_portsc_mask;
+            // safe_write |= 1 << 21;
+
+            // let port_index = port.saturating_sub(1);
+            // let addr = xhci.operational_base.add(0x400).add(port_index as u64 * 0x10);
+            // ptr::write_volatile(addr.as_mut_ptr::<u32>(), safe_write);
 
             clean_cmd.write_to_port(xhci.operational_base, port);
             kprintln!(Debug, "Issued Port Reset on port {}", port);
@@ -698,7 +714,22 @@ impl XhciInterrupterState {
         if portsc.ped_read() && !portsc.pr_read() && portsc.pls_read() == U0 {
             kprintln!(Debug, "Succesfully reset port {}", port); //TODO: usb3
         } else {
-            kprintln!(Warn, "Failed to reset port {}", port);
+            if let PortState::ResetInProgress { attempts, .. } = xhci.port_state[port as usize] {
+                if attempts < PORT_RESET_MAX_ATTEMPTS && portsc.ccs_read() {
+                    kprintln!(Warn, "Port {} reset incomplete, retry {}", port, attempts + 1);
+                    portsc_issue_reset(xhci, port);
+                    xhci.port_state[port as usize] = PortState::ResetInProgress {
+                        started_ms: timer_lapic_uptime_ms(),
+                        attempts: attempts + 1,
+                    };
+                    return;
+                }
+            }
+            kprintln!(Warn, "Port {} reset timed out, PORTSC={:#010x} (PED={} PLS={:?} PRC={} CCS={})",
+                port, portsc.raw(), portsc.ped_read(), portsc.pls_read(),
+                portsc.prc_read(), portsc.ccs_read());
+            xhci.port_state[port as usize] = PortState::Idle;
+            return;
         }
 
         //we did reset the slot, so now we're in enabled state
@@ -724,24 +755,48 @@ impl XhciInterrupterState {
             return;
         }
         let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+        portsc_ack_changes(xhci, port, portsc);
 
-        let mut ack = PortStatusControl::write_from_raw(portsc.raw());
-        ack.change_all_write();
-        ack.write_to_port(xhci.operational_base, port);
+        // let mut ack = PortStatusControl::write_from_raw(portsc.raw());
+        // ack.change_all_write();
+
+        // let safe_portsc_mask: u32 = !((1 << 1) | 0x00FE0000);
+        // let raw_read = portsc.raw();
+        // let mut safe_write = raw_read & safe_portsc_mask;
+        // safe_write |= 1 << 21;
+        //
+        // let port_index = port.saturating_sub(1);
+        // let addr = xhci.operational_base.add(0x400).add(port_index as u64 * 0x10);
+        // ptr::write_volatile(addr.as_mut_ptr::<u32>(), safe_write);
+
+        // ack.write_to_port(xhci.operational_base, port);
         kprintln!(Debug, "Cleared port status change event.");
 
         if portsc.prc_read() == true {
             self.handle_port_reset(xhci, port);
-            return;
         }
 
         let csc = portsc.csc_read();
         let ccs = portsc.ccs_read();
 
-        if csc && ccs {
-            self.handle_device_attach(xhci, port);
-        } else if csc && !ccs {
-            self.handle_device_detach(xhci, port, portsc);
+        if portsc.csc_read() {
+            if portsc.ccs_read() {
+                let Some(port_info) = xhci.port_info(port) else {
+                    kprintln!(Debug, "Attach at port {} with unknown protocol", port);
+                    return;
+                };
+                kprintln!(Info, "Attach detected at port {} protocol {:?}", port, port_info.protocol);
+                if port_info.protocol == Usb2 {
+                    xhci.port_state[port as usize] =
+                        PortState::Debounce { stable_since_ms: timer_lapic_uptime_ms() };
+                } else {
+                    // TODO: USB3 logic
+                }
+            } else {
+                kprintln!(Info, "Detach detected at port {}", port);
+                xhci.port_state[port as usize] = PortState::Idle;
+                // TODO: clean up device slot
+            }
         }
     }
 
@@ -764,7 +819,7 @@ impl XhciInterrupterState {
         let port_speed = portsc.ps_read();
 
         //now that we have a slot, we can initialize all the required data structures
-        let input_context_dma = dma_alloc_zeroed(size_of::<InputContext>(), 4096).
+        let input_context_dma = dma_alloc_zeroed(size_of::<InputContext>(), 4096). //TODO: remove, can cause deadlocks
             expect("Failed to dma alloc for input context!");
         let input_context = &mut *(input_context_dma.virt.as_mut_ptr::<InputContext>());
         let ic_control = input_context.control();
@@ -789,7 +844,7 @@ impl XhciInterrupterState {
         };
 
         // input slot context initialized, now the transfer ring
-        let alloc_transfer_ring = TrbRing::dma_alloc(TRANSFER_RING_TRBS);
+        let alloc_transfer_ring = TrbRing::dma_alloc(TRANSFER_RING_TRBS); //TODO: remove, can cause deadlocks
         if alloc_transfer_ring.is_none() {
             panic!("Failed to allocate transfer ring for device at port {} slot {}", port, slot_id);
         }
@@ -811,7 +866,7 @@ impl XhciInterrupterState {
         ep_0.set_error_count(3);
 
         // output device context
-        let device_context_dma = dma_alloc_zeroed(size_of::<DeviceContext>(), 4096).
+        let device_context_dma = dma_alloc_zeroed(size_of::<DeviceContext>(), 4096). //TODO: remove, can cause deadlocks
             expect("Failed to allocate dma for device context.");
         let device_context = &*device_context_dma.virt.as_mut_ptr::<DeviceContext>();
 
@@ -823,14 +878,11 @@ impl XhciInterrupterState {
         );
 
         kprintln!(Debug, "[SLOT {}] Succesfully allocated required data structures for device.", slot_id);
+
         let mut address_command_trb = AddressDeviceCommandTrb::new();
         address_command_trb.set_slot_id(slot_id);
         address_command_trb.set_input_context_pointer(input_context_dma.phys.as_u64());
         address_command_trb.set_bsr(false);
-
-        xhci.send_command(*address_command_trb.raw()).
-            expect("Failed to send address device command!");
-        xhci.ring_global_doorbell();
 
         let xhci_device = XHCIDevice::new(
             input_context_dma,
@@ -840,6 +892,10 @@ impl XhciInterrupterState {
         );
 
         xhci.devices.get_mut()[slot_id as usize] = Some(xhci_device);
+
+        xhci.send_command(*address_command_trb.raw()).
+            expect("Failed to send address device command!");
+        xhci.ring_global_doorbell();
     }
 
     unsafe fn handle_address_device_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb, command_context: CommandContext) {
@@ -999,6 +1055,14 @@ fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) 
     }
 }
 
+#[derive(Copy, Clone)]
+enum PortState {
+    Idle,
+    Debounce { stable_since_ms: u64 },
+    ResetInProgress { started_ms: u64, attempts: u8 },
+    Enabled,
+}
+
 pub struct XHCI {
     pub pci_device: PciDevice,
     operational_base: VirtAddr,
@@ -1023,7 +1087,9 @@ pub struct XHCI {
     supported_protocols: Vec<XhciPortInfo>,
     doorbell_offset: u32,
     shadow_ring: ShadowRing<COMMAND_RING_TRBS>,
-    devices: UnsafeCell<[Option<XHCIDevice>; 256]>
+    devices: UnsafeCell<[Option<XHCIDevice>; 256]>,
+    port_state: [PortState; 256],
+    max_ports: usize
 }
 
 impl XHCI {
@@ -1074,7 +1140,8 @@ impl XHCI {
         interrupt_config: XhciInterruptConfig,
         supported_protocols: Vec<XhciPortInfo>,
         doorbel_offset: u32,
-        shadow_ring: ShadowRing<COMMAND_RING_TRBS>
+        shadow_ring: ShadowRing<COMMAND_RING_TRBS>,
+        max_ports: usize
     ) -> Self {
         XHCI {
             pci_device,
@@ -1100,7 +1167,9 @@ impl XHCI {
             supported_protocols,
             doorbell_offset: doorbel_offset,
             shadow_ring,
-            devices: UnsafeCell::new([const { None }; 256])
+            devices: UnsafeCell::new([const { None }; 256]),
+            port_state: [PortState::Idle; 256],
+            max_ports
         }
     }
 
@@ -1146,6 +1215,74 @@ impl XHCI {
         self.primary_interrupter.set_controller(xhci);
         self.transfer_interrupter.set_controller(xhci);
     }
+}
+
+const USB2_DEBOUNCE_MS: u64 = 100;
+const PORT_RESET_TIMEOUT_MS: u64 = 500;
+const PORT_RESET_MAX_ATTEMPTS: u8 = 3;
+
+fn xhci_register_for_ticks(xhci: *mut XHCI) {
+    for slot in XHCI_TICK_LIST.iter() {
+        if slot.compare_exchange(null_mut(), xhci,
+                                 Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return;
+        }
+    }
+    panic!("Too many xHCI controllers");
+}
+
+pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
+    let now = timer_lapic_uptime_ms();
+
+    for port in 1..=xhci.max_ports {
+        let idx = port;
+        match xhci.port_state[idx] {
+            PortState::Debounce { stable_since_ms }
+            if now.wrapping_sub(stable_since_ms) >= USB2_DEBOUNCE_MS =>
+                {
+                    let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    if portsc.ccs_read() {
+                        portsc_issue_reset(xhci, port as u8);
+                        xhci.port_state[idx] =
+                            PortState::ResetInProgress { started_ms: now, attempts: 1 };
+                        kprintln!(Debug, "Issued Port Reset on port {}", port);
+                    } else {
+                        xhci.port_state[idx] = PortState::Idle;
+                    }
+                }
+
+            PortState::ResetInProgress { started_ms, attempts }
+            if now.wrapping_sub(started_ms) >= PORT_RESET_TIMEOUT_MS =>
+                {
+                    let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    if portsc.ccs_read() && attempts < PORT_RESET_MAX_ATTEMPTS {
+                        kprintln!(Warn, "Port {} reset timed out, retry {}", port, attempts + 1);
+                        portsc_issue_reset(xhci, port as u8);
+                        xhci.port_state[idx] =
+                            PortState::ResetInProgress { started_ms: now, attempts: attempts + 1 };
+                    } else {
+                        kprintln!(Warn, "Port {} reset timed out, PORTSC={:#010x} (PED={} PLS={:?} PRC={} CCS={})",
+                            port, portsc.raw(), portsc.ped_read(), portsc.pls_read(),
+                            portsc.prc_read(), portsc.ccs_read());
+                        xhci.port_state[idx] = PortState::Idle;
+                    }
+                }
+
+            _ => {}
+        }
+    }
+}
+
+unsafe fn portsc_ack_changes(xhci: &XHCI, port: u8, snapshot: PortStatusControl) {
+    PortStatusControl::ack_changes_of(snapshot)
+        .write_to_port(xhci.operational_base, port);
+}
+
+unsafe fn portsc_issue_reset(xhci: &XHCI, port: u8) {
+    let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+    let mut cmd = PortStatusControl::write_from_raw(portsc.raw());
+    cmd.pr_write();
+    cmd.write_to_port(xhci.operational_base, port);
 }
 
 fn alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
@@ -1365,13 +1502,15 @@ impl PciDeviceInitializer for XHCI {
                 interrupt_config,
                 supported_protocols,
                 doorbell_offset_bytes,
-                shadow_ring
+                shadow_ring,
+                max_ports
             );
 
             let xhci_controller = Box::leak(Box::new(xhci_struct));
             xhci_controller.bind_interrupters_to_controller();
             xhci_controller.register_interrupt_handlers()?;
 
+            xhci_register_for_ticks(xhci_controller);
             start_controller(operational_base)?;
         }
 

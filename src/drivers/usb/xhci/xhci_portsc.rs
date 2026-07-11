@@ -188,10 +188,15 @@ impl PortChange {
 pub struct PortStatusControl(u32);
 
 impl PortStatusControl {
+    /// Builds a write value that acknowledges exactly the change bits
+    /// that are set in `read`, without touching anything else.
+    pub const fn ack_changes_of(read: Self) -> Self {
+        Self((read.0 & STABLE_WRITE_MASK) | (read.0 & CHANGE_MASK))
+    }
     pub fn from_port(operational_base: VirtAddr, port: u8) -> Self {
         unsafe {
             let port_index = port.saturating_sub(1);
-            let addr = operational_base.add(0x400).add((port_index * 0x10) as u64);
+            let addr = operational_base.add(0x400).add(port_index as u64 * 0x10);
             Self(ptr::read_volatile(addr.as_ptr::<u32>()))
         }
     }
@@ -199,7 +204,7 @@ impl PortStatusControl {
     pub fn write_to_port(self, operational_base: VirtAddr, port: u8) {
         unsafe {
             let port_index = port.saturating_sub(1);
-            let addr = operational_base.add(0x400).add((port_index * 0x10) as u64);
+            let addr = operational_base.add(0x400).add(port_index as u64 * 0x10);
             ptr::write_volatile(addr.as_mut_ptr::<u32>(), self.0);
         }
     }

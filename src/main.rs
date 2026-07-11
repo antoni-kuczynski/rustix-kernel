@@ -19,7 +19,7 @@ use core::panic::PanicInfo;
 use crate::boot::cpuid::cpuid_init;
 use crate::boot::multiboot::{multiboot2_init};
 use crate::drivers::acpi::acpi_tables::acpi_init;
-use crate::drivers::apic::apic::apic_bsp_init;
+use crate::drivers::apic::apic::{apic_bsp_init, timer_lapic_sleep};
 use crate::drivers::pci::pci::pci_init;
 use crate::interrupts::gdt::gdt_init;
 use crate::interrupts::{idt_init, interrupts_enable};
@@ -133,6 +133,13 @@ fn emergency_panic(_info: &PanicInfo) {
 
 fn kernel_main_post_stack() -> ! {
     interrupts_enable();
+
+    // let mut ctr: u64 = 0;
+    // loop {
+    //     kprintln!("Waiting in main {}", ctr);
+    //     timer_lapic_sleep(100);
+    //     ctr += 1;
+    // }
 
     loop {
         x86_64::instructions::hlt();

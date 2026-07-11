@@ -11,6 +11,7 @@ extern endKernel
 %define P2V(a) (a + KERNEL_OFFSET)  ; physical to virtual
 ; ====================================================
 _start:
+    cli
     mov esp, V2P(stack_top)  ; set up the stack
 ;    mov ah, 0   ; error code
     mov esi, ebx    ; store the multiboot struct address in esi
