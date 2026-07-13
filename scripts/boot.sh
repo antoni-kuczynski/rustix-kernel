@@ -2,7 +2,6 @@
 set -euo pipefail
 # Uses old grub for booting - see prepare_old_grub for info
 
-UEFI_DIR="uefi"
 ISO_ROOT="target/uefi-iso-root"
 ISO_OUT="uefi.iso"
 EFI_IMG="${ISO_ROOT}/efi.img"
@@ -20,6 +19,14 @@ GDB_FLAGS=""
 USB_DISK=""
 BUILD_MODE="debug"
 CARGO_FLAGS=""
+PXE_MODE=0
+
+PXE_TARGET_SERVER="YOUR_HOSTNAME"
+PXE_TFTP_ROOT="/tftpboot/rustix"
+WOL_MACS=(
+  "00:11:22:33:44:55"
+  "AA:BB:CC:DD:EE:FF"
+)
 
 print_help() {
   echo "Usage: $0 [OPTIONS]"
@@ -33,9 +40,12 @@ print_help() {
   echo "  --release         Builds and runs in release mode (default is dev)."
   echo "  --usb /dev/sdX    Flashes the generated Hybrid ISO to the specified USB drive."
   echo "                    (Skips QEMU execution)."
+  echo "  --pxe             Deploys compiled kernel binary to TFTP server and sends"
+  echo "                    Wake-on-LAN packets. (Skips ISO generation and QEMU execution)."
   echo ""
-  echo "Note: No matter which options are specified, the built ISO will always"
+  echo "Note: Unless you're using --pxe option, the built ISO will always"
   echo "contain both BIOS and UEFI boot files (hybrid)."
+  echo "If --pxe option is used, no new ISO will be generated."
   echo ""
 }
 
@@ -66,6 +76,10 @@ while [[ $# -gt 0 ]]; do
       USB_DISK="$2"
       shift 2
       ;;
+    --pxe)
+          PXE_MODE=1
+          shift
+          ;;
     *)
       echo "Invalid argument '$1'"
       echo ""
@@ -84,7 +98,6 @@ fi
 
 echo "==> Compiling Assembly and Rust Code"
 mkdir -p boot/o
-mkdir -p "${UEFI_DIR}/boot/grub"
 
 nasm -felf64 ./boot/multiboot_header.asm -o boot/o/multiboot_header.o
 nasm -felf64 ./boot/entry.asm -o boot/o/entry.o
@@ -92,6 +105,29 @@ nasm -felf64 ./boot/entry_efi.asm -o boot/o/entry_efi.o
 
 rm -f "${KERNEL}" "target/x86_64-rustix/${BUILD_MODE}/deps/rustix-*"
 cargo build ${CARGO_FLAGS}
+
+
+# ======================================================================================================================
+#   PXE DEPLOYMENT
+# ======================================================================================================================
+if [[ "${PXE_MODE}" -eq 1 ]]; then
+  echo "==> PXE Deployment Mode enabled"
+
+  ssh "${PXE_TARGET_SERVER}" "mkdir -p ${PXE_TFTP_ROOT}"
+
+  echo "--> Copying kernel ${KERNEL} to TFTP server (${PXE_TARGET_SERVER}:${PXE_TFTP_ROOT}/rustix)..."
+  scp "${KERNEL}" "${PXE_TARGET_SERVER}:${PXE_TFTP_ROOT}/rustix"
+
+  echo "--> Waking up physical machines via Wake-on-LAN..."
+  for mac in "${WOL_MACS[@]}"; do
+    echo "    Waking $mac"
+    wol "$mac"
+  done
+
+  echo "==> PXE deployment completed successfully!"
+  exit 0 # skip qemu and iso generation altogether
+fi
+
 
 echo "==> Preparing ISO Directory"
 rm -rf "${ISO_ROOT}"
@@ -115,8 +151,6 @@ set gfxpayload=keep
 multiboot2 /boot/rustix
 boot
 EOF
-
-cp "${GRUB_CFG}" "${UEFI_DIR}/boot/grub/grub.cfg"
 
 "${GRUB_MKSTANDALONE}" \
   -O x86_64-efi \
@@ -218,6 +252,7 @@ xorriso \
   -eltorito-alt-boot \
   -e efi.img \
   -no-emul-boot \
+  -append_partition 2 0xef "${EFI_IMG}" \
   -isohybrid-gpt-basdat \
   -o "${ISO_OUT}" \
   "${ISO_ROOT}"
