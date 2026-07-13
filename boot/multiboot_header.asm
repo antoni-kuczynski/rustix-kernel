@@ -33,16 +33,16 @@ header_start:
     dd 0    ; depth: any
 
     ; entry address tag
-;    align 8
-;    dw 3    ; type 3
-;    dw 0    ; flags
-;    dd 12   ; size = 12
-;    dd _start
+    align 8
+    dw 3    ; type 3
+    dw 1    ; flags
+    dd 12   ; size = 12
+    dd _start
 
     ; efi amd64 entry address tag
     align 8
     dw 9    ; type 9
-    dw 0    ; flags
+    dw 1    ; flags
     dd 12   ; size = 12
     dd _start_efi_amd64
 
