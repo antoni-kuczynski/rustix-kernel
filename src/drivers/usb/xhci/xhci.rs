@@ -25,7 +25,7 @@ use crate::drivers::usb::xhci::xhci_endpoint_context::*;
 use crate::drivers::usb::xhci::xhci_ext_cap::{
     XhciPortInfo, XhciPortProtocol, parse_xhci_supported_protocols,
 };
-use crate::drivers::usb::xhci::xhci_portsc::PortStatusControl;
+use crate::drivers::usb::xhci::xhci_portsc::{PortLinkState, PortStatusControl};
 use crate::drivers::usb::xhci::xhci_slot_context::*;
 use crate::drivers::usb::xhci::xhci_trb::*;
 use crate::drivers::usb::xhci::*;
@@ -41,11 +41,12 @@ use core::ptr;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::instructions::port::Port;
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::usb::xhci::xhci_ext_cap::XhciPortProtocol::Usb2;
 use crate::drivers::usb::xhci::xhci_input_context::InputContext;
-use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::U0;
+use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::{U0, U3};
 use crate::drivers::usb::xhci::xhci_trb_ring::{CommandContext, CommandRing, EventRing, Ring, RingError, ShadowRing, TransferRing, TrbRing};
 use crate::kprintln;
 use crate::memory::dir_mapping::physical_to_virtual;
@@ -186,7 +187,7 @@ unsafe fn reset_controller(operational_base: VirtAddr) -> Result<(), PciDeviceIn
     )
 }
 
-unsafe fn start_controller(operational_base: VirtAddr) -> Result<(), PciDeviceInitError> {
+unsafe fn xhci_start_controller(operational_base: VirtAddr) -> Result<(), PciDeviceInitError> {
     let usbcmd = mmio_read::<u32>(operational_base, OP_REG_USBCMD as u64);
     mmio_write::<u32>(
         operational_base,
@@ -772,6 +773,11 @@ impl XhciInterrupterState {
         // ack.write_to_port(xhci.operational_base, port);
         kprintln!(Debug, "Cleared port status change event.");
 
+        if portsc.pls_read() == U3 {
+            xhci.resume_port(port, timer_lapic_uptime_ms());
+            return;
+        }
+
         if portsc.prc_read() == true {
             self.handle_port_reset(xhci, port);
         }
@@ -1055,12 +1061,19 @@ fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) 
     }
 }
 
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum ResumePhase {
+    Resume,
+    RExit,
+}
+
 #[derive(Copy, Clone)]
 enum PortState {
     Idle,
     Debounce { stable_since_ms: u64 },
     ResetInProgress { started_ms: u64, attempts: u8 },
     Enabled,
+    Resuming { started_ms: u64, phase: ResumePhase },
 }
 
 pub struct XHCI {
@@ -1168,7 +1181,7 @@ impl XHCI {
             doorbell_offset: doorbel_offset,
             shadow_ring,
             devices: UnsafeCell::new([const { None }; 256]),
-            port_state: [PortState::Idle; 256],
+            port_state: [PortState::Debounce { stable_since_ms: 0 }; 256],
             max_ports
         }
     }
@@ -1210,6 +1223,18 @@ impl XHCI {
         Ok(())
     }
 
+    unsafe fn resume_port(&mut self, port: u8, now: u64) {
+        let portsc = PortStatusControl::from_port(self.operational_base, port);
+        let mut w = PortStatusControl::write_from_raw(portsc.raw());
+        w.pls_write(PortLinkState::Resume);
+        w.write_to_port(self.operational_base, port);
+        kprintln!("Transitioning port {} to Resume state.", port);
+        self.port_state[port as usize] = PortState::Resuming {
+            started_ms: now,
+            phase: ResumePhase::Resume,
+        };
+    }
+
     fn bind_interrupters_to_controller(&mut self) {
         let xhci = self as *mut XHCI;
         self.primary_interrupter.set_controller(xhci);
@@ -1219,6 +1244,7 @@ impl XHCI {
 
 const USB2_DEBOUNCE_MS: u64 = 100;
 const PORT_RESET_TIMEOUT_MS: u64 = 500;
+const PORT_RESUME_TIMEOUT_MS: u64 = 20;
 const PORT_RESET_MAX_ATTEMPTS: u8 = 3;
 
 fn xhci_register_for_ticks(xhci: *mut XHCI) {
@@ -1241,13 +1267,13 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
             if now.wrapping_sub(stable_since_ms) >= USB2_DEBOUNCE_MS =>
                 {
                     let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
-                    if portsc.ccs_read() {
-                        portsc_issue_reset(xhci, port as u8);
-                        xhci.port_state[idx] =
-                            PortState::ResetInProgress { started_ms: now, attempts: 1 };
-                        kprintln!(Debug, "Issued Port Reset on port {}", port);
-                    } else {
+                    if !portsc.ccs_read() {
                         xhci.port_state[idx] = PortState::Idle;
+                    } else if portsc.pls_read() == U3 {
+                        xhci.resume_port(port as u8, now);
+                    } else {
+                        portsc_issue_reset(xhci, port as u8);
+                        xhci.port_state[idx] = PortState::ResetInProgress { started_ms: now, attempts: 1 };
                     }
                 }
 
@@ -1267,6 +1293,29 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
                         xhci.port_state[idx] = PortState::Idle;
                     }
                 }
+
+            PortState::Resuming { started_ms, phase } => match phase {
+                ResumePhase::Resume if now.wrapping_sub(started_ms) >= 20 => {
+                    let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    let mut w = PortStatusControl::write_from_raw(portsc.raw());
+                    w.pls_write(U0);
+                    w.write_to_port(xhci.operational_base, port as u8);
+                    kprintln!("Transitioning port {} to RExit state.", port);
+                    xhci.port_state[idx] = PortState::Resuming { started_ms: now, phase: ResumePhase::RExit };
+                }
+
+                ResumePhase::RExit => {
+                    let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    if portsc.pls_read() == U0 {
+                        portsc_issue_reset(xhci, port as u8);
+                        xhci.port_state[idx] = PortState::ResetInProgress { started_ms: now, attempts: 1 };
+                    } else if now.wrapping_sub(started_ms) >= PORT_RESUME_TIMEOUT_MS {
+                        kprintln!(Warn, "Port {} stuck leaving resume (PLS={:?})", port, portsc.pls_read());
+                        xhci.port_state[idx] = PortState::Idle;
+                    }
+                }
+                _ => {}
+            },
 
             _ => {}
         }
@@ -1289,6 +1338,17 @@ fn alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
     let alloc = dma_alloc_zeroed(size_of::<ERST>(), 64)?;
     let erst = unsafe { alloc.as_mut::<ERST>() };
     Some((alloc, erst))
+}
+
+fn xhci_init_port_states(xhci: &mut XHCI) {
+    for port in 0..xhci.max_ports as u8 {
+        let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+
+        match portsc.pls_read() {
+            U3 => unsafe { xhci.resume_port(port, timer_lapic_uptime_ms()) }
+            _ => {}
+        };
+    }
 }
 
 impl PciDeviceInitializer for XHCI {
@@ -1511,7 +1571,8 @@ impl PciDeviceInitializer for XHCI {
             xhci_controller.register_interrupt_handlers()?;
 
             xhci_register_for_ticks(xhci_controller);
-            start_controller(operational_base)?;
+            xhci_start_controller(operational_base)?;
+            // xhci_init_port_states(xhci_controller);
         }
 
         Ok(())
