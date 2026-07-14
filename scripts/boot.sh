@@ -2,6 +2,12 @@
 set -euo pipefail
 # Uses old grub for booting - see prepare_old_grub for info
 
+
+SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
+SCRIPTS_FOLDER="$(dirname "$SCRIPT_PATH")"
+cd "${SCRIPTS_FOLDER}/.." || exit 1
+
+
 ISO_ROOT="target/uefi-iso-root"
 ISO_OUT="uefi.iso"
 EFI_IMG="${ISO_ROOT}/efi.img"
@@ -13,6 +19,8 @@ OVMF_VARS="ovmf/OVMF_VARS.fd"
 GRUB_ROOT="${GRUB_ROOT:-target/grub-old/root}"
 GRUB_MKSTANDALONE="${GRUB_MKSTANDALONE:-${GRUB_ROOT}/usr/bin/grub-mkstandalone}"
 GRUB_MODULE_DIR="${GRUB_MODULE_DIR:-${GRUB_ROOT}/usr/lib/grub/x86_64-efi}"
+
+PYTHON_VENV_DIR="${SCRIPTS_FOLDER}/.venv/bin" # Used for tapo smart plug power :)
 
 MODE="uefi"
 GDB_FLAGS=""
@@ -42,6 +50,8 @@ print_help() {
   echo "                    (Skips QEMU execution)."
   echo "  --pxe             Deploys compiled kernel binary to TFTP server and sends"
   echo "                    Wake-on-LAN packets. (Skips ISO generation and QEMU execution)."
+  echo "                    This option also uses a tapo smart plug python script to turn"
+  echo "                    on and off the test subject computers..."
   echo ""
   echo "Note: Unless you're using --pxe option, the built ISO will always"
   echo "contain both BIOS and UEFI boot files (hybrid)."
@@ -110,6 +120,7 @@ cargo build ${CARGO_FLAGS}
 # ======================================================================================================================
 #   PXE DEPLOYMENT
 # ======================================================================================================================
+"${PYTHON_VENV_DIR}/python" "${SCRIPTS_FOLDER}/tapo_plug.py" "off" # Turn off the smart plug
 if [[ "${PXE_MODE}" -eq 1 ]]; then
   echo "==> PXE Deployment Mode enabled"
 
@@ -118,7 +129,18 @@ if [[ "${PXE_MODE}" -eq 1 ]]; then
   echo "--> Copying kernel ${KERNEL} to TFTP server (${PXE_TARGET_SERVER}:${PXE_TFTP_ROOT}/rustix)..."
   scp "${KERNEL}" "${PXE_TARGET_SERVER}:${PXE_TFTP_ROOT}/rustix"
 
+  sleep 3 # Wait until the smart plug turns off   
+  "${PYTHON_VENV_DIR}/python" "${SCRIPTS_FOLDER}/tapo_plug.py" "on" # Turn on the smart plug
+  sleep 5 # Wait for computers to get power from the plug
+
   echo "--> Waking up physical machines via Wake-on-LAN..."
+  for mac in "${WOL_MACS[@]}"; do
+    echo "    Waking $mac"
+    wol "$mac"
+  done
+
+  sleep 1
+  # Some of my machines require two WOL packets to be sent to work!
   for mac in "${WOL_MACS[@]}"; do
     echo "    Waking $mac"
     wol "$mac"
