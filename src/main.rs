@@ -19,7 +19,7 @@ use core::panic::PanicInfo;
 use crate::boot::cpuid::cpuid_init;
 use crate::boot::multiboot::{multiboot2_init};
 use crate::drivers::acpi::acpi_tables::acpi_init;
-use crate::drivers::apic::apic::{apic_bsp_init, timer_lapic_sleep};
+use crate::drivers::apic::apic::{apic_bsp_init};
 use crate::drivers::pci::pci::pci_init;
 use crate::interrupts::gdt::gdt_init;
 use crate::interrupts::{idt_init, interrupts_enable};
@@ -40,6 +40,34 @@ unsafe extern "C" {
     static earlyHeapStart: u64;
     static earlyHeapEnd: u64;
     static __oldMultibootPhysAddr: u32;
+}
+
+use core::arch::asm;
+
+fn print_call_stack() {
+    unsafe {
+        let mut rbp: u64;
+        asm!("mov {}, rbp", out(reg) rbp);
+
+        kprintln_panic!("----- Call Stack -----");
+        kprintln_panic!("rbp={:#011x}", rbp);
+
+        let mut depth = 0;
+
+        while rbp != 0 && depth < 31 {
+            if rbp % 8 != 0 {
+                kprintln_panic!("Stack is corrupted or end of frame! Rbp={:#011x}", rbp);
+                break;
+            }
+
+            let rip = *((rbp + 8) as *const usize);
+            kprintln_panic!("[{}] RIP: {:#018X}", depth, rip);
+
+            rbp = *(rbp as *const u64);
+            depth += 1;
+        }
+        kprintln_panic!("----------------------");
+    }
 }
 
 #[panic_handler]
@@ -66,6 +94,8 @@ fn panic(_info: &PanicInfo) -> ! {
         kprintln_panic!("Panicked at {}", location);
     }
     kprintln_panic!("With message: {}", _info.message());
+
+    print_call_stack();
     kprintln_panic!("===============================================");
     loop {
         x86_64::instructions::hlt();
@@ -132,14 +162,19 @@ fn emergency_panic(_info: &PanicInfo) {
 }
 
 fn kernel_main_post_stack() -> ! {
+    kheap_init();
+    double_buffering_init();
+    dma_init();
+    ioremap_init();
+
+    acpi_init();
+    apic_bsp_init();
+    pci_init();
+
+    prng_init();
+
     interrupts_enable();
 
-    // let mut ctr: u64 = 0;
-    // loop {
-    //     kprintln!("Waiting in main {}", ctr);
-    //     timer_lapic_sleep(100);
-    //     ctr += 1;
-    // }
 
     loop {
         x86_64::instructions::hlt();
@@ -160,16 +195,5 @@ pub extern "C" fn rust_main() -> ! {
 
     pmm_init();
     dir_mapping_init();
-    kheap_init();
-    double_buffering_init();
-    dma_init();
-    ioremap_init();
-
-    acpi_init();
-    apic_bsp_init();
-    pci_init();
-
-    prng_init();
-
     switch_to_secure_stack()
 }

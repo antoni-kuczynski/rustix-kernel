@@ -311,6 +311,7 @@ setupPageTablesLongMode:
             inc rcx
             cmp rdi, rbx
             jb .earlyHeapMapLoop
+        ret
         ; ===========================
     ; --------------------------------------------
     ret
@@ -409,7 +410,8 @@ earlyHeapEnd:
 __oldMultibootPhysAddr:
     RESD 1  ; 4 bytes
 ; ====================================================
-
+align 8
 stack_bottom:
-    RESB 16384   ; 16kb stack space
-stack_top: ; TODO: stack overflow protection
+    RESB 16 * 1024   ; 16kb stack space
+align 8
+stack_top:

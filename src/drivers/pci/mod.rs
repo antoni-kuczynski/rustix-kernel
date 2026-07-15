@@ -1,6 +1,3 @@
-use crate::drivers::pci::pci_device::PciDeviceInitError;
-use crate::drivers::pci::pci_device::PciDeviceInitError::DmaAllocationFailure;
-use crate::memory::dma::{DmaAlloc, dma_alloc_coherent};
 use core::ops::Add;
 use core::ptr;
 use x86_64::VirtAddr;
