@@ -8,5 +8,6 @@ rustflags = [
     "-C", "link-arg=boot/o/multiboot_header.o",
     "-C", "link-arg=boot/o/entry.o",
     "-C", "link-arg=boot/o/entry_efi.o",
-    "-C", "link-arg=-Tscripts/linker.ld"
+    "-C", "link-arg=-Tscripts/linker.ld",
+    "-C", "force-frame-pointers=yes"
 ]
