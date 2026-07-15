@@ -1,7 +1,10 @@
+cargo-features = ["profile-rustflags"]
+
 [package]
 name = "rustix"
 version = "0.1.0"
 edition = "2024"
+
 
 [dependencies]
 spin = "0.10.0"
@@ -13,7 +16,7 @@ features = ["spin_no_std"]
 
 [profile.dev]
 panic = "abort"
-opt-level = 1
+opt-level = 0
 debug = true
 
 [profile.release]
