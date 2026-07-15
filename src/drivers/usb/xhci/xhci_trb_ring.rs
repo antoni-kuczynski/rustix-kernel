@@ -1,3 +1,4 @@
+#![allow(unsafe_op_in_unsafe_fn)]
 /*
  * Created by Antoni Kuczyński
  * 07/07/2025
@@ -44,9 +45,13 @@ ring.
 
  */
 use core::mem;
+use core::ptr::write_volatile;
+use core::sync::atomic::{fence, Ordering};
 use x86_64::PhysAddr;
 use crate::drivers::usb::xhci::xhci_trb::Trb;
+use crate::drivers::usb::xhci::xhci_trb_ring::RingError::Unsupported;
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
+use crate::memory::page_tables::PageSize;
 
 #[derive(Debug)]
 pub struct TrbCreationError();
@@ -58,6 +63,7 @@ pub enum RingError {
     InvalidTrbOnEventRing,
     InvalidTrbOnCommandRing,
     InvalidTrbOnTransferRing,
+    Full
 }
 
 pub trait Ring {
@@ -126,7 +132,7 @@ impl TrbRing {
     }
 
     pub fn dma_alloc(len_in_trbs: usize) -> Option<(DmaAlloc, *mut [Trb])> {
-        let alloc = dma_alloc_zeroed(len_in_trbs * size_of::<Trb>(), 64)?;
+        let alloc = dma_alloc_zeroed(len_in_trbs * size_of::<Trb>(), PageSize::SIZE_4KB as usize)?;
         let trbs = unsafe { alloc.as_slice_mut::<Trb>(len_in_trbs) };
         Some((alloc, trbs))
     }
@@ -136,13 +142,41 @@ impl TrbRing {
         let link_index = len - 1;
 
         if self.enqueue_index == link_index {
+            let last_trb = (*self.trbs)[link_index];
+
+            //TODO: clean up
+            let correct_control_dword = last_trb.control() ^ 1;
+            let trb_ptr = &mut (*self.trbs)[link_index] as *mut Trb as *mut u32;
+            let dword3_ptr = trb_ptr.add(3);
+            write_volatile(dword3_ptr, correct_control_dword);
+
+            // write_volatile(self.trbs.add(link_index))
             (*self.trbs)[link_index].set_cycle(self.cycle_state);
             self.enqueue_index = 0;
             self.cycle_state = !self.cycle_state;
         }
 
-        trb.set_cycle(self.cycle_state);
-        core::ptr::write_volatile(&mut (*self.trbs)[self.enqueue_index], trb);
+        let mut next_index = self.enqueue_index + 1;
+        if next_index == link_index {
+            next_index = 0;
+        }
+
+        if next_index == self.dequeue_index {
+            return Err(RingError::Full);
+        }
+
+        trb.set_cycle(!self.cycle_state);
+        write_volatile(&mut (*self.trbs)[self.enqueue_index], trb);
+
+        //memory barrier
+        fence(Ordering::Release);
+
+        let correct_control_dword = trb.control() ^ 1;
+        let trb_ptr = &mut (*self.trbs)[self.enqueue_index] as *mut Trb as *mut u32;
+        let dword3_ptr = trb_ptr.add(3);
+        write_volatile(dword3_ptr, correct_control_dword);
+
+
         self.enqueue_index += 1;
 
         Ok(())
@@ -195,7 +229,7 @@ impl Ring for EventRing {
     }
 
     fn enqueue(&mut self, _: Trb) -> Result<(), RingError> {
-        Err(RingError::Unsupported)
+        Err(Unsupported)
     }
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
@@ -208,7 +242,7 @@ impl Ring for EventRing {
     }
 
     fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
-        Err(RingError::Unsupported)
+        Err(Unsupported)
     }
 
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
@@ -247,7 +281,7 @@ impl Ring for CommandRing {
     }
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
-        self.ring.dequeue()
+        Err(Unsupported)
     }
 
     fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
@@ -255,7 +289,7 @@ impl Ring for CommandRing {
     }
 
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
-        Err(RingError::Unsupported)
+        Err(Unsupported)
     }
 
     fn ring_mut(&mut self) -> &mut TrbRing {
@@ -297,7 +331,7 @@ impl Ring for TransferRing {
     }
 
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
-        Err(RingError::Unsupported)
+        Err(Unsupported)
     }
 
     fn ring_mut(&mut self) -> &mut TrbRing {

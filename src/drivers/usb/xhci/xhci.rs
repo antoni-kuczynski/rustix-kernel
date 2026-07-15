@@ -11,10 +11,10 @@
     https://cdrdv2.intel.com/v1/dl/getContent/868296 - XHCI Intel specification Rev 2.0
 ==============================================================
  */
-use crate::drivers::apic::apic::{LAPIC, timer_lapic_uptime_ms, timer_lapic_sleep};
+use crate::drivers::apic::apic::{LAPIC, timer_lapic_uptime_ms};
 use crate::drivers::pci::pci_bar::{BarType, PciBAR};
 use crate::drivers::pci::pci_device::PciDeviceInitError::{
-    InvalidBarType, XhciCommandRingInitFailure, XhciControllerNotReadyTimeout,
+    InvalidBarType, XhciControllerNotReadyTimeout,
     XhciControllerResetTimeout, XhciControllerStartTimeout, XhciControllerStopTimeout,
     InsufficientMsixVectors, XhciMsiCapabilityNotFound
 };
@@ -35,22 +35,21 @@ use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::mem::{align_of, size_of};
+use core::mem::{size_of};
 use core::ops::Add;
 use core::ptr;
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
-use x86_64::instructions::port::Port;
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::usb::xhci::xhci_ext_cap::XhciPortProtocol::Usb2;
 use crate::drivers::usb::xhci::xhci_input_context::InputContext;
 use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::{U0, U3};
 use crate::drivers::usb::xhci::xhci_trb_ring::{CommandContext, CommandRing, EventRing, Ring, RingError, ShadowRing, TransferRing, TrbRing};
-use crate::kprintln;
+use crate::{kprintln};
 use crate::memory::dir_mapping::physical_to_virtual;
-use crate::video::kprint::LogLevel::{Debug, Warn};
+use crate::memory::page_tables::PageSize;
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -658,66 +657,16 @@ impl XhciInterrupterState {
         }
     }
 
-    unsafe fn handle_device_attach(&self, xhci: &XHCI, port: u8) {
-        let Some(port_info) = xhci.port_info(port) else {
-            kprintln!(Debug, "Attach detected at port {} with unknown protocol", port);
-            return;
-        };
-
-        kprintln!(Info,
-            "Attach detected at port {} and protocol {:?}",
-            port,
-            port_info.protocol
-        );
-
-        let fresh_portsc = PortStatusControl::from_port(xhci.operational_base, port);
-
-        if port_info.protocol == Usb2 {
-
-            // timer_lapic_sleep(100); //TODO: replace with somthing not blocking irqs
-            let mut clean_cmd = PortStatusControl::write_from_raw(fresh_portsc.raw());
-
-            clean_cmd.change_all_write();
-            clean_cmd.pr_write();
-
-            // let safe_portsc_mask: u32 = !((1 << 1) | 0x00FE0000);
-            // let raw_read = clean_cmd.raw();
-            // let mut safe_write = raw_read & safe_portsc_mask;
-            // safe_write |= 1 << 21;
-
-            // let port_index = port.saturating_sub(1);
-            // let addr = xhci.operational_base.add(0x400).add(port_index as u64 * 0x10);
-            // ptr::write_volatile(addr.as_mut_ptr::<u32>(), safe_write);
-
-            clean_cmd.write_to_port(xhci.operational_base, port);
-            kprintln!(Debug, "Issued Port Reset on port {}", port);
-
-        } else if port_info.protocol == XhciPortProtocol::Usb3 {
-            //TODO: usb3 transition to enabled state
-        }
-    }
-
-    unsafe fn handle_device_detach(&self, xhci: &XHCI, port: u8, portsc: PortStatusControl) {
-        let Some(port_info) = xhci.port_info(port) else {
-            kprintln!(Info,"Detach detected at port {} with unknown protocol", port);
-            return;
-        };
-        // vgaprintln!(
-        //     "Detach detected at port {} and protocol {}",
-        //     port,
-        //     port_info.protocol
-        // );
-    }
-
     unsafe fn handle_port_reset(&self, xhci: &mut XHCI, port: u8) {
         let portsc = PortStatusControl::from_port(xhci.operational_base, port);
 
         if portsc.ped_read() && !portsc.pr_read() && portsc.pls_read() == U0 {
-            kprintln!(Debug, "Succesfully reset port {}", port); //TODO: usb3
+            kprintln!(Debug, "[PORT {}] Succesfully reset port.", port); //TODO: usb3
+            xhci.port_state[port as usize] = PortState::Enabled;
         } else {
             if let PortState::ResetInProgress { attempts, .. } = xhci.port_state[port as usize] {
                 if attempts < PORT_RESET_MAX_ATTEMPTS && portsc.ccs_read() {
-                    kprintln!(Warn, "Port {} reset incomplete, retry {}", port, attempts + 1);
+                    kprintln!(Warn, "[PORT {}] Port reset was incomplete, retry {}.", port, attempts + 1);
                     portsc_issue_reset(xhci, port);
                     xhci.port_state[port as usize] = PortState::ResetInProgress {
                         started_ms: timer_lapic_uptime_ms(),
@@ -726,7 +675,7 @@ impl XhciInterrupterState {
                     return;
                 }
             }
-            kprintln!(Warn, "Port {} reset timed out, PORTSC={:#010x} (PED={} PLS={:?} PRC={} CCS={})",
+            kprintln!(Warn, "[PORT {}] Port reset timed out, PORTSC={:#010x} (PED={} PLS={:?} PRC={} CCS={})",
                 port, portsc.raw(), portsc.ped_read(), portsc.pls_read(),
                 portsc.prc_read(), portsc.ccs_read());
             xhci.port_state[port as usize] = PortState::Idle;
@@ -735,6 +684,7 @@ impl XhciInterrupterState {
 
         //we did reset the slot, so now we're in enabled state
         //TODO: usb3 logic (but it's probably the same, prioritizing usb2 for keyboard support)
+        kprintln!(Debug, "[PORT {}] Sending enable slot command for port.", port);
 
         let index = xhci.command_ring.get_mut().enqueue_index();
         let slot_type = 0; //99,9999999999% cases its just zero
@@ -745,6 +695,16 @@ impl XhciInterrupterState {
             port_id: port,
         });
 
+        let slot = &(*xhci.command_ring.get_mut().trbs())[index] as *const Trb as *const u32;
+        kprintln!(Debug, "CMD TRB[{}] @phys {:#x}: {:#010x} {:#010x} {:#010x} {:#010x}",
+            index,
+            xhci.command_ring_dma.phys.as_u64() + index as u64 * 16,
+            ptr::read_volatile(slot), ptr::read_volatile(slot.add(1)),
+            ptr::read_volatile(slot.add(2)), ptr::read_volatile(slot.add(3)));
+
+        let crcr = mmio_read::<u64>(xhci.operational_base, OP_REG_CRCR as u64);
+        kprintln!(Debug, "CRCR: CRR={}", (crcr >> 3) & 1);
+
         xhci.ring_global_doorbell();
     }
 
@@ -752,56 +712,57 @@ impl XhciInterrupterState {
         let port = trb.port_id();
 
         if !xhci.is_valid_port(port) {
-            kprintln!(Info,"Ignoring port status change for invalid port {}", port);
+            kprintln!(Info,"[INVALID PORT {}] Ignoring port status change for this invalid port.", port);
             return;
         }
         let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+
+        kprintln!(Debug,
+            "[PORT {}] PSC event for port: PORTSC={:#010x} [CSC={} PEC={} PRC={} PLC={} WRC={} OCC={}] CCS={} PED={} PLS={:?} state={:?}",
+            port, portsc.raw(),
+            portsc.csc_read(), portsc.pec_read(), portsc.prc_read(),
+            portsc.plc_read(), portsc.wrc_read(), portsc.occ_read(),
+            portsc.ccs_read(), portsc.ped_read(), portsc.pls_read(),
+            xhci.port_state[port as usize]
+        );
+
         portsc_ack_changes(xhci, port, portsc);
 
-        // let mut ack = PortStatusControl::write_from_raw(portsc.raw());
-        // ack.change_all_write();
+        kprintln!(Debug, "[PORT {}] Cleared port status change event.", port);
 
-        // let safe_portsc_mask: u32 = !((1 << 1) | 0x00FE0000);
-        // let raw_read = portsc.raw();
-        // let mut safe_write = raw_read & safe_portsc_mask;
-        // safe_write |= 1 << 21;
-        //
-        // let port_index = port.saturating_sub(1);
-        // let addr = xhci.operational_base.add(0x400).add(port_index as u64 * 0x10);
-        // ptr::write_volatile(addr.as_mut_ptr::<u32>(), safe_write);
-
-        // ack.write_to_port(xhci.operational_base, port);
-        kprintln!(Debug, "Cleared port status change event.");
-
-        if portsc.pls_read() == U3 {
-            xhci.resume_port(port, timer_lapic_uptime_ms());
-            return;
-        }
-
-        if portsc.prc_read() == true {
-            self.handle_port_reset(xhci, port);
+        let idx = port as usize;
+        if portsc.prc_read() {
+            if matches!(xhci.port_state[idx], PortState::ResetInProgress { .. }) {
+                self.handle_port_reset(xhci, port);
+            } else {
+                kprintln!(Warn, "[PORT {}] Unexpected PRC in state {:?}.", port, xhci.port_state[idx]);
+            }
         }
 
         let csc = portsc.csc_read();
         let ccs = portsc.ccs_read();
 
         if portsc.csc_read() {
+            if matches!(xhci.port_state[idx], PortState::Enabled) {
+                kprintln!(Warn, "[PORT {}] Device on addressed port disconnected/bounced.", port);
+
+            }
             if portsc.ccs_read() {
-                let Some(port_info) = xhci.port_info(port) else {
-                    kprintln!(Debug, "Attach at port {} with unknown protocol", port);
-                    return;
-                };
-                kprintln!(Info, "Attach detected at port {} protocol {:?}", port, port_info.protocol);
-                if port_info.protocol == Usb2 {
-                    xhci.port_state[port as usize] =
-                        PortState::Debounce { stable_since_ms: timer_lapic_uptime_ms() };
+                xhci.port_state[idx] = PortState::Debounce { stable_since_ms: timer_lapic_uptime_ms() };
+
+                if let Some(port_info) = xhci.port_info(port) {
+                    kprintln!(Info,"[PORT {}] Attach detected with {} protocol.", port, port_info.protocol);
                 } else {
-                    // TODO: USB3 logic
+                    kprintln!(Info,"[PORT {}] Attach detected with unknown protocol.", port);
                 }
             } else {
-                kprintln!(Info, "Detach detected at port {}", port);
-                xhci.port_state[port as usize] = PortState::Idle;
-                // TODO: clean up device slot
+                if let Some(port_info) = xhci.port_info(port) {
+                    kprintln!(Info,"[PORT {}] Detach detected with {} protocol.", port, port_info.protocol);
+                } else {
+                    kprintln!(Info,"[PORT {}] Detach detected with unknown protocol.", port);
+                }
+
+                xhci.port_state[idx] = PortState::Idle;
             }
         }
     }
@@ -810,17 +771,18 @@ impl XhciInterrupterState {
         let slot_id = trb.slot_id();
         let port = match command_context {
             CommandContext::EnableSlot { port_id } => { port_id },
-            _ => { panic!("Invalid command context type! Expected enable slot, found {:?}.", command_context) }
+            _ => { panic!("[SLOT {}] Invalid command context type! Expected enable slot, found {:?}.", slot_id, command_context) }
         };
 
         if trb.completion_code() == TrbCompletionCode::SUCCESS && slot_id != 0 {
-            kprintln!(Info, "[SLOT {}] Successfully assigned slot for port {}.", trb.slot_id(), port);
+            kprintln!(Info, "[SLOT {}][PORT {}] Successfully assigned slot {}.", trb.slot_id(), port, trb.slot_id());
         } else {
             //TODO: handle these so that the slot allocation doesnt go to waste
-            kprintln!(Warn, "Handling enable slot command resulted in non successful exit code {}", trb.completion_code());
+            kprintln!(Warn, "[SLOT {}][PORT {}] Handling enable slot command resulted in non successful exit code {}.", slot_id, port, trb.completion_code());
             return;
         }
 
+        kprintln!(Debug, "[SLOT {}][PORT {}] Began allocating data structures for device.", slot_id, port);
         let portsc = PortStatusControl::from_port(xhci.operational_base, port);
         let port_speed = portsc.ps_read();
 
@@ -852,7 +814,7 @@ impl XhciInterrupterState {
         // input slot context initialized, now the transfer ring
         let alloc_transfer_ring = TrbRing::dma_alloc(TRANSFER_RING_TRBS); //TODO: remove, can cause deadlocks
         if alloc_transfer_ring.is_none() {
-            panic!("Failed to allocate transfer ring for device at port {} slot {}", port, slot_id);
+            panic!("[SLOT {}][PORT {}] Failed to allocate transfer ring for device.", slot_id, port);
         }
 
         let (transfer_ring_dma, transfer_trbs) = alloc_transfer_ring.unwrap();
@@ -883,7 +845,7 @@ impl XhciInterrupterState {
             CommandContext::AddressDevice { slot_id }
         );
 
-        kprintln!(Debug, "[SLOT {}] Succesfully allocated required data structures for device.", slot_id);
+        kprintln!(Debug, "[SLOT {}][PORT {}] Succesfully allocated required data structures for device.", slot_id, port);
 
         let mut address_command_trb = AddressDeviceCommandTrb::new();
         address_command_trb.set_slot_id(slot_id);
@@ -913,7 +875,7 @@ impl XhciInterrupterState {
         };
 
         if slot_id == 0 {
-            panic!("Invalid slot id inside command context!");
+            panic!("[SLOT 0] 0 is not a valid slot ID inside command context!");
         }
 
         if trb.completion_code() == TrbCompletionCode::CONTEXT_STATE_ERROR {
@@ -926,7 +888,7 @@ impl XhciInterrupterState {
             kprintln!(Error, "[SLOT {}] Was not enabled by enable slot command.", trb.slot_id());
             return;
         } else if trb.completion_code() != TrbCompletionCode::SUCCESS {
-            kprintln!(Error, "Address Device Command FAILED with code: {:?}", trb.completion_code());
+            kprintln!(Error, "[SLOT {}] Address Device Command FAILED with code: {:?}", slot_id, trb.completion_code());
             return;
         }
 
@@ -981,7 +943,6 @@ impl XhciInterrupterState {
         }
 
         kprintln!(Info, "[SLOT {}] Successfully handled address device command.", trb.slot_id());
-
     }
 
     unsafe fn handle_command_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb) {
@@ -989,6 +950,11 @@ impl XhciInterrupterState {
         let virt = physical_to_virtual(command_trb_pointer);
         let command_trb = &*(virt.as_u64() as *const Trb);
         let context = xhci.shadow_ring.take_context_by_phys_addr(command_trb_pointer);
+
+        kprintln!(Debug,
+            "[SLOT {}] Command completion event for port: [COMMAND_TYPE={}, COMPLETION_CODE={}]",
+            trb.slot_id(), command_trb.trb_type(), trb.completion_code()
+        );
 
         if !command_trb.is_command_trb() {
             panic!("Invalid trb type on command ring! This is probably caused by reading some garbage data.");
@@ -1018,7 +984,11 @@ impl XhciInterrupterState {
             XhciInterrupterKind::Transfer => unsafe { &mut *xhci.event_ring_secondary.get() },
         };
 
-        debug_print_usb3_portsc(xhci.operational_base, &xhci.supported_protocols);
+        let usbcmd = ptr::read_volatile(xhci.operational_base.as_ptr::<u32>());          // offset 0x00
+        let usbsts = ptr::read_volatile(xhci.operational_base.add(0x04).as_ptr::<u32>());
+        kprintln!(Debug, "USBCMD={:#x} (R/S={}) USBSTS={:#x} (HCH={} HSE={} CNR={})",
+            usbcmd, usbcmd & 1,
+            usbsts, usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 11) & 1);
 
         while let Ok(trb) = event_ring.dequeue() {
             let trb_type = trb.trb_type();
@@ -1061,13 +1031,13 @@ fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) 
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum ResumePhase {
     Resume,
     RExit,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 enum PortState {
     Idle,
     Debounce { stable_since_ms: u64 },
@@ -1102,7 +1072,9 @@ pub struct XHCI {
     shadow_ring: ShadowRing<COMMAND_RING_TRBS>,
     devices: UnsafeCell<[Option<XHCIDevice>; 256]>,
     port_state: [PortState; 256],
-    max_ports: usize
+    max_ports: usize,
+    scratchpad_array_dma: Option<DmaAlloc>,
+    scratchpad_entry_dma: Option<Vec<DmaAlloc>>
 }
 
 impl XHCI {
@@ -1154,7 +1126,9 @@ impl XHCI {
         supported_protocols: Vec<XhciPortInfo>,
         doorbel_offset: u32,
         shadow_ring: ShadowRing<COMMAND_RING_TRBS>,
-        max_ports: usize
+        max_ports: usize,
+        scratchpad_array_dma: Option<DmaAlloc>,
+        scratchpad_entry_dma: Option<Vec<DmaAlloc>>
     ) -> Self {
         XHCI {
             pci_device,
@@ -1182,7 +1156,9 @@ impl XHCI {
             shadow_ring,
             devices: UnsafeCell::new([const { None }; 256]),
             port_state: [PortState::Debounce { stable_since_ms: 0 }; 256],
-            max_ports
+            max_ports,
+            scratchpad_array_dma,
+            scratchpad_entry_dma
         }
     }
 
@@ -1260,13 +1236,45 @@ fn xhci_register_for_ticks(xhci: *mut XHCI) {
 pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
     let now = timer_lapic_uptime_ms();
 
+    // let usbcmd = ptr::read_volatile(xhci.operational_base.as_ptr::<u32>());          // offset 0x00
+    // let usbsts = ptr::read_volatile(xhci.operational_base.add(0x04).as_ptr::<u32>());
+
+    // let hch = usbsts & 1;
+    // let hse = (usbsts >> 2) & 1;
+    // let cnr = (usbsts >> 11) & 1;
+    //
+    // if hch == 1 || hse == 1 || cnr == 1 {
+    //     panic!("XHCI critical error! All these USBSTS flags should be 0!\nUSBCMD={:#x} (R/S={}) USBSTS={:#x} (HCH={} HSE={} CNR={})",
+    //             usbcmd, usbcmd & 1,
+    //             usbsts, usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 11) & 1);
+    // }
+
+    // let crcr = mmio_read::<u64>(xhci.operational_base, OP_REG_CRCR as u64);
+    // let crr = (crcr >> 3) & 1;
+    // if crr != 1 && (hch == 1 || hse == 1 || cnr == 1) {
+    //     panic!("CRCR: CRR={} is not 1!", crr);
+    // }
+
+
     for port in 1..=xhci.max_ports {
         let idx = port;
+        // kprint!("Port {} is in state {:?}, ", port, xhci.port_state[idx]);
         match xhci.port_state[idx] {
+            PortState::Idle  => {
+                let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                // kprint!("pls={:?}\n", portsc.pls_read());
+            },
+
+            PortState::Enabled  => {
+                let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                // kprint!("pls={:?}\n", portsc.pls_read());
+            },
+
             PortState::Debounce { stable_since_ms }
             if now.wrapping_sub(stable_since_ms) >= USB2_DEBOUNCE_MS =>
                 {
                     let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    // kprint!("pls={:?}\n", portsc.pls_read());
                     if !portsc.ccs_read() {
                         xhci.port_state[idx] = PortState::Idle;
                     } else if portsc.pls_read() == U3 {
@@ -1281,6 +1289,7 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
             if now.wrapping_sub(started_ms) >= PORT_RESET_TIMEOUT_MS =>
                 {
                     let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    // kprint!("pls={:?}\n", portsc.pls_read());
                     if portsc.ccs_read() && attempts < PORT_RESET_MAX_ATTEMPTS {
                         kprintln!(Warn, "Port {} reset timed out, retry {}", port, attempts + 1);
                         portsc_issue_reset(xhci, port as u8);
@@ -1298,6 +1307,7 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
                 ResumePhase::Resume if now.wrapping_sub(started_ms) >= 20 => {
                     let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
                     let mut w = PortStatusControl::write_from_raw(portsc.raw());
+                    // kprint!("pls={:?}\n", w.pls_read());
                     w.pls_write(U0);
                     w.write_to_port(xhci.operational_base, port as u8);
                     kprintln!("Transitioning port {} to RExit state.", port);
@@ -1306,6 +1316,7 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
 
                 ResumePhase::RExit => {
                     let portsc = PortStatusControl::from_port(xhci.operational_base, port as u8);
+                    // kprint!("pls={:?}\n", portsc.pls_read());
                     if portsc.pls_read() == U0 {
                         portsc_issue_reset(xhci, port as u8);
                         xhci.port_state[idx] = PortState::ResetInProgress { started_ms: now, attempts: 1 };
@@ -1316,8 +1327,9 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
                 }
                 _ => {}
             },
-
-            _ => {}
+            PortState::Debounce { .. } | PortState::ResetInProgress { .. } => {
+                kprintln!("");
+            }
         }
     }
 }
@@ -1335,19 +1347,27 @@ unsafe fn portsc_issue_reset(xhci: &XHCI, port: u8) {
 }
 
 fn alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
-    let alloc = dma_alloc_zeroed(size_of::<ERST>(), 64)?;
+    let alloc = dma_alloc_zeroed(size_of::<ERST>(), PageSize::SIZE_4KB as usize)?;
     let erst = unsafe { alloc.as_mut::<ERST>() };
     Some((alloc, erst))
 }
 
 fn xhci_init_port_states(xhci: &mut XHCI) {
-    for port in 0..xhci.max_ports as u8 {
+    let now = timer_lapic_uptime_ms();
+    for port in 1..=xhci.max_ports as u8 {
         let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+        if !portsc.ccs_read() {
+            continue;
+        }
+        let Some(port_info) = xhci.port_info(port) else { continue };
+        if port_info.protocol == Usb2 {
+            kprintln!(Info, "Startup: device already present on port {} (PLS={:?})",
+                port, portsc.pls_read());
 
-        match portsc.pls_read() {
-            U3 => unsafe { xhci.resume_port(port, timer_lapic_uptime_ms()) }
-            _ => {}
-        };
+            xhci.port_state[port as usize] = PortState::Debounce { stable_since_ms: now };
+        } else {
+            // TODO: USB3
+        }
     }
 }
 
@@ -1399,8 +1419,9 @@ impl PciDeviceInitializer for XHCI {
                 CONTEXT_SIZE_32_BYTES
             };
 
-            let dcbaa_dma = dma_alloc_zeroed(size_of::<Dcbaa>(), align_of::<Dcbaa>())
+            let dcbaa_dma = dma_alloc_zeroed(size_of::<Dcbaa>(), PageSize::SIZE_4KB as usize)
                 .expect("Failed to allocate dma for dcbaa.");
+            kprintln!(Debug, "Allocated DMA for dcbaa at phys{:#011x}; virt: {:#011x} with align {}", dcbaa_dma.phys, dcbaa_dma.virt, dcbaa_dma.layout.align());
             let dcbaa = dcbaa_dma.as_mut::<Dcbaa>();
             mmio_write::<u64>(
                 operational_base,
@@ -1408,8 +1429,37 @@ impl PciDeviceInitializer for XHCI {
                 dcbaa_dma.phys.as_u64(),
             );
 
+            let hcsparams2 = ptr::read_volatile(cap_base.add(0x08).as_ptr::<u32>());
+            let hi = (hcsparams2 >> 21) & 0x1F;
+            let lo = (hcsparams2 >> 27) & 0x1F;
+            let count = ((hi << 5) | lo) as usize;
+            kprintln!(Debug, "Scratchpad buffers required: {}", count);
+
+            let mut scratchpad_array_dma: Option<DmaAlloc> = None;
+            let mut scratchpad_entries_dma: Option<Vec<DmaAlloc>> = None;
+
+            if count > 0 {
+                let array = dma_alloc_zeroed(count * 8, 4096).expect("scratchpad array");
+                let entries = array.virt.as_mut_ptr::<u64>();
+                scratchpad_entries_dma = Some(Vec::with_capacity(count));
+                for i in 0..count {
+                    let buf = dma_alloc_zeroed(4096, 4096).expect("scratchpad buffer");
+                    ptr::write_volatile(entries.add(i), buf.phys.as_u64());
+                    scratchpad_entries_dma.as_mut().unwrap().push(buf);
+                }
+                dcbaa.set_context(0, array.phys.as_u64()); // DCBAA[0] = scratchpad array
+                scratchpad_array_dma = Some(array);
+            }
+
+
             let (command_ring_alloc, command_ring_primary) = TrbRing::dma_alloc(COMMAND_RING_TRBS).
                 expect("Failed to allocate DMA for command ring.");
+
+            kprintln!(Debug, "Allocated DMA for command ring at phys{:#011x}; virt: {:#011x} with align {}",
+                command_ring_alloc.phys,
+                command_ring_alloc.virt,
+                command_ring_alloc.layout.align()
+            );
 
             let command_ring = CommandRing::new(command_ring_primary, command_ring_alloc.phys);
             mmio_write::<u64>(
@@ -1448,11 +1498,35 @@ impl PciDeviceInitializer for XHCI {
                 TrbRing::dma_alloc(EVENT_RING_TRBS).
                     expect("Failed to allocate dma for event ring (secondary).");
 
+            kprintln!(Debug, "Allocated DMA for event ring 1 at phys{:#011x}; virt: {:#011x} with align {}",
+                event_ring_primary_dma.phys,
+                event_ring_primary_dma.virt,
+                event_ring_primary_dma.layout.align()
+            );
+
+            kprintln!(Debug, "Allocated DMA for event ring 1 at phys{:#011x}; virt: {:#011x} with align {}",
+                event_ring_secondary_dma.phys,
+                event_ring_secondary_dma.virt,
+                event_ring_secondary_dma.layout.align()
+            );
+
             //allocate and initialize erst's
             let (erst_primary_dma, erst_primary) = alloc_dma_erst().
                 expect("Failed to allocate dma for erst (primary).");
             let (erst_secondary_dma, erst_secondary) = alloc_dma_erst().
                 expect("Failed to allocate dma for erst (secondary).");
+
+            kprintln!(Debug, "Allocated DMA for erst 1 at phys{:#011x}; virt: {:#011x} with align {}",
+                erst_primary_dma.phys,
+                erst_primary_dma.virt,
+                erst_primary_dma.layout.align()
+            );
+
+            kprintln!(Debug, "Allocated DMA for erst 2 at phys{:#011x}; virt: {:#011x} with align {}",
+                erst_secondary_dma.phys,
+                erst_secondary_dma.virt,
+                erst_secondary_dma.layout.align()
+            );
 
             *erst_primary = ERST::new(event_ring_primary_dma.phys.as_u64(), EVENT_RING_TRBS as u32);
             *erst_secondary = ERST::new(
@@ -1563,7 +1637,9 @@ impl PciDeviceInitializer for XHCI {
                 supported_protocols,
                 doorbell_offset_bytes,
                 shadow_ring,
-                max_ports
+                max_ports,
+                scratchpad_array_dma,
+                scratchpad_entries_dma
             );
 
             let xhci_controller = Box::leak(Box::new(xhci_struct));
@@ -1572,7 +1648,13 @@ impl PciDeviceInitializer for XHCI {
 
             xhci_register_for_ticks(xhci_controller);
             xhci_start_controller(operational_base)?;
-            // xhci_init_port_states(xhci_controller);
+            xhci_init_port_states(xhci_controller);
+
+            let usbcmd = ptr::read_volatile(xhci_controller.operational_base.as_ptr::<u32>());          // offset 0x00
+            let usbsts = ptr::read_volatile(xhci_controller.operational_base.add(0x04).as_ptr::<u32>());
+            kprintln!(Debug, "USBCMD={:#x} (R/S={}) USBSTS={:#x} (HCH={} HSE={} CNR={})",
+                usbcmd, usbcmd & 1,
+                usbsts, usbsts & 1, (usbsts >> 2) & 1, (usbsts >> 11) & 1);
         }
 
         Ok(())

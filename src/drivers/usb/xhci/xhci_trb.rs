@@ -90,6 +90,7 @@ impl Trb {
     pub const TRB_SET_DEQUEUE_PTR: u8 = 16;
     pub const TRB_RESET_DEVICE: u8 = 17;
     pub const TRB_FORCE_EVENT: u8 = 18;
+
     pub const TRB_NEGOTIATE_BW: u8 = 19;
     pub const TRB_SET_LTV: u8 = 20;
     pub const TRB_GET_PORT_BW: u8 = 21;
@@ -178,6 +179,55 @@ impl Trb {
         } else {
             self.control &= !Self::CHAIN_BIT;
         }
+    }
+
+    // ====== COMMON FLAGS & FIELDS ======
+    pub fn ent(&self) -> bool {
+        (self.control & (1 << 1)) != 0
+    }
+
+    pub fn set_ent(&mut self, ent: bool) {
+        if ent {
+            self.control |= 1 << 1;
+        } else {
+            self.control &= !(1 << 1);
+        }
+    }
+
+    pub fn ioc(&self) -> bool {
+        (self.control & (1 << 5)) != 0
+    }
+
+    pub fn set_ioc(&mut self, ioc: bool) {
+        if ioc {
+            self.control |= 1 << 5;
+        } else {
+            self.control &= !(1 << 5);
+        }
+    }
+
+    pub fn direction(&self) -> u8 {
+        ((self.control >> 16) & 0x1) as u8
+    }
+
+    pub fn set_direction(&mut self, direction: u8) {
+        self.control = (self.control & !(1 << 16)) | (((direction as u32) & 0x1) << 16);
+    }
+
+    pub fn interrupter_target(&self) -> u16 {
+        ((self.status >> 22) & 0x3FF) as u16
+    }
+
+    pub fn set_interrupter_target(&mut self, target: u16) {
+        self.status = (self.status & !(0x3FF << 22)) | (((target as u32) & 0x3FF) << 22);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.control >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_slot_id(&mut self, slot_id: u8) {
+        self.control = (self.control & !(0xFF << 24)) | ((slot_id as u32) << 24);
     }
 
     // ====== TRB TYPE ======
@@ -388,8 +438,6 @@ impl CommandCompletionEventTrb {
     const COMP_CODE_MASK: u32 = 0xFF << Self::COMP_CODE_SHIFT;
     const VF_ID_SHIFT: u32 = 16;
     const VF_ID_MASK: u32 = 0xFF << Self::VF_ID_SHIFT;
-    const SLOT_ID_SHIFT: u32 = 24;
-    const SLOT_ID_MASK: u32 = 0xFF << Self::SLOT_ID_SHIFT;
 
     pub fn new(raw: Trb) -> Result<Self, TrbParseError> {
         let actual = raw.trb_type();
@@ -420,11 +468,11 @@ impl CommandCompletionEventTrb {
     }
 
     pub fn slot_id(&self) -> u8 {
-        ((self.raw.control() & Self::SLOT_ID_MASK) >> Self::SLOT_ID_SHIFT) as u8
+        self.raw.slot_id()
     }
 
     pub fn cycle(&self) -> bool {
-        (self.raw.control() & 1) != 0
+        self.raw.cycle()
     }
 }
 
@@ -446,15 +494,11 @@ pub struct AddressDeviceCommandTrb {
 impl AddressDeviceCommandTrb {
     const BSR_SHIFT: u32 = 9;
     const BSR_MASK: u32 = 1 << Self::BSR_SHIFT;
-    const TRB_TYPE_SHIFT: u32 = 10;
-    const TRB_TYPE_MASK: u32 = 0x3F << Self::TRB_TYPE_SHIFT;
-    const SLOT_ID_SHIFT: u32 = 24;
-    const SLOT_ID_MASK: u32 = 0xFF << Self::SLOT_ID_SHIFT;
 
     pub fn new() -> Self {
-        let mut trb = Self { raw: Trb::new() };
-        trb.set_trb_type(11);
-        trb
+        let mut raw = Trb::new();
+        raw.set_trb_type(11);
+        Self { raw }
     }
 
     pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
@@ -492,35 +536,19 @@ impl AddressDeviceCommandTrb {
     }
 
     pub fn slot_id(&self) -> u8 {
-        ((self.raw.control() & Self::SLOT_ID_MASK) >> Self::SLOT_ID_SHIFT) as u8
+        self.raw.slot_id()
     }
 
     pub fn set_slot_id(&mut self, slot_id: u8) {
-        let mut control = self.raw.control();
-        control &= !Self::SLOT_ID_MASK;
-        control |= (slot_id as u32) << Self::SLOT_ID_SHIFT;
-        self.raw.set_control(control);
+        self.raw.set_slot_id(slot_id);
     }
 
     pub fn cycle(&self) -> bool {
-        (self.raw.control() & 1) != 0
+        self.raw.cycle()
     }
 
     pub fn set_cycle(&mut self, cycle: bool) {
-        let mut control = self.raw.control();
-        if cycle {
-            control |= 1;
-        } else {
-            control &= !1;
-        }
-        self.raw.set_control(control);
-    }
-
-    fn set_trb_type(&mut self, trb_type: u8) {
-        let mut control = self.raw.control();
-        control &= !Self::TRB_TYPE_MASK;
-        control |= (trb_type as u32) << Self::TRB_TYPE_SHIFT;
-        self.raw.set_control(control);
+        self.raw.set_cycle(cycle);
     }
 }
 
@@ -529,5 +557,300 @@ impl TrbTrait for AddressDeviceCommandTrb {
 
     fn raw(&self) -> &Trb {
         &self.raw
+    }
+}
+
+
+pub struct TransferEventTrb {
+    trb: Trb,
+}
+
+impl TransferEventTrb {
+    pub fn new() -> Self {
+        let mut trb = Trb::new();
+        trb.set_trb_type(Trb::TRB_TRANSFER_EVENT);
+        Self { trb }
+    }
+
+    pub fn from_trb(trb: Trb) -> Self {
+        Self { trb }
+    }
+
+    pub fn raw(&self) -> &Trb {
+        &self.trb
+    }
+
+    pub fn set_trb_pointer(&mut self, pointer: u64) {
+        self.trb.set_parameter(pointer);
+    }
+
+    pub fn trb_pointer(&self) -> u64 {
+        self.trb.parameter()
+    }
+
+    pub fn set_transfer_length(&mut self, length: u32) {
+        let mut status = self.trb.status();
+        status &= !0xFFFFFF;
+        status |= length & 0xFFFFFF;
+        self.trb.set_status(status);
+    }
+
+    pub fn transfer_length(&self) -> u32 {
+        self.trb.status() & 0xFFFFFF
+    }
+
+    pub fn set_completion_code(&mut self, code: u8) {
+        let mut status = self.trb.status();
+        status &= !(0xFF << 24);
+        status |= (code as u32) << 24;
+        self.trb.set_status(status);
+    }
+
+    pub fn completion_code(&self) -> u8 {
+        ((self.trb.status() >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.trb.set_cycle(cycle);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.trb.cycle()
+    }
+
+    pub fn set_ed(&mut self, ed: bool) {
+        let mut control = self.trb.control();
+        if ed {
+            control |= 1 << 2;
+        } else {
+            control &= !(1 << 2);
+        }
+        self.trb.set_control(control);
+    }
+
+    pub fn ed(&self) -> bool {
+        (self.trb.control() & (1 << 2)) != 0
+    }
+
+    pub fn set_endpoint_id(&mut self, ep_id: u8) {
+        let mut control = self.trb.control();
+        control &= !(0x1F << 16);
+        control |= ((ep_id as u32) & 0x1F) << 16;
+        self.trb.set_control(control);
+    }
+
+    pub fn endpoint_id(&self) -> u8 {
+        ((self.trb.control() >> 16) & 0x1F) as u8
+    }
+
+    pub fn set_slot_id(&mut self, slot_id: u8) {
+        self.trb.set_slot_id(slot_id);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        self.trb.slot_id()
+    }
+}
+
+
+
+
+pub struct StatusStageTrb {
+    trb: Trb,
+}
+
+impl StatusStageTrb {
+    pub fn new() -> Self {
+        let mut trb = Trb::new();
+        trb.set_trb_type(Trb::TRB_STATUS_STAGE);
+        Self { trb }
+    }
+
+    pub fn raw(&self) -> &Trb {
+        &self.trb
+    }
+
+    pub fn set_interrupter_target(&mut self, target: u16) {
+        self.trb.set_interrupter_target(target);
+    }
+
+    pub fn interrupter_target(&self) -> u16 {
+        self.trb.interrupter_target()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.trb.set_cycle(cycle);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.trb.cycle()
+    }
+
+    pub fn set_ent(&mut self, ent: bool) {
+        self.trb.set_ent(ent);
+    }
+
+    pub fn ent(&self) -> bool {
+        self.trb.ent()
+    }
+
+    pub fn set_chain(&mut self, chain: bool) {
+        self.trb.set_chain(chain);
+    }
+
+    pub fn chain(&self) -> bool {
+        self.trb.chain()
+    }
+
+    pub fn set_ioc(&mut self, ioc: bool) {
+        self.trb.set_ioc(ioc);
+    }
+
+    pub fn ioc(&self) -> bool {
+        self.trb.ioc()
+    }
+
+    pub fn set_direction(&mut self, direction: u8) {
+        self.trb.set_direction(direction);
+    }
+
+    pub fn direction(&self) -> u8 {
+        self.trb.direction()
+    }
+}
+
+
+
+
+pub struct DataStageTrb {
+    trb: Trb,
+}
+
+impl DataStageTrb {
+    pub fn new() -> Self {
+        let mut trb = Trb::new();
+        trb.set_trb_type(Trb::TRB_DATA_STAGE);
+        Self { trb }
+    }
+
+    pub fn raw(&self) -> &Trb {
+        &self.trb
+    }
+
+    pub fn set_data_buffer(&mut self, buffer_ptr: u64) {
+        self.trb.set_parameter(buffer_ptr);
+    }
+
+    pub fn data_buffer(&self) -> u64 {
+        self.trb.parameter()
+    }
+
+    pub fn set_transfer_length(&mut self, length: u32) {
+        self.trb.set_length(length);
+    }
+
+    pub fn transfer_length(&self) -> u32 {
+        self.trb.length()
+    }
+
+    pub fn set_td_size(&mut self, size: u8) {
+        let mut status = self.trb.status();
+        status &= !(0x1F << 17);
+        status |= ((size as u32) & 0x1F) << 17;
+        self.trb.set_status(status);
+    }
+
+    pub fn td_size(&self) -> u8 {
+        ((self.trb.status() >> 17) & 0x1F) as u8
+    }
+
+    pub fn set_interrupter_target(&mut self, target: u16) {
+        self.trb.set_interrupter_target(target);
+    }
+
+    pub fn interrupter_target(&self) -> u16 {
+        self.trb.interrupter_target()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.trb.set_cycle(cycle);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.trb.cycle()
+    }
+
+    pub fn set_ent(&mut self, ent: bool) {
+        self.trb.set_ent(ent);
+    }
+
+    pub fn ent(&self) -> bool {
+        self.trb.ent()
+    }
+
+    pub fn set_isp(&mut self, isp: bool) {
+        let mut control = self.trb.control();
+        if isp {
+            control |= 1 << 2;
+        } else {
+            control &= !(1 << 2);
+        }
+        self.trb.set_control(control);
+    }
+
+    pub fn isp(&self) -> bool {
+        (self.trb.control() & (1 << 2)) != 0
+    }
+
+    pub fn set_ns(&mut self, ns: bool) {
+        let mut control = self.trb.control();
+        if ns {
+            control |= 1 << 3;
+        } else {
+            control &= !(1 << 3);
+        }
+        self.trb.set_control(control);
+    }
+
+    pub fn ns(&self) -> bool {
+        (self.trb.control() & (1 << 3)) != 0
+    }
+
+    pub fn set_chain(&mut self, chain: bool) {
+        self.trb.set_chain(chain);
+    }
+
+    pub fn chain(&self) -> bool {
+        self.trb.chain()
+    }
+
+    pub fn set_ioc(&mut self, ioc: bool) {
+        self.trb.set_ioc(ioc);
+    }
+
+    pub fn ioc(&self) -> bool {
+        self.trb.ioc()
+    }
+
+    pub fn set_idt(&mut self, idt: bool) {
+        let mut control = self.trb.control();
+        if idt {
+            control |= 1 << 6;
+        } else {
+            control &= !(1 << 6);
+        }
+        self.trb.set_control(control);
+    }
+
+    pub fn idt(&self) -> bool {
+        (self.trb.control() & (1 << 6)) != 0
+    }
+
+    pub fn set_direction(&mut self, direction: u8) {
+        self.trb.set_direction(direction);
+    }
+
+    pub fn direction(&self) -> u8 {
+        self.trb.direction()
     }
 }
