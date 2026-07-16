@@ -387,6 +387,7 @@ impl<const SIZE: usize> ShadowRing<SIZE> {
 pub enum CommandContext {
     Empty,
     EnableSlot { port_id: u8 },
+    DisableSlot { port_id: u8 },
     AddressDevice { slot_id: u8 },
 }
 

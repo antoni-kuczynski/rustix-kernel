@@ -11,9 +11,9 @@ use crate::{kernel_main_post_stack, kprintln_ok};
 use core::sync::atomic::Ordering;
 use x86_64::VirtAddr;
 
-// Change this to at least  32 * 4096 (128kb) if compiling with o0
+// Change this to at least  64 * 4096 (256kb) if compiling with o0
 // const STACK_SIZE: u64 = 4096 * 4; // 4 pages = 16kb
-const STACK_SIZE: u64 = 4096 * 32; // 4 pages = 16kb
+const STACK_SIZE: u64 = 4096 * 64; // 4 pages = 16kb
 
 pub fn switch_to_secure_stack() -> ! {
     let stack_start_addr = 0xffff_c100_0000_0000;
