@@ -50,6 +50,7 @@ use crate::drivers::usb::xhci::xhci_trb_ring::{CommandContext, CommandRing, Even
 use crate::{kprintln};
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::page_tables::PageSize;
+use crate::video::kprint::LogLevel::{Debug, Warn};
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -573,19 +574,25 @@ struct XHCIDevice {
     transfer_ring_dma: DmaAlloc,
     transfer_ring: TransferRing,
     device_context_dma: DmaAlloc,
+    port: u8,
+    slot_id: u8,
 }
 
 impl XHCIDevice {
     fn new(input_context_dma: DmaAlloc,
            transfer_ring_dma: DmaAlloc,
            transfer_ring: TransferRing,
-           device_context_dma: DmaAlloc) -> Self
+           device_context_dma: DmaAlloc,
+            port: u8,
+            slot_id: u8) -> Self
     {
         XHCIDevice {
             input_context_dma,
             transfer_ring_dma,
             transfer_ring,
             device_context_dma,
+            port,
+            slot_id,
         }
     }
 }
@@ -657,8 +664,44 @@ impl XhciInterrupterState {
         }
     }
 
+    unsafe fn handle_device_detach(&self, xhci: &mut XHCI, port: u8) {
+        let idx = port as usize;
+        if xhci.port_to_slot[idx].is_none() {
+            kprintln!(Warn, "[PORT {}] Tried detaching device with no slot assigned (or not present in software)!", port);
+            xhci.port_state[idx] = PortState::Idle;
+            return;
+        }
+
+        if xhci.port_state[idx] != PortState::Enabled {
+            kprintln!(Debug, "[PORT {}] Skipping disable slot command as slot was not enabled.", port);
+            xhci.port_state[idx] = PortState::Idle;
+            return;
+        }
+
+        let slot = xhci.port_to_slot[idx].unwrap();
+        let disable_slot_trb = DisableSlotCommandTrb::new(slot);
+        let enqueue_index = xhci.command_ring.get_mut().enqueue_index();
+
+        xhci.send_command(*disable_slot_trb.raw())
+            .expect("Sending disable slot command failed!");
+
+        xhci.ring_global_doorbell();
+
+        xhci.shadow_ring.save_context(enqueue_index, CommandContext::DisableSlot { port_id: port });
+        xhci.port_state[idx] = PortState::Idle;
+    }
+
     unsafe fn handle_port_reset(&self, xhci: &mut XHCI, port: u8) {
         let portsc = PortStatusControl::from_port(xhci.operational_base, port);
+        if portsc.ccs_read() == false {
+            kprintln!(Debug, "[PORT {}] Device was disconnected before reset could be completed.", port);
+            xhci.port_state[port as usize] = PortState::Idle;
+            return;
+        } else if portsc.ped_read() == false {
+            kprintln!(Debug, "[PORT {}] Port is not enabled (PED=0). Cannot complete reset.", port);
+            xhci.port_state[port as usize] = PortState::Idle;
+            return;
+        }
 
         if portsc.ped_read() && !portsc.pr_read() && portsc.pls_read() == U0 {
             kprintln!(Debug, "[PORT {}] Succesfully reset port.", port); //TODO: usb3
@@ -762,7 +805,7 @@ impl XhciInterrupterState {
                     kprintln!(Info,"[PORT {}] Detach detected with unknown protocol.", port);
                 }
 
-                xhci.port_state[idx] = PortState::Idle;
+                self.handle_device_detach(xhci, port);
             }
         }
     }
@@ -776,6 +819,7 @@ impl XhciInterrupterState {
 
         if trb.completion_code() == TrbCompletionCode::SUCCESS && slot_id != 0 {
             kprintln!(Info, "[SLOT {}][PORT {}] Successfully assigned slot {}.", trb.slot_id(), port, trb.slot_id());
+            xhci.port_to_slot[port as usize] = Some(slot_id);
         } else {
             //TODO: handle these so that the slot allocation doesnt go to waste
             kprintln!(Warn, "[SLOT {}][PORT {}] Handling enable slot command resulted in non successful exit code {}.", slot_id, port, trb.completion_code());
@@ -856,7 +900,9 @@ impl XhciInterrupterState {
             input_context_dma,
             transfer_ring_dma,
             transfer_ring,
-            device_context_dma
+            device_context_dma,
+            port,
+            slot_id
         );
 
         xhci.devices.get_mut()[slot_id as usize] = Some(xhci_device);
@@ -875,20 +921,33 @@ impl XhciInterrupterState {
         };
 
         if slot_id == 0 {
-            panic!("[SLOT 0] 0 is not a valid slot ID inside command context!");
+            kprintln!(Error, "[SLOT 0] 0 is not a valid slot ID inside command context!");
+            return;
         }
 
+        let dev = match &xhci.devices.get_mut()[slot_id as usize] {
+            None => {
+                kprintln!(Error, "[SLOT {}] Tried handling address device completion when device is not present in software!", slot_id);
+                return;
+            }
+            Some(a) => {a}
+        };
+
+        let port = dev.port;
+
         if trb.completion_code() == TrbCompletionCode::CONTEXT_STATE_ERROR {
-            kprintln!(Error, "[SLOT {}] Not in enabled state!", trb.slot_id());
-            return; //TODO
+            kprintln!(Error, "[SLOT {}] [PORT {}] Not in enabled state!", trb.slot_id(), port);
+            return;
         } else if trb.completion_code() == TrbCompletionCode::USB_TRANSACTION_ERROR {
-            kprintln!(Error, "[SLOT {}] SET_ADDRESS request was not successful.", trb.slot_id());
+            kprintln!(Debug, "[SLOT {}] [PORT {}] SET_ADDRESS request was not successful. The device was likely removed.", trb.slot_id(), port);
+            self.handle_device_detach(xhci, port);
             return;
         } else if trb.completion_code() == TrbCompletionCode::SLOT_NOT_ENABLED_ERROR {
-            kprintln!(Error, "[SLOT {}] Was not enabled by enable slot command.", trb.slot_id());
+            kprintln!(Debug, "[SLOT {}] [PORT {}] Was not enabled by enable slot command. The device was likely removed.", trb.slot_id(), port);
             return;
         } else if trb.completion_code() != TrbCompletionCode::SUCCESS {
-            kprintln!(Error, "[SLOT {}] Address Device Command FAILED with code: {:?}", slot_id, trb.completion_code());
+            kprintln!(Error, "[SLOT {}] [PORT {}] Address Device Command FAILED with code: {:?}", slot_id, trb.completion_code(), port);
+            self.handle_device_detach(xhci, port);
             return;
         }
 
@@ -945,6 +1004,37 @@ impl XhciInterrupterState {
         kprintln!(Info, "[SLOT {}] Successfully handled address device command.", trb.slot_id());
     }
 
+    unsafe fn handle_slot_disable_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb, command_context: CommandContext) {
+        let port = match command_context {
+            CommandContext::DisableSlot { port_id } => { port_id }
+            a => { panic!("Invalid context type! Expected SlotDisable found {:?}.", a) }
+        };
+        let slot_id = match  xhci.port_to_slot[port as usize] {
+            None => {
+                kprintln!(Error, "[PORT {}] Tried handling disable slot command for a slot that does not exist in software!", port);
+                return;
+            }
+            Some(x) => {x}
+        };
+
+        if trb.completion_code() == TrbCompletionCode::SLOT_NOT_ENABLED_ERROR {
+            kprintln!(Error, "[SLOT {}] [PORT {}] Disabling slot failed! Slot has not been enabled by an Enable Slot command.", slot_id, port);
+            return;
+        } else if trb.completion_code() != TrbCompletionCode::SUCCESS {
+            kprintln!(Error, "[SLOT {}] [PORT {}]  Disabling slot failed! Unexpected trb completion code {}.", slot_id, port, trb.completion_code());
+            return;
+        }
+
+        kprintln!(Debug, "[SLOT {}] [PORT {}]  Received successful Disable Slot command trb completion code.", slot_id, port);
+
+        xhci.devices.get_mut()[slot_id as usize] = None; //this deallocates all the stuff, as DMA allocator already has Drop trait
+        xhci.dcbaa.clear_context(slot_id as usize);
+        xhci.port_state[port as usize] = PortState::Idle;
+        //command context was already cleared before
+
+        kprintln!(Debug, "[SLOT {}] [PORT {}]  Finished deallocating slot's memory.", slot_id, port);
+    }
+
     unsafe fn handle_command_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb) {
         let command_trb_pointer = PhysAddr::new(trb.command_trb_pointer());
         let virt = physical_to_virtual(command_trb_pointer);
@@ -964,10 +1054,13 @@ impl XhciInterrupterState {
             Trb::TRB_ENABLE_SLOT_COMMAND => {
                 self.handle_enable_slot_completion(xhci, trb, context);
             },
-            Trb::TRB_ADDRESS_DEVICE => {
+            Trb::TRB_ADDRESS_DEVICE_COMMAND => {
                 self.handle_address_device_completion(xhci, trb, context);
+            }
+            Trb::TRB_DISABLE_SLOT_COMMAND => {
+                self.handle_slot_disable_completion(xhci, trb, context);
             },
-            0_u8..=8_u8 | 10_u8 | 12_u8..=u8::MAX => todo!()
+            _ => todo!()
         }
     }
 
@@ -1037,7 +1130,7 @@ enum ResumePhase {
     RExit,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 enum PortState {
     Idle,
     Debounce { stable_since_ms: u64 },
@@ -1074,7 +1167,8 @@ pub struct XHCI {
     port_state: [PortState; 256],
     max_ports: usize,
     scratchpad_array_dma: Option<DmaAlloc>,
-    scratchpad_entry_dma: Option<Vec<DmaAlloc>>
+    scratchpad_entry_dma: Option<Vec<DmaAlloc>>,
+    port_to_slot: [Option<u8>; 256]
 }
 
 impl XHCI {
@@ -1158,7 +1252,8 @@ impl XHCI {
             port_state: [PortState::Debounce { stable_since_ms: 0 }; 256],
             max_ports,
             scratchpad_array_dma,
-            scratchpad_entry_dma
+            scratchpad_entry_dma,
+            port_to_slot: [None; 256]
         }
     }
 
@@ -1328,7 +1423,7 @@ pub unsafe fn xhci_timer_tick(xhci: &mut XHCI) {
                 _ => {}
             },
             PortState::Debounce { .. } | PortState::ResetInProgress { .. } => {
-                kprintln!("");
+
             }
         }
     }

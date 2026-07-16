@@ -81,8 +81,8 @@ impl Trb {
     pub const TRB_NO_OP: u8 = 8;
 
     pub const TRB_ENABLE_SLOT_COMMAND: u8 = 9;
-    pub const TRB_DISABLE_SLOT: u8 = 10;
-    pub const TRB_ADDRESS_DEVICE: u8 = 11;
+    pub const TRB_DISABLE_SLOT_COMMAND: u8 = 10;
+    pub const TRB_ADDRESS_DEVICE_COMMAND: u8 = 11;
     pub const TRB_CONFIGURE_ENDPOINT: u8 = 12;
     pub const TRB_EVALUATE_CONTEXT: u8 = 13;
     pub const TRB_RESET_ENDPOINT: u8 = 14;
@@ -852,5 +852,62 @@ impl DataStageTrb {
 
     pub fn direction(&self) -> u8 {
         self.trb.direction()
+    }
+}
+
+
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct DisableSlotCommandTrb {
+    raw: Trb,
+}
+
+impl DisableSlotCommandTrb {
+    pub fn new(slot_id: u8) -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_DISABLE_SLOT_COMMAND);
+
+        let mut command = Self { raw };
+        command.set_slot_id(slot_id);
+
+        command
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_DISABLE_SLOT_COMMAND {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_DISABLE_SLOT_COMMAND,
+                actual,
+            });
+        }
+
+        Ok(Self { raw })
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        self.raw.slot_id()
+    }
+
+    pub fn set_slot_id(&mut self, slot_id: u8) {
+        self.raw.set_slot_id(slot_id);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+}
+
+impl TrbTrait for DisableSlotCommandTrb {
+    const TRB_TYPE: u8 = Trb::TRB_DISABLE_SLOT_COMMAND;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
     }
 }
