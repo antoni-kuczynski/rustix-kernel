@@ -19,7 +19,7 @@ use core::panic::PanicInfo;
 use crate::boot::cpuid::cpuid_init;
 use crate::boot::multiboot::{multiboot2_init};
 use crate::drivers::acpi::acpi_tables::acpi_init;
-use crate::drivers::apic::apic::{apic_bsp_init};
+use crate::drivers::apic::apic::{apic_bsp_init, set_timeout, WORK_QUEUE};
 use crate::drivers::pci::pci::pci_init;
 use crate::interrupts::gdt::gdt_init;
 use crate::interrupts::{idt_init, interrupts_enable};
@@ -43,6 +43,7 @@ unsafe extern "C" {
 }
 
 use core::arch::asm;
+use crate::video::kprint::LogLevel::Debug;
 
 fn print_call_stack() {
     unsafe {
@@ -161,6 +162,20 @@ fn emergency_panic(_info: &PanicInfo) {
     }
 }
 
+fn process_timer_tasks_loop() -> ! {
+    loop {
+        let task_to_run = x86_64::instructions::interrupts::without_interrupts(|| {
+            WORK_QUEUE.lock().pop_front()
+        });
+
+        if let Some(task) = task_to_run {
+            (task.callback)();
+        } else {
+            x86_64::instructions::hlt();
+        }
+    }
+}
+
 fn kernel_main_post_stack() -> ! {
     kheap_init();
     double_buffering_init();
@@ -170,15 +185,10 @@ fn kernel_main_post_stack() -> ! {
     acpi_init();
     apic_bsp_init();
     pci_init();
-
     prng_init();
 
     interrupts_enable();
-
-
-    loop {
-        x86_64::instructions::hlt();
-    }
+    process_timer_tasks_loop()
 }
 
 #[unsafe(no_mangle)]

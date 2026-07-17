@@ -5,10 +5,13 @@
  * Created by Antoni Kuczyński
  * 30/05/2026
  */
+use alloc::boxed::Box;
+use alloc::collections::{BinaryHeap, VecDeque};
+use core::cmp::Reverse;
 use core::ops::Add;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Once;
+use spin::{Mutex, Once};
 use x86_64::PhysAddr;
 use x86_64::structures::idt::InterruptStackFrame;
 use crate::asm::{outb, rdmsr};
@@ -20,7 +23,7 @@ use crate::memory::ioremap::{ioremap_permanent, IoAlloc};
 use crate::memory::page_tables::PageSize;
 use crate::{kprintln, kprintln_failed, kprintln_ok};
 use crate::drivers::apic::pit::_pit_wait_ms;
-use crate::drivers::usb::xhci::xhci::{xhci_timer_tick, XHCI_TICK_LIST};
+use crate::drivers::usb::xhci::xhci::{XHCI_TICK_LIST};
 // ============================================================================
 // Local APIC / xAPIC constants
 // ============================================================================
@@ -263,8 +266,6 @@ impl Apic {
     }
 }
 
-
-
 pub fn apic_bsp_init() {
     if !CpuId::has_apic() {
         kprintln_failed!("Found and enabled BSP APIC.");
@@ -292,6 +293,61 @@ pub fn apic_bsp_init() {
     kprintln_ok!("Found and enabled BSP APIC.");
 }
 
+/*
+Some things (such as DMA allocs or sleeps) cant run directly in interrupt handler context,
+as running them can lead to deadlocks (e.g. using lapic sleep inside a lapic generated irq just
+deadlocks the core instantly).
+To solve that, we need to schedule these operations elsewhere - here two queues are used, one min priority in lapic timer
+interrupt handler and a fifo queue inside kmain. Items are scheduled to TIMER queue.
+In irq items are pushed from the timer queue to the work queue when their time comes,
+and then are executed periodically in kmain from WORK queue.
+ */
+pub struct TimerTask {
+    execute_at_tick: u64,
+    pub callback: Box<dyn FnOnce() + Send>,
+}
+
+impl PartialEq for TimerTask {
+    fn eq(&self, other: &Self) -> bool {
+        self.execute_at_tick == other.execute_at_tick
+    }
+}
+impl Eq for TimerTask {}
+
+impl PartialOrd for TimerTask {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.execute_at_tick.cmp(&other.execute_at_tick))
+    }
+}
+impl Ord for TimerTask {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.execute_at_tick.cmp(&other.execute_at_tick)
+    }
+}
+
+use x86_64::instructions::interrupts;
+
+pub fn set_timeout<F>(delay_ms: u64, callback: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let execute_at_tick = TIMER_TICKS.load(Ordering::Relaxed) + delay_ms / TIMER_PERIOD_MS;
+
+    let task = TimerTask {
+        execute_at_tick,
+        callback: Box::new(callback),
+    };
+
+    interrupts::without_interrupts(|| {
+        let mut queue = TIMER_QUEUE.lock();
+        queue.push(Reverse(task));
+    });
+}
+
+/// min heap priority queue to store tasks
+pub static TIMER_QUEUE: Mutex<BinaryHeap<Reverse<TimerTask>>> = Mutex::new(BinaryHeap::new());
+/// fifo queue to execute tasks from in kmain
+pub static WORK_QUEUE: Mutex<VecDeque<TimerTask>> = Mutex::new(VecDeque::new());
 pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 pub static LAPIC: Once<Apic> = Once::new();
 
@@ -308,10 +364,15 @@ pub extern "x86-interrupt" fn lapic_timer_interrupt_handler(
 ) {
     let ticks = TIMER_TICKS.fetch_add(1, Ordering::Relaxed) + 1;
 
-    for slot in XHCI_TICK_LIST.iter() {
-        let ptr = slot.load(Ordering::Acquire);
-        if !ptr.is_null() {
-            unsafe { xhci_timer_tick(&mut *ptr) };
+    let mut queue = TIMER_QUEUE.lock();
+    let mut wq = WORK_QUEUE.lock();
+
+    while let Some(Reverse(task)) = queue.peek() {
+        if ticks >= task.execute_at_tick {
+            let Reverse(ready_task) = queue.pop().unwrap();
+            wq.push_back(ready_task);
+        } else {
+            break;
         }
     }
 
