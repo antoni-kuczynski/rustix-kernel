@@ -6,6 +6,7 @@ mod xhci_slot_context;
 mod xhci_trb;
 mod xhci_trb_ring;
 mod xhci_input_context;
+mod xhci_context;
 /*
 Base
 │

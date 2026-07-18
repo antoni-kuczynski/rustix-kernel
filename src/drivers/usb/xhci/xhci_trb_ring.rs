@@ -44,7 +44,7 @@ ring is determined by the number and size of the segments that comprise the
 ring.
 
  */
-use core::mem;
+use core::{mem, ptr};
 use core::ptr::write_volatile;
 use core::sync::atomic::{fence, Ordering};
 use x86_64::PhysAddr;
@@ -380,6 +380,103 @@ impl<const SIZE: usize> ShadowRing<SIZE> {
 
         index
     }
+}
+
+
+//=======================================================
+//          EVENT RING SEGMENT TABLE
+//=======================================================
+/*
+The Event Ring Segment Table (ERST) is used to define multi -segment Event
+Rings and to enable runtime expansion and shrinking of the Event Ring. The
+location of the Event Ring Segment Table is defined by the Event Ring Segment
+Table Base Address Register (section 5.5.2.3.2). The size of the Event Ring
+Segment Table is defined by the Event Ring Segment Table Base Size Register
+(section 5.5.2.3.1).
+ */
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct ERST {
+    ring_addr_low: u32,
+    ring_addr_high: u32,
+    ring_segment_size: u32,
+    rsvdz: u32,
+}
+
+impl ERST {
+    pub(crate) fn new(ring_addr: u64, ring_segment_size: u32) -> ERST {
+        assert_eq!(ring_addr & 0x1F, 0, "Event ring must be 32-byte aligned");
+
+        let ring_addr_high: u32 = (ring_addr >> 32) as u32;
+        let ring_addr_low: u32 = (ring_addr & 0xFFFFFFE0) as u32;
+
+        Self {
+            ring_addr_low,
+            ring_addr_high,
+            ring_segment_size,
+            rsvdz: 0u32,
+        }
+    }
+
+    #[inline(always)]
+    pub fn ring_addr_low(&self) -> u32 {
+        unsafe {
+            let base = self as *const _ as *const u8;
+            let ptr = base.add(0) as *const u32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_ring_addr_low(&mut self, val: u32) {
+        unsafe {
+            let base = self as *mut _ as *mut u8;
+            let ptr = base.add(0) as *mut u32;
+            ptr::write_unaligned(ptr, val);
+        }
+    }
+
+    #[inline(always)]
+    pub fn ring_addr_high(&self) -> u32 {
+        unsafe {
+            let base = self as *const _ as *const u8;
+            let ptr = base.add(4) as *const u32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_ring_addr_high(&mut self, val: u32) {
+        unsafe {
+            let base = self as *mut _ as *mut u8;
+            let ptr = base.add(4) as *mut u32;
+            ptr::write_unaligned(ptr, val);
+        }
+    }
+
+    #[inline(always)]
+    pub fn ring_segment_size(&self) -> u32 {
+        unsafe {
+            let base = self as *const _ as *const u8;
+            let ptr = base.add(8) as *const u32;
+            ptr::read_unaligned(ptr)
+        }
+    }
+
+    #[inline(always)]
+    pub fn set_ring_segment_size(&mut self, val: u32) {
+        unsafe {
+            let base = self as *mut _ as *mut u8;
+            let ptr = base.add(8) as *mut u32;
+            ptr::write_unaligned(ptr, val);
+        }
+    }
+}
+
+pub fn xhci_alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
+    let alloc = dma_alloc_zeroed(size_of::<ERST>(), PageSize::SIZE_4KB as usize)?;
+    let erst = unsafe { alloc.as_mut::<ERST>() };
+    Some((alloc, erst))
 }
 
 // Not quite a ring, but a helper for command ring saving command context for future access
