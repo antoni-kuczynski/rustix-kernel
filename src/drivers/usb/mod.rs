@@ -51,7 +51,7 @@ pub struct UsbDeviceDescriptor {
     b_device_subclass: u8,
     b_device_protocol: u8,
     b_max_packet_size0: u8,
-    id_vendor: u16,
+    id_vendor: UsbVendor,
     id_product: u16,
     bcd_device: u16,
     i_manufacturer: u8,
@@ -89,7 +89,7 @@ impl UsbDeviceDescriptor {
         self.b_max_packet_size0
     }
 
-    pub fn id_vendor(&self) -> u16 {
+    pub fn id_vendor(&self) -> UsbVendor {
         unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.id_vendor)) }
     }
 
@@ -115,5 +115,67 @@ impl UsbDeviceDescriptor {
 
     pub fn b_num_configurations(&self) -> u8 {
         self.b_num_configurations
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbVendor(pub u16);
+
+impl UsbVendor {
+    pub const ADOMAX: Self = Self(0x0627);
+    pub const QEMU: Self = Self(0x46F4);
+    pub const VIRTUALBOX: Self = Self(0x80EE);
+    pub const VMWARE: Self = Self(0x0E0F);
+
+    pub const MICROSOFT: Self = Self(0x045E);
+    pub const LOGITECH: Self = Self(0x046D);
+    pub const APPLE: Self = Self(0x05AC);
+    pub const RAZER: Self = Self(0x1532);
+    pub const CORSAIR: Self = Self(0x1B1C);
+    pub const STEELSERIES: Self = Self(0x1038);
+    pub const ROCCAT: Self = Self(0x1E7D);
+    pub const CHERRY: Self = Self(0x046A);
+    pub const ASUS: Self = Self(0x0B05);
+    pub const COOLER_MASTER: Self = Self(0x2516);
+    pub const KEYCHRON: Self = Self(0x3434);
+    pub const BISON_ELECTRONICS: Self = Self(0x5986);
+    pub const SONIX_TECHNOLOGY: Self = Self(0x0C45);
+
+    pub const DELL: Self = Self(0x413C);
+    pub const HP: Self = Self(0x03F0);
+    pub const LENOVO: Self = Self(0x17EF);
+    pub const CHICONY: Self = Self(0x04F2);
+    pub const LITEON: Self = Self(0x04CA);
+
+    pub const INTEL: Self = Self(0x8086);
+    pub const INTEL_ALT: Self = Self(0x8087);
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ADOMAX => "Adomax Technology",
+            Self::QEMU => "QEMU Virtual Device",
+            Self::VIRTUALBOX => "VirtualBox",
+            Self::VMWARE => "VMware",
+            Self::MICROSOFT => "Microsoft",
+            Self::LOGITECH => "Logitech",
+            Self::APPLE => "Apple",
+            Self::RAZER => "Razer USA",
+            Self::CORSAIR => "Corsair",
+            Self::STEELSERIES => "SteelSeries",
+            Self::ROCCAT => "Roccat",
+            Self::CHERRY => "Cherry GmbH",
+            Self::ASUS => "ASUSTek",
+            Self::COOLER_MASTER => "Cooler Master",
+            Self::KEYCHRON => "Keychron",
+            Self::BISON_ELECTRONICS => "Bison Electronics Inc.",
+            Self::SONIX_TECHNOLOGY => "Sonix Technology Co., Ltd.",
+            Self::DELL => "Dell Computer Corp.",
+            Self::HP => "Hewlett-Packard",
+            Self::LENOVO => "Lenovo",
+            Self::CHICONY => "Chicony Electronics Co., Ltd.",
+            Self::LITEON => "Lite-On Technology Corp.",
+            Self::INTEL | Self::INTEL_ALT => "Intel Corporation",
+            _ => "Unknown Vendor",
+        }
     }
 }
