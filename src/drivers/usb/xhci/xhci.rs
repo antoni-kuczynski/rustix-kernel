@@ -336,11 +336,11 @@ struct XHCIDevice {
 
 impl XHCIDevice {
     fn new(input_context_dma: DmaAlloc,
-           transfer_ring_dma: DmaAlloc,
-           transfer_ring: TransferRing,
-           device_context_dma: DmaAlloc,
-           port: u8,
-           slot_id: u8) -> Self
+        transfer_ring_dma: DmaAlloc,
+        transfer_ring: TransferRing,
+        device_context_dma: DmaAlloc,
+        port: u8,
+        slot_id: u8) -> Self
     {
         XHCIDevice {
             input_context_dma,
@@ -417,12 +417,6 @@ impl XhciInterrupterState {
         let idx = port as usize;
         if xhci.port_to_slot[idx].is_none() {
             kprintln!(Warn, "[PORT {}] Tried detaching device with no slot assigned (or not present in software)!", port);
-            xhci.port_state[idx] = PortState::Idle;
-            return;
-        }
-
-        if xhci.port_to_slot[idx].is_none() {
-            kprintln!(Debug, "[PORT {}] Skipping disable slot command as slot was not enabled.", port);
             xhci.port_state[idx] = PortState::Idle;
             return;
         }
@@ -584,12 +578,17 @@ impl XhciInterrupterState {
         let xhci_id = xhci.id;
         set_timeout(10, move || {
             with_xhci(xhci_id, |xhci| {
+                if xhci.port_to_slot[port as usize] != Some(slot_id) {
+                    kprintln!(Debug, "[SLOT {}][PORT {}] Aborting allocation - port state changed.", slot_id, port);
+                    return;
+                }
+
                 kprintln!(Debug, "[SLOT {}][PORT {}] Began allocating data structures for device.", slot_id, port);
                 let portsc = PortStatusControl::from_port(xhci.operational_base, port);
                 let port_speed = portsc.ps_read();
 
                 //now that we have a slot, we can initialize all the required data structures
-                let input_context_dma = dma_alloc_zeroed(size_of::<InputContext>(), 4096). //TODO: remove, can cause deadlocks
+                let input_context_dma = dma_alloc_zeroed(size_of::<InputContext>(), 4096).
                     expect("Failed to dma alloc for input context!");
                 let input_context = &mut *(input_context_dma.virt.as_mut_ptr::<InputContext>());
                 let ic_control = input_context.control();
@@ -614,7 +613,13 @@ impl XhciInterrupterState {
                 };
 
                 // input slot context initialized, now the transfer ring
-                let alloc_transfer_ring = TrbRing::dma_alloc(TRANSFER_RING_TRBS); //TODO: remove, can cause deadlocks
+                let transfer_ring_dma = match dma_alloc_zeroed(TRANSFER_RING_TRBS * size_of::<Trb>(), PageSize::SIZE_4KB as usize) {
+                    None => {panic!("[SLOT {}][PORT {}] Failed to allocate transfer ring for device.", slot_id, port);}
+                    Some(a) => {a}
+                };
+
+
+                let alloc_transfer_ring = TrbRing::dma_alloc(TRANSFER_RING_TRBS);
                 if alloc_transfer_ring.is_none() {
                     panic!("[SLOT {}][PORT {}] Failed to allocate transfer ring for device.", slot_id, port);
                 }
@@ -636,7 +641,7 @@ impl XhciInterrupterState {
                 ep_0.set_error_count(3);
 
                 // output device context
-                let device_context_dma = dma_alloc_zeroed(size_of::<DeviceContext>(), 4096). //TODO: remove, can cause deadlocks
+                let device_context_dma = dma_alloc_zeroed(size_of::<DeviceContext>(), 4096).
                     expect("Failed to allocate dma for device context.");
                 let device_context = &*device_context_dma.virt.as_mut_ptr::<DeviceContext>();
 
@@ -699,6 +704,7 @@ impl XhciInterrupterState {
             kprintln!(Error, "[SLOT {}] [PORT {}] Not in enabled state!", trb.slot_id(), port);
             return;
         } else if trb.completion_code() == TrbCompletionCode::USB_TRANSACTION_ERROR {
+            //TODO: some usb2 mice end up here and cant finish initialization - investigate
             kprintln!(Debug, "[SLOT {}] [PORT {}] SET_ADDRESS request was not successful. The device was likely removed.", trb.slot_id(), port);
             self.handle_device_detach(xhci, port);
             return;
@@ -764,7 +770,6 @@ impl XhciInterrupterState {
         kprintln!(Info, "[SLOT {}] Successfully handled address device command.", trb.slot_id());
 
         //now, we need to obtain the max packet size. for all the speeds except for full speed this is already known and set before
-        // let portsc = PortStatusControl::from_port(xhci.operational_base, port);
         let descriptor_8b = dma_alloc_zeroed(8, 8)
             .expect("Failed to allocate memory for 8bytes of usb descriptor.");
 
@@ -776,6 +781,7 @@ impl XhciInterrupterState {
     }
 
     unsafe fn issue_usb_get_descriptor_request(&self, dev: &mut XHCIDevice, transfer_length: usize, buf: &DmaAlloc) {
+        let transfer_ring = &mut dev.transfer_ring;
         let mut setup_stage_td = SetupStageTrb::new();
         setup_stage_td.set_trt(SetupTransferType::InDataStage);
         setup_stage_td.set_transfer_length(8);
@@ -787,7 +793,7 @@ impl XhciInterrupterState {
         setup_stage_td.set_w_index(0);
         setup_stage_td.set_w_length(transfer_length as u16);
 
-        dev.transfer_ring.enqueue(*setup_stage_td.raw())
+        transfer_ring.enqueue(*setup_stage_td.raw())
             .expect("Failed to send setup stage td to device.");
 
         let mut data_stage_td = DataStageTrb::new();
@@ -798,7 +804,7 @@ impl XhciInterrupterState {
         data_stage_td.set_idt(false);
         data_stage_td.set_data_buffer(buf.phys.as_u64());
 
-        dev.transfer_ring.enqueue(*data_stage_td.raw())
+        transfer_ring.enqueue(*data_stage_td.raw())
             .expect("Failed to send data stage td to device.");
 
         let mut status_stage_td = StatusStageTrb::new();
@@ -806,7 +812,7 @@ impl XhciInterrupterState {
         status_stage_td.set_chain(false);
         status_stage_td.set_ioc(true);
 
-        dev.transfer_ring.enqueue(*status_stage_td.raw())
+        transfer_ring.enqueue(*status_stage_td.raw())
             .expect("Failed to send status stage td to device.");
     }
 
@@ -832,8 +838,8 @@ impl XhciInterrupterState {
 
         kprintln!(Debug, "[SLOT {}] [PORT {}]  Received successful Disable Slot command trb completion code.", slot_id, port);
 
-        xhci.devices.get_mut()[slot_id as usize] = None; //this deallocates all the stuff, as DMA allocator already has Drop trait
         xhci.dcbaa.clear_context(slot_id as usize);
+        xhci.devices.get_mut()[slot_id as usize] = None; //this deallocates all the stuff, as DMA allocator already has Drop trait
         xhci.port_state[port as usize] = PortState::Idle;
         xhci.port_to_slot[port as usize] = None;
         //command context was already cleared before
@@ -912,7 +918,9 @@ impl XhciInterrupterState {
         b_device_subclass: {:#04x},
         b_device_protocol: {:#04x},
         b_max_packet_size0: {},
-        id_vendor: {:#06x},
+        id_vendor: {:#011x},
+        vendor_name: {},
+        product_name: {},
         id_product: {:#06x},
         bcd_device: {:#06x},
         i_manufacturer: {},
@@ -927,7 +935,9 @@ impl XhciInterrupterState {
         descriptor.b_device_subclass(),
         descriptor.b_device_protocol(),
         descriptor.b_max_packet_size0(),
-        descriptor.id_vendor(),
+        descriptor.id_vendor().0,
+        descriptor.id_vendor().name(),
+        "todo",
         descriptor.id_product(),
         descriptor.bcd_device(),
         descriptor.i_manufacturer(),

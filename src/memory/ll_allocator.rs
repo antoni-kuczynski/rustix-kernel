@@ -691,7 +691,11 @@ impl LinkedListAllocator {
     pub unsafe fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         let (size, _align) = Self::size_align(layout);
         self.add_free_region(ptr as usize, size);
-        self.try_shrink_top();
+
+        //only do that for the heap, not the DMA pool. it may mess up its continuity
+        if !self.is_contiguous {
+            self.try_shrink_top();
+        }
     }
 }
 
