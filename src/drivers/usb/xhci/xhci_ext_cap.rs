@@ -31,14 +31,23 @@ impl fmt::Display for XhciPortProtocol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum XhciPortSpeed {
-    Unknown,
-    LowSpeed,
-    FullSpeed,
-    HighSpeed,
-    SuperSpeed,
-    SuperSpeedPlus,
+    Unknown = 0,
+    FullSpeed = 1,
+    LowSpeed = 2,
+    HighSpeed = 3,
+    SuperSpeed = 4,
+    SuperSpeedPlus = 5,
     Usb4,
     VendorDefined,
+}
+
+impl XhciPortSpeed {
+    pub const UNKNOWN: u8 = 0;
+    pub const FULL_SPEED: u8 = 1;
+    pub const LOW_SPEED: u8 = 2;
+    pub const HIGH_SPEED: u8 = 3;
+    pub const SUPER_SPEED: u8 = 4;
+    pub const SUPER_SPEED_PLUS: u8 = 5;
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -19,7 +19,7 @@ use core::panic::PanicInfo;
 use crate::boot::cpuid::cpuid_init;
 use crate::boot::multiboot::{multiboot2_init};
 use crate::drivers::acpi::acpi_tables::acpi_init;
-use crate::drivers::apic::apic::{apic_bsp_init, set_timeout, WORK_QUEUE};
+use crate::drivers::apic::apic::{apic_bsp_init, WORK_QUEUE};
 use crate::drivers::pci::pci::pci_init;
 use crate::interrupts::gdt::gdt_init;
 use crate::interrupts::{idt_init, interrupts_enable};
@@ -43,7 +43,6 @@ unsafe extern "C" {
 }
 
 use core::arch::asm;
-use crate::video::kprint::LogLevel::Debug;
 
 fn print_call_stack() {
     unsafe {

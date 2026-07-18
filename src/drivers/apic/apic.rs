@@ -23,7 +23,6 @@ use crate::memory::ioremap::{ioremap_permanent, IoAlloc};
 use crate::memory::page_tables::PageSize;
 use crate::{kprintln, kprintln_failed, kprintln_ok};
 use crate::drivers::apic::pit::_pit_wait_ms;
-use crate::drivers::usb::xhci::xhci::{XHCI_TICK_LIST};
 // ============================================================================
 // Local APIC / xAPIC constants
 // ============================================================================

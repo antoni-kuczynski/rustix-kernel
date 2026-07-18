@@ -84,7 +84,7 @@ impl Trb {
     pub const TRB_DISABLE_SLOT_COMMAND: u8 = 10;
     pub const TRB_ADDRESS_DEVICE_COMMAND: u8 = 11;
     pub const TRB_CONFIGURE_ENDPOINT: u8 = 12;
-    pub const TRB_EVALUATE_CONTEXT: u8 = 13;
+    pub const TRB_EVALUATE_CONTEXT_COMMAND: u8 = 13;
     pub const TRB_RESET_ENDPOINT: u8 = 14;
     pub const TRB_STOP_ENDPOINT: u8 = 15;
     pub const TRB_SET_DEQUEUE_PTR: u8 = 16;
@@ -297,6 +297,12 @@ impl Trb {
         &self,
     ) -> Result<CommandCompletionEventTrb, TrbParseError> {
         CommandCompletionEventTrb::new(*self)
+    }
+
+    pub fn try_as_transfer_event(
+        &self,
+    ) -> Result<TransferEventTrb, TrbParseError> {
+        TransferEventTrb::new(*self)
     }
 }
 
@@ -566,10 +572,16 @@ pub struct TransferEventTrb {
 }
 
 impl TransferEventTrb {
-    pub fn new() -> Self {
-        let mut trb = Trb::new();
-        trb.set_trb_type(Trb::TRB_TRANSFER_EVENT);
-        Self { trb }
+    pub fn new(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_TRANSFER_EVENT {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_TRANSFER_EVENT,
+                actual,
+            });
+        }
+
+        Ok(Self { trb: raw })
     }
 
     pub fn from_trb(trb: Trb) -> Self {
@@ -906,6 +918,232 @@ impl DisableSlotCommandTrb {
 
 impl TrbTrait for DisableSlotCommandTrb {
     const TRB_TYPE: u8 = Trb::TRB_DISABLE_SLOT_COMMAND;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u32)]
+pub enum SetupTransferType {
+    NoDataStage = 0,
+    OutDataStage = 2,
+    InDataStage = 3,
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct SetupStageTrb {
+    raw: Trb,
+}
+
+impl SetupStageTrb {
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_SETUP_STAGE);
+
+        let mut command = Self { raw };
+        command.set_transfer_length(8);
+        command.set_idt(true);
+
+        command
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_SETUP_STAGE {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_SETUP_STAGE,
+                actual,
+            });
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn bm_request_type(&self) -> u8 {
+        (self.raw.parameter() & 0xFF) as u8
+    }
+
+    pub fn set_bm_request_type(&mut self, val: u8) {
+        let mut param = self.raw.parameter();
+        param = (param & !0xFF_u64) | (val as u64);
+        self.raw.set_parameter(param);
+    }
+
+    pub fn b_request(&self) -> u8 {
+        ((self.raw.parameter() >> 8) & 0xFF) as u8
+    }
+
+    pub fn set_b_request(&mut self, val: u8) {
+        let mut param = self.raw.parameter();
+        param = (param & !(0xFF_u64 << 8)) | ((val as u64) << 8);
+        self.raw.set_parameter(param);
+    }
+
+    pub fn w_value(&self) -> u16 {
+        ((self.raw.parameter() >> 16) & 0xFFFF) as u16
+    }
+
+    pub fn set_w_value(&mut self, val: u16) {
+        let mut param = self.raw.parameter();
+        param = (param & !(0xFFFF_u64 << 16)) | ((val as u64) << 16);
+        self.raw.set_parameter(param);
+    }
+
+    pub fn w_index(&self) -> u16 {
+        ((self.raw.parameter() >> 32) & 0xFFFF) as u16
+    }
+
+    pub fn set_w_index(&mut self, val: u16) {
+        let mut param = self.raw.parameter();
+        param = (param & !(0xFFFF_u64 << 32)) | ((val as u64) << 32);
+        self.raw.set_parameter(param);
+    }
+
+    pub fn w_length(&self) -> u16 {
+        ((self.raw.parameter() >> 48) & 0xFFFF) as u16
+    }
+
+    pub fn set_w_length(&mut self, val: u16) {
+        let mut param = self.raw.parameter();
+        param = (param & !(0xFFFF_u64 << 48)) | ((val as u64) << 48);
+        self.raw.set_parameter(param);
+    }
+
+    pub fn transfer_length(&self) -> u32 {
+        self.raw.length()
+    }
+
+    pub fn set_transfer_length(&mut self, val: u32) {
+        self.raw.set_length(val);
+    }
+
+    pub fn interrupter_target(&self) -> u16 {
+        self.raw.interrupter_target()
+    }
+
+    pub fn set_interrupter_target(&mut self, val: u16) {
+        self.raw.set_interrupter_target(val);
+    }
+
+    pub fn idt(&self) -> bool {
+        (self.raw.control() & (1 << 6)) != 0
+    }
+
+    pub fn set_idt(&mut self, idt: bool) {
+        let mut control = self.raw.control();
+        if idt {
+            control |= 1 << 6;
+        } else {
+            control &= !(1 << 6);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn trt(&self) -> SetupTransferType {
+        let val = (self.raw.control() >> 16) & 0x3;
+        match val {
+            0 => SetupTransferType::NoDataStage,
+            2 => SetupTransferType::OutDataStage,
+            3 => SetupTransferType::InDataStage,
+            _ => SetupTransferType::NoDataStage,
+        }
+    }
+
+    pub fn set_trt(&mut self, trt: SetupTransferType) {
+        let mut control = self.raw.control();
+        control = (control & !(0x3 << 16)) | ((trt as u32) << 16);
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+
+    pub fn ioc(&self) -> bool {
+        self.raw.ioc()
+    }
+
+    pub fn set_ioc(&mut self, ioc: bool) {
+        self.raw.set_ioc(ioc);
+    }
+}
+
+impl TrbTrait for SetupStageTrb {
+    const TRB_TYPE: u8 = Trb::TRB_SETUP_STAGE;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct EvaluateContextCmdTrb {
+    raw: Trb,
+}
+
+impl EvaluateContextCmdTrb {
+    pub const TRB_TYPE: u8 = 13;
+
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Self::TRB_TYPE);
+
+        Self { raw }
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Self::TRB_TYPE {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Self::TRB_TYPE,
+                actual,
+            });
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn input_context_pointer(&self) -> u64 {
+        self.raw.parameter() & !0xF_u64
+    }
+
+    pub fn set_input_context_pointer(&mut self, ptr: u64) {
+        self.raw.set_parameter(ptr & !0xF_u64);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_slot_id(&mut self, slot_id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0xFF << 24)) | ((slot_id as u32) << 24);
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+}
+
+impl TrbTrait for EvaluateContextCmdTrb {
+    const TRB_TYPE: u8 = Self::TRB_TYPE;
 
     fn raw(&self) -> &Trb {
         &self.raw
