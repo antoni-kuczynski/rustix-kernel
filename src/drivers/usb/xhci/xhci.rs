@@ -36,7 +36,7 @@ use core::mem::{size_of};
 use core::ops::Add;
 use core::ptr;
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicUsize};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::idt::InterruptStackFrame;
@@ -46,10 +46,12 @@ use crate::drivers::usb::xhci::xhci_input_context::InputContext;
 use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::{U0, U3};
 use crate::drivers::usb::xhci::xhci_trb_ring::{xhci_alloc_dma_erst, CommandContext, CommandRing, EventRing, Ring, RingError, ShadowRing, TransferRing, TrbRing, ERST};
 use crate::{kprintln};
-use crate::drivers::usb::UsbDeviceDescriptor;
+use crate::drivers::usb::descriptors::{UsbConfigurationTree, UsbDeviceDescriptor};
+use crate::drivers::usb::{UsbBmRequestType, UsbBRequest, WValue};
 use crate::drivers::usb::xhci::xhci_context::{Dcbaa, DeviceContext};
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::page_tables::PageSize;
+use crate::video::kprint::LogLevel::Debug;
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -330,8 +332,14 @@ struct XHCIDevice {
     device_context_dma: DmaAlloc,
     port: u8,
     slot_id: u8,
-    first_8_bytes_of_descriptor: Option<DmaAlloc>,
-    descriptor: Option<DmaAlloc>
+    first_8_bytes_of_device_descriptor: Option<DmaAlloc>,
+    device_descriptor: Option<DmaAlloc>,
+
+    //TODO: my eyes bleed by just looking at this, fix in a near future (it'll work but at what cost)
+    first_8_bytes_of_config_descriptors: Option<Vec<Option<DmaAlloc>>>, //well, each dma alloc is gonna need to be freed, thats why there are 9999 stacked Options.... awful
+
+    configuration_descriptors: Option<Vec<DmaAlloc>>,
+    currently_handled_config_desc_index: AtomicUsize
 }
 
 impl XHCIDevice {
@@ -349,9 +357,85 @@ impl XHCIDevice {
             device_context_dma,
             port,
             slot_id,
-            first_8_bytes_of_descriptor: None,
-            descriptor: None
+            first_8_bytes_of_device_descriptor: None,
+            device_descriptor: None,
+            configuration_descriptors: None,
+            first_8_bytes_of_config_descriptors: None,
+            currently_handled_config_desc_index: AtomicUsize::new(0)
         }
+    }
+
+    unsafe fn issue_request(&mut self, bm_request_type: u8, b_request: u8,transfer_length: usize, w_value: u16, w_index: u16, buf: Option<&DmaAlloc>) {
+        let transfer_ring = &mut self.transfer_ring;
+        let has_data = transfer_length > 0;
+        let is_in = (bm_request_type & 0x80) != 0;
+
+        let mut setup_stage_td = SetupStageTrb::new();
+        let trt = if !has_data {
+            SetupTransferType::NoDataStage
+        } else if is_in {
+            SetupTransferType::InDataStage
+        } else {
+            SetupTransferType::OutDataStage
+        };
+
+        setup_stage_td.set_trt(trt);
+        setup_stage_td.set_transfer_length(8);
+        setup_stage_td.set_ioc(false);
+        setup_stage_td.set_idt(true);
+        setup_stage_td.set_bm_request_type(bm_request_type); //device to host, standard type, recipent=device
+        setup_stage_td.set_b_request(b_request); //GET_DESCRIPTOR
+        setup_stage_td.set_w_value(w_value); //low byte - descriptor index, high byte - descriptor type
+        setup_stage_td.set_w_index(w_index);
+        setup_stage_td.set_w_length(transfer_length as u16);
+
+        transfer_ring.enqueue(*setup_stage_td.raw())
+            .expect("Failed to send setup stage td to device.");
+
+        if has_data {
+            let mut data_stage_td = DataStageTrb::new();
+            let direction = if is_in { 1 } else { 0 };
+            let phys_addr = buf
+                .expect("Buffer required when transfer length is greater than 0.")
+                .phys
+                .as_u64();
+
+            data_stage_td.set_direction(direction);
+            data_stage_td.set_transfer_length(transfer_length as u32);
+            data_stage_td.set_chain(false);
+            data_stage_td.set_ioc(false);
+            data_stage_td.set_idt(false);
+            data_stage_td.set_data_buffer(phys_addr);
+
+            transfer_ring.enqueue(*data_stage_td.raw())
+                .expect("Failed to send data stage td to device.");
+        }
+
+        let mut status_stage_td = StatusStageTrb::new();
+        let status_direction = if has_data && is_in { 0 } else { 1 }; //reversed to the data stage
+
+        status_stage_td.set_direction(status_direction);
+        status_stage_td.set_chain(false);
+        status_stage_td.set_ioc(true);
+
+        transfer_ring.enqueue(*status_stage_td.raw())
+            .expect("Failed to send status stage td to device.");
+    }
+
+    unsafe fn get_config_descriptor(&mut self, transfer_length: usize, index: u8)
+        -> DmaAlloc {
+        let config_descriptor = dma_alloc_zeroed(transfer_length, 64)
+            .expect("Failed to allocate memory for config descriptor.");
+        let w_index = 0;
+        self.issue_request(
+            UsbBmRequestType::new(UsbBmRequestType::DIR_DEVICE_TO_HOST, UsbBmRequestType::TYPE_STANDARD, UsbBmRequestType::REC_DEVICE),
+            UsbBRequest::GET_DESCRIPTOR,
+            transfer_length,
+            WValue::new(WValue::DESC_CONFIGURATION, index),
+            w_index,
+            Some(&config_descriptor)
+        );
+        config_descriptor
     }
 }
 
@@ -690,12 +774,12 @@ impl XhciInterrupterState {
             return;
         }
 
-        let  dev = match &mut xhci.devices.get_mut()[slot_id as usize] {
+        let dev = match &mut xhci.devices.get_mut()[slot_id as usize] {
             None => {
                 kprintln!(Error, "[SLOT {}] Tried handling address device completion when device is not present in software!", slot_id);
                 return;
             }
-            Some(a) => {a}
+            Some(a) => { a }
         };
 
         let port = dev.port;
@@ -770,50 +854,23 @@ impl XhciInterrupterState {
         kprintln!(Info, "[SLOT {}] Successfully handled address device command.", trb.slot_id());
 
         //now, we need to obtain the max packet size. for all the speeds except for full speed this is already known and set before
-        let descriptor_8b = dma_alloc_zeroed(8, 8)
+        let device_descriptor_8b = dma_alloc_zeroed(8, 8)
             .expect("Failed to allocate memory for 8bytes of usb descriptor.");
 
         let transfer_length = 8;
-        self.issue_usb_get_descriptor_request(dev, transfer_length, &descriptor_8b);
-        dev.first_8_bytes_of_descriptor = Some(descriptor_8b);
+        let w_index = 0;
+        dev.issue_request(
+            UsbBmRequestType::new(UsbBmRequestType::DIR_DEVICE_TO_HOST, UsbBmRequestType::TYPE_STANDARD, UsbBmRequestType::REC_DEVICE),
+            UsbBRequest::GET_DESCRIPTOR,
+            transfer_length,
+            WValue::new(1, 0),
+            w_index,
+            Some(&device_descriptor_8b)
+        );
+
+        dev.first_8_bytes_of_device_descriptor = Some(device_descriptor_8b);
 
         xhci.ring_doorbell(slot_id, 1, 0);
-    }
-
-    unsafe fn issue_usb_get_descriptor_request(&self, dev: &mut XHCIDevice, transfer_length: usize, buf: &DmaAlloc) {
-        let transfer_ring = &mut dev.transfer_ring;
-        let mut setup_stage_td = SetupStageTrb::new();
-        setup_stage_td.set_trt(SetupTransferType::InDataStage);
-        setup_stage_td.set_transfer_length(8);
-        setup_stage_td.set_ioc(false);
-        setup_stage_td.set_idt(true);
-        setup_stage_td.set_bm_request_type(0x80); //device to host, standard type, recipent=device
-        setup_stage_td.set_b_request(6); //GET_DESCRIPTOR
-        setup_stage_td.set_w_value(0x0100); //low byte - descriptor index, high byte - descriptor type
-        setup_stage_td.set_w_index(0);
-        setup_stage_td.set_w_length(transfer_length as u16);
-
-        transfer_ring.enqueue(*setup_stage_td.raw())
-            .expect("Failed to send setup stage td to device.");
-
-        let mut data_stage_td = DataStageTrb::new();
-        data_stage_td.set_direction(1);
-        data_stage_td.set_transfer_length(transfer_length as u32);
-        data_stage_td.set_chain(false);
-        data_stage_td.set_ioc(false);
-        data_stage_td.set_idt(false);
-        data_stage_td.set_data_buffer(buf.phys.as_u64());
-
-        transfer_ring.enqueue(*data_stage_td.raw())
-            .expect("Failed to send data stage td to device.");
-
-        let mut status_stage_td = StatusStageTrb::new();
-        status_stage_td.set_direction(0);
-        status_stage_td.set_chain(false);
-        status_stage_td.set_ioc(true);
-
-        transfer_ring.enqueue(*status_stage_td.raw())
-            .expect("Failed to send status stage td to device.");
     }
 
     unsafe fn handle_slot_disable_completion(&self, xhci: &mut XHCI, trb: CommandCompletionEventTrb, command_context: CommandContext) {
@@ -858,11 +915,21 @@ impl XhciInterrupterState {
             .as_mut()
             .expect("Tried handling evaluate context command with no device present in software.");
 
-        let descriptor_full = dma_alloc_zeroed(size_of::<UsbDeviceDescriptor>(), 64)
+        let device_descriptor_full = dma_alloc_zeroed(size_of::<UsbDeviceDescriptor>(), 64)
             .expect("Failed to allocate memory for usb device descriptor.");
 
-        self.issue_usb_get_descriptor_request(dev, size_of::<UsbDeviceDescriptor>(), &descriptor_full);
-        dev.descriptor = Some(descriptor_full);
+        let transfer_length = size_of::<UsbDeviceDescriptor>();
+        let w_index = 0;
+        dev.issue_request(
+            UsbBmRequestType::new(UsbBmRequestType::DIR_DEVICE_TO_HOST, UsbBmRequestType::TYPE_STANDARD, UsbBmRequestType::REC_DEVICE),
+            UsbBRequest::GET_DESCRIPTOR,
+            transfer_length,
+            WValue::new(1, 0),
+            w_index,
+            Some(&device_descriptor_full)
+        );
+
+        dev.device_descriptor = Some(device_descriptor_full);
         xhci.ring_doorbell(slot_id, 1, 0);
     }
 
@@ -901,51 +968,142 @@ impl XhciInterrupterState {
     }
 
     unsafe fn handle_complete_usb_device_descriptor(&self, xhci: &mut XHCI, transfer_event: TransferEventTrb) {
-        let slot = transfer_event.slot_id();
-        let dev = xhci.devices.get_mut()[slot as usize]
+        let slot_id = transfer_event.slot_id();
+        let dev = xhci.devices.get_mut()[slot_id as usize]
             .as_mut()
             .expect("Tried handling status stage TD with no device present in software.");
 
-        let dma_descriptor = dev.descriptor.as_mut().unwrap();
+        let dma_descriptor = dev.device_descriptor.as_mut().unwrap();
         let descriptor = &mut *(dma_descriptor.virt.as_mut_ptr::<UsbDeviceDescriptor>());
+        dev.first_8_bytes_of_device_descriptor = None; // we dont need that anymore
 
-            kprintln!(
-        "UsbDeviceDescriptor {{
-        b_length: {},
-        b_descriptor_type: {},
-        bcd_usb: {:#06x},
-        b_device_class: {:#04x},
-        b_device_subclass: {:#04x},
-        b_device_protocol: {:#04x},
-        b_max_packet_size0: {},
-        id_vendor: {:#011x},
-        vendor_name: {},
-        product_name: {},
-        id_product: {:#06x},
-        bcd_device: {:#06x},
-        i_manufacturer: {},
-        i_product: {},
-        i_serial_number: {},
-        b_num_configurations: {}
-    }}",
-        descriptor.b_length(),
-        descriptor.b_descriptor_type(),
-        descriptor.bcd_usb(),
-        descriptor.b_device_class(),
-        descriptor.b_device_subclass(),
-        descriptor.b_device_protocol(),
-        descriptor.b_max_packet_size0(),
-        descriptor.id_vendor().0,
-        descriptor.id_vendor().name(),
-        "todo",
-        descriptor.id_product(),
-        descriptor.bcd_device(),
-        descriptor.i_manufacturer(),
-        descriptor.i_product(),
-        descriptor.i_serial_number(),
-        descriptor.b_num_configurations()
-    );
+        kprintln!(Debug, "[SLOT {}] Successfully obtained full usb device descriptor.", slot_id);
+        descriptor.print();
+
+        //now, lets get the configuration descriptors
+        //we need to determine the full length of it, so request first 8 bytes
+        let number_of_config_descriptors = descriptor.b_num_configurations(); //99% cases it's just 1
+        let mut config_desc_allocs: Vec<Option<DmaAlloc>> = Vec::new();
+        let transfer_size = 8;
+
+        for descriptor_index in 0..number_of_config_descriptors {
+            let config_desc_dma = dev.get_config_descriptor(
+                transfer_size,
+                descriptor_index
+            );
+            config_desc_allocs.push(Some(config_desc_dma));
+        }
+
+        dev.first_8_bytes_of_config_descriptors = Some(config_desc_allocs);
+        xhci.ring_doorbell(slot_id, 1, 0);
     }
+
+    unsafe fn handle_early_usb_config_descriptors(&self, xhci: &mut XHCI, transfer_event: TransferEventTrb) {
+        let slot_id = transfer_event.slot_id();
+        let dev = xhci.devices.get_mut()[slot_id as usize]
+            .as_mut()
+            .expect("Tried handling status stage TD (early config descriptor) with no device present in software.");
+
+        if transfer_event.completion_code() != TrbCompletionCode::SUCCESS {
+            kprintln!(Error, "[SLOT {}] Retrieving first 8 bytes of configuration descriptor failed with TRB completion code {}.",
+                slot_id, transfer_event.completion_code()
+            );
+            return;
+        }
+
+        if dev.device_descriptor.is_none() {
+            kprintln!(Error, "[SLOT {}] Tried reading device's configuration descriptor when device descriptor is not read!", slot_id);
+            return;
+        }
+
+        if dev.first_8_bytes_of_config_descriptors.is_none() {
+            kprintln!(Error, "[SLOT {}] Tried reading device's configuration descriptor without reading it's first 8 bytes first!", slot_id);
+            return;
+        }
+
+        let device_descriptor = &*dev.device_descriptor
+            .as_mut()
+            .unwrap()
+            .virt
+            .as_mut_ptr::<UsbDeviceDescriptor>();
+
+        //now, time for full configuration descriptor
+        let number_of_config_descriptors = device_descriptor.b_num_configurations(); //99% cases it's just 1
+        kprintln!(Debug, "[SLOT {}] Deteced number of configurations (b_num_configurations): {}", slot_id, number_of_config_descriptors);
+        let mut config_desc_allocs: Vec<DmaAlloc> = Vec::new();
+
+        for descriptor_index in 0..number_of_config_descriptors {
+            let config_descriptor_8b = unsafe {
+                *dev.first_8_bytes_of_config_descriptors
+                    .as_mut()
+                    .unwrap()[descriptor_index as usize]
+                    .as_mut()   //what a load of ugly bullshit
+                    .unwrap()
+                    .virt
+                    .as_mut_ptr::<u64>()
+            };
+
+            let bytes = config_descriptor_8b.to_le_bytes();
+            let w_total_length = u16::from_le_bytes([bytes[2], bytes[3]]);
+
+            kprintln!("Total length of Config {}: {} bytes", descriptor_index, w_total_length);
+
+            let config_desc_dma = unsafe {
+                dev.get_config_descriptor(
+                    w_total_length as usize,
+                    descriptor_index
+                )
+            };
+            config_desc_allocs.push(config_desc_dma);
+        }
+
+        dev.configuration_descriptors = Some(config_desc_allocs);
+        xhci.ring_doorbell(slot_id, 1, 0);
+    }
+
+    unsafe fn handle_complete_usb_config_descriptors(&self, xhci: &mut XHCI, transfer_event: TransferEventTrb) {
+        let slot_id = transfer_event.slot_id();
+        let dev = xhci.devices.get_mut()[slot_id as usize]
+            .as_mut()
+            .expect("Tried handling status stage TD (complete config descriptor) with no device present in software.");
+
+
+        let desc_index = dev.currently_handled_config_desc_index.fetch_add(1, Ordering::Relaxed);
+
+        if transfer_event.completion_code() != TrbCompletionCode::SUCCESS {
+            kprintln!(Error, "[SLOT {}] Retrieving full configuration descriptor failed with TRB completion code {}.",
+                slot_id, transfer_event.completion_code()
+            );
+            return;
+        }
+
+        let desc_alloc = &dev.configuration_descriptors.as_mut()
+            .expect("Config descriptor array in software is none.")[desc_index];
+
+        let ptr = desc_alloc.virt.as_mut_ptr::<u8>();
+        let length = ptr::read(ptr as *const u16) as usize;
+        let config_tree = UsbConfigurationTree::from_ptr(ptr, length)
+            .expect("Cannot parse usb config descriptor (configuration tree).");
+
+        let arr = dev.first_8_bytes_of_config_descriptors.as_mut().unwrap();
+        arr[desc_index] = None; //we dont need that anymore
+
+        let mut is_empty = true;
+        for elem in arr {
+            if elem.is_some() {
+                is_empty = false;
+                break;
+            }
+        };
+
+        if is_empty {
+            //free the whole vector if no values are left in it
+            dev.first_8_bytes_of_config_descriptors = None;
+        }
+
+        kprintln!(Debug, "{}", config_tree);
+    }
+
     unsafe fn handle_status_stage_td(&self, xhci: &mut XHCI, transfer_event: TransferEventTrb) {
         if transfer_event.completion_code() != TrbCompletionCode::SUCCESS {
             kprintln!(Error, "Status stage TD completed with completion code {}.", transfer_event.completion_code());
@@ -957,12 +1115,22 @@ impl XhciInterrupterState {
             .as_mut()
             .expect("Tried handling status stage TD with no device present in software.");
 
-        if let Some(descriptor) = &dev.descriptor {
+        if let Some(config_descriptor) = &dev.configuration_descriptors {
+            self.handle_complete_usb_config_descriptors(xhci, transfer_event);
+            return;
+        }
+
+        if let Some(config_descriptor) = &dev.first_8_bytes_of_config_descriptors {
+            self.handle_early_usb_config_descriptors(xhci, transfer_event);
+            return;
+        }
+
+        if let Some(descriptor) = &dev.device_descriptor {
             self.handle_complete_usb_device_descriptor(xhci, transfer_event);
             return;
         }
 
-        let dma_descriptor_8b = dev.first_8_bytes_of_descriptor
+        let dma_descriptor_8b = dev.first_8_bytes_of_device_descriptor
             .as_ref()
             .expect("Device's first 8bytes of usb descriptors are not set in software.");
 

@@ -7,6 +7,7 @@ use crate::drivers::usb::xhci::xhci::XHCI;
 pub mod uhci;
 pub mod xhci;
 pub mod ehci;
+mod descriptors;
 
 const PIF_UHCI_CONTROLLER: u8 = 0x00;
 const PIF_OHCI_CONTROLLER: u8 = 0x10;
@@ -41,141 +42,170 @@ pub fn init_usb_controller(pci_dev: PciDevice) {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-#[repr(C, packed)]
-pub struct UsbDeviceDescriptor {
-    b_length: u8,
-    b_descriptor_type: u8,
-    bcd_usb: u16,
-    b_device_class: u8,
-    b_device_subclass: u8,
-    b_device_protocol: u8,
-    b_max_packet_size0: u8,
-    id_vendor: UsbVendor,
-    id_product: u16,
-    bcd_device: u16,
-    i_manufacturer: u8,
-    i_product: u8,
-    i_serial_number: u8,
-    b_num_configurations: u8,
-}
-
-impl UsbDeviceDescriptor {
-    pub fn b_length(&self) -> u8 {
-        self.b_length
-    }
-
-    pub fn b_descriptor_type(&self) -> u8 {
-        self.b_descriptor_type
-    }
-
-    pub fn bcd_usb(&self) -> u16 {
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.bcd_usb)) }
-    }
-
-    pub fn b_device_class(&self) -> u8 {
-        self.b_device_class
-    }
-
-    pub fn b_device_subclass(&self) -> u8 {
-        self.b_device_subclass
-    }
-
-    pub fn b_device_protocol(&self) -> u8 {
-        self.b_device_protocol
-    }
-
-    pub fn b_max_packet_size0(&self) -> u8 {
-        self.b_max_packet_size0
-    }
-
-    pub fn id_vendor(&self) -> UsbVendor {
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.id_vendor)) }
-    }
-
-    pub fn id_product(&self) -> u16 {
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.id_product)) }
-    }
-
-    pub fn bcd_device(&self) -> u16 {
-        unsafe { core::ptr::read_unaligned(core::ptr::addr_of!(self.bcd_device)) }
-    }
-
-    pub fn i_manufacturer(&self) -> u8 {
-        self.i_manufacturer
-    }
-
-    pub fn i_product(&self) -> u8 {
-        self.i_product
-    }
-
-    pub fn i_serial_number(&self) -> u8 {
-        self.i_serial_number
-    }
-
-    pub fn b_num_configurations(&self) -> u8 {
-        self.b_num_configurations
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct UsbVendor(pub u16);
+pub struct UsbId {
+    pub vendor: u16,
+    pub product: u16,
+}
 
-impl UsbVendor {
-    pub const ADOMAX: Self = Self(0x0627);
-    pub const QEMU: Self = Self(0x46F4);
-    pub const VIRTUALBOX: Self = Self(0x80EE);
-    pub const VMWARE: Self = Self(0x0E0F);
+impl UsbId {
+    pub const VID_ADOMAX: u16 = 0x0627;
+    pub const VID_QEMU: u16 = 0x46F4;
+    pub const VID_VIRTUALBOX: u16 = 0x80EE;
+    pub const VID_VMWARE: u16 = 0x0E0F;
 
-    pub const MICROSOFT: Self = Self(0x045E);
-    pub const LOGITECH: Self = Self(0x046D);
-    pub const APPLE: Self = Self(0x05AC);
-    pub const RAZER: Self = Self(0x1532);
-    pub const CORSAIR: Self = Self(0x1B1C);
-    pub const STEELSERIES: Self = Self(0x1038);
-    pub const ROCCAT: Self = Self(0x1E7D);
-    pub const CHERRY: Self = Self(0x046A);
-    pub const ASUS: Self = Self(0x0B05);
-    pub const COOLER_MASTER: Self = Self(0x2516);
-    pub const KEYCHRON: Self = Self(0x3434);
-    pub const BISON_ELECTRONICS: Self = Self(0x5986);
-    pub const SONIX_TECHNOLOGY: Self = Self(0x0C45);
+    pub const VID_MICROSOFT: u16 = 0x045E;
+    pub const VID_LOGITECH: u16 = 0x046D;
+    pub const VID_APPLE: u16 = 0x05AC;
+    pub const VID_RAZER: u16 = 0x1532;
+    pub const VID_CORSAIR: u16 = 0x1B1C;
+    pub const VID_STEELSERIES: u16 = 0x1038;
+    pub const VID_ROCCAT: u16 = 0x1E7D;
+    pub const VID_A_FOUR_TECH: u16 = 0x09DA;
+    pub const VID_CHERRY: u16 = 0x046A;
+    pub const VID_ASUS: u16 = 0x0B05;
+    pub const VID_COOLER_MASTER: u16 = 0x2516;
+    pub const VID_KEYCHRON: u16 = 0x3434;
+    pub const VID_BISON_ELECTRONICS: u16 = 0x5986;
+    pub const VID_SONIX_TECHNOLOGY: u16 = 0x0C45;
 
-    pub const DELL: Self = Self(0x413C);
-    pub const HP: Self = Self(0x03F0);
-    pub const LENOVO: Self = Self(0x17EF);
-    pub const CHICONY: Self = Self(0x04F2);
-    pub const LITEON: Self = Self(0x04CA);
+    pub const VID_DELL: u16 = 0x413C;
+    pub const VID_HP: u16 = 0x03F0;
+    pub const VID_LENOVO: u16 = 0x17EF;
+    pub const VID_CHICONY: u16 = 0x04F2;
+    pub const VID_LITEON: u16 = 0x04CA;
 
-    pub const INTEL: Self = Self(0x8086);
-    pub const INTEL_ALT: Self = Self(0x8087);
+    pub const VID_INTEL: u16 = 0x8086;
+    pub const VID_INTEL_ALT: u16 = 0x8087;
 
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::ADOMAX => "Adomax Technology",
-            Self::QEMU => "QEMU Virtual Device",
-            Self::VIRTUALBOX => "VirtualBox",
-            Self::VMWARE => "VMware",
-            Self::MICROSOFT => "Microsoft",
-            Self::LOGITECH => "Logitech",
-            Self::APPLE => "Apple",
-            Self::RAZER => "Razer USA",
-            Self::CORSAIR => "Corsair",
-            Self::STEELSERIES => "SteelSeries",
-            Self::ROCCAT => "Roccat",
-            Self::CHERRY => "Cherry GmbH",
-            Self::ASUS => "ASUSTek",
-            Self::COOLER_MASTER => "Cooler Master",
-            Self::KEYCHRON => "Keychron",
-            Self::BISON_ELECTRONICS => "Bison Electronics Inc.",
-            Self::SONIX_TECHNOLOGY => "Sonix Technology Co., Ltd.",
-            Self::DELL => "Dell Computer Corp.",
-            Self::HP => "Hewlett-Packard",
-            Self::LENOVO => "Lenovo",
-            Self::CHICONY => "Chicony Electronics Co., Ltd.",
-            Self::LITEON => "Lite-On Technology Corp.",
-            Self::INTEL | Self::INTEL_ALT => "Intel Corporation",
+    pub const fn new(vendor: u16, product: u16) -> Self {
+        Self { vendor, product }
+    }
+
+    pub fn vendor_name(&self) -> &'static str {
+        match self.vendor {
+            Self::VID_ADOMAX => "Adomax Technology",
+            Self::VID_QEMU => "QEMU Virtual Device",
+            Self::VID_VIRTUALBOX => "VirtualBox",
+            Self::VID_VMWARE => "VMware",
+            Self::VID_MICROSOFT => "Microsoft",
+            Self::VID_LOGITECH => "Logitech",
+            Self::VID_APPLE => "Apple",
+            Self::VID_RAZER => "Razer USA",
+            Self::VID_CORSAIR => "Corsair",
+            Self::VID_STEELSERIES => "SteelSeries",
+            Self::VID_ROCCAT => "Roccat",
+            Self::VID_A_FOUR_TECH => "A4Tech Co., Ltd",
+            Self::VID_CHERRY => "Cherry GmbH",
+            Self::VID_ASUS => "ASUSTek",
+            Self::VID_COOLER_MASTER => "Cooler Master",
+            Self::VID_KEYCHRON => "Keychron",
+            Self::VID_BISON_ELECTRONICS => "Bison Electronics Inc.",
+            Self::VID_SONIX_TECHNOLOGY => "Sonix Technology Co., Ltd.",
+            Self::VID_DELL => "Dell Computer Corp.",
+            Self::VID_HP => "Hewlett-Packard",
+            Self::VID_LENOVO => "Lenovo",
+            Self::VID_CHICONY => "Chicony Electronics Co., Ltd.",
+            Self::VID_LITEON => "Lite-On Technology Corp.",
+            Self::VID_INTEL | Self::VID_INTEL_ALT => "Intel Corporation",
             _ => "Unknown Vendor",
         }
+    }
+
+    //I only included the products i own - for easier debugging / clarity
+    pub fn product_name(&self) -> &'static str {
+        match (self.vendor, self.product) {
+            (Self::VID_QEMU, 0x0001) => "QEMU USB Keyboard",
+            (Self::VID_QEMU, 0x0002) => "QEMU USB Mouse",
+            (Self::VID_QEMU, 0x0003) => "QEMU USB Tablet",
+
+            (Self::VID_INTEL_ALT, 0x07dc) => "Bluetooth wireless interface",
+
+            (Self::VID_LOGITECH, 0xc33a) => "G413 Gaming Keyboard",
+            (Self::VID_LOGITECH, 0xc34a) => "G413 SE Gaming Keyboard",
+
+            (Self::VID_RAZER, 0x006c) => "Mamba Elite (Wired)",
+
+            (Self::VID_A_FOUR_TECH, 0x3263) => "Bloody A60 Mouse",
+
+            (Self::VID_BISON_ELECTRONICS, 0x0268) => "SunplusIT INC. Integrated Camera",
+
+            _ => "Unknown Device",
+        }
+    }
+}
+
+pub struct UsbBRequest;
+
+impl UsbBRequest {
+    pub const GET_STATUS: u8 = 0x00;
+    pub const CLEAR_FEATURE: u8 = 0x01;
+    pub const SET_FEATURE: u8 = 0x03;
+    pub const SET_ADDRESS: u8 = 0x05;
+    pub const GET_DESCRIPTOR: u8 = 0x06;
+    pub const SET_DESCRIPTOR: u8 = 0x07;
+    pub const GET_CONFIGURATION: u8 = 0x08;
+    pub const SET_CONFIGURATION: u8 = 0x09;
+    pub const GET_INTERFACE: u8 = 0x0A;
+    pub const SET_INTERFACE: u8 = 0x0B;
+    pub const SYNCH_FRAME: u8 = 0x0C;
+
+    pub const HID_GET_REPORT: u8 = 0x01;
+    pub const HID_GET_IDLE: u8 = 0x02;
+    pub const HID_GET_PROTOCOL: u8 = 0x03;
+    pub const HID_SET_REPORT: u8 = 0x09;
+    pub const HID_SET_IDLE: u8 = 0x0A;
+    pub const HID_SET_PROTOCOL: u8 = 0x0B;
+}
+
+pub struct UsbBmRequestType;
+
+impl UsbBmRequestType {
+    pub const DIR_HOST_TO_DEVICE: u8 = 0x00;
+    pub const DIR_DEVICE_TO_HOST: u8 = 0x80;
+
+    pub const TYPE_STANDARD: u8 = 0x00;
+    pub const TYPE_CLASS: u8 = 0x20;
+    pub const TYPE_VENDOR: u8 = 0x40;
+
+    pub const REC_DEVICE: u8 = 0x00;
+    pub const REC_INTERFACE: u8 = 0x01;
+    pub const REC_ENDPOINT: u8 = 0x02;
+    pub const REC_OTHER: u8 = 0x03;
+
+    #[inline]
+    pub const fn new(direction: u8, req_type: u8, recipient: u8) -> u8 {
+        direction | req_type | recipient
+    }
+}
+
+pub struct WValue;
+
+impl WValue {
+    pub const DESC_DEVICE: u8 = 0x01;
+    pub const DESC_CONFIGURATION: u8 = 0x02;
+    pub const DESC_STRING: u8 = 0x03;
+    pub const DESC_INTERFACE: u8 = 0x04;
+    pub const DESC_ENDPOINT: u8 = 0x05;
+    pub const DESC_DEVICE_QUALIFIER: u8 = 0x06;
+    pub const DESC_OTHER_SPEED: u8 = 0x07;
+
+    pub const DESC_HID: u8 = 0x21;
+    pub const DESC_HID_REPORT: u8 = 0x22;
+    pub const DESC_HID_PHYSICAL: u8 = 0x23;
+
+    pub const HID_REPORT_INPUT: u8 = 0x01;
+    pub const HID_REPORT_OUTPUT: u8 = 0x02;
+    pub const HID_REPORT_FEATURE: u8 = 0x03;
+
+    pub const INDEX_ZERO: u8 = 0x00;
+
+    pub const FEATURE_ENDPOINT_HALT: u16 = 0x0000;
+    pub const FEATURE_DEVICE_REMOTE_WAKEUP: u16 = 0x0001;
+    pub const FEATURE_TEST_MODE: u16 = 0x0002;
+
+    #[inline]
+    pub const fn new(high_byte: u8, low_byte: u8) -> u16 {
+        ((high_byte as u16) << 8) | (low_byte as u16)
     }
 }
