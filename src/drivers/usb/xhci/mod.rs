@@ -53,6 +53,7 @@ const RT_ERDP: u8 = 0x38;
 
 const XHCI_CONTROLLER_NOT_READY: u32 = 1 << 11;
 const XHCI_STATUS_HALTED: u32 = 1 << 0;
+const XHCI_STATUS_EVENT_INTERRUPT: u32 = 1 << 3;
 const COMMAND_RING_TRBS: usize = 256;
 const EVENT_RING_TRBS: usize = 256;
 const TRANSFER_RING_TRBS: usize = 256;
@@ -62,6 +63,7 @@ const USB_CMD_RUN_STOP: u32 = 1 << 0;
 const USB_CMD_HOST_CONTROLLER_RESET: u32 = 1 << 1;
 const USB_CMD_INTERRUPTER_ENABLE: u32 = 1 << 2;
 const INTERRUPTER_REGISTER_STRIDE: u64 = 0x20;
+const INTERRUPTER_MANAGEMENT_PENDING: u32 = 1 << 0;
 const INTERRUPTER_MANAGEMENT_ENABLE: u32 = 1 << 1;
 //==================================================================================================
 pub const HCCPARAMS1_XECP_MASK: u32 = 0xFFFF_0000;

@@ -68,9 +68,10 @@ pub enum RingError {
 
 pub trait Ring {
     fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self;
-    fn enqueue(&mut self, trb: Trb) -> Result<(), RingError>;
+
+    /// Enqueues a TRB and returns the physical address of the slot it was written to.
+    fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError>;
     fn dequeue(&mut self) -> Result<Trb, RingError>;
-    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError>;
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError>;
     fn ring_mut(&mut self) -> &mut TrbRing;
     fn ring(&self) -> &TrbRing;
@@ -137,7 +138,7 @@ impl TrbRing {
         Some((alloc, trbs))
     }
 
-    pub unsafe fn enqueue(&mut self, mut trb: Trb) -> Result<(), RingError> {
+    pub unsafe fn enqueue(&mut self, mut trb: Trb) -> Result<PhysAddr, RingError> {
         let len = self.trbs.len();
         let link_index = len - 1;
 
@@ -165,21 +166,28 @@ impl TrbRing {
             return Err(RingError::Full);
         }
 
+        //captured after the wrap above, so it is the slot the TRB actually lands in
+        let written_index = self.enqueue_index;
+
         trb.set_cycle(!self.cycle_state);
-        write_volatile(&mut (*self.trbs)[self.enqueue_index], trb);
+        write_volatile(&mut (*self.trbs)[written_index], trb);
 
         //memory barrier
         fence(Ordering::Release);
 
         let correct_control_dword = trb.control() ^ 1;
-        let trb_ptr = &mut (*self.trbs)[self.enqueue_index] as *mut Trb as *mut u32;
+        let trb_ptr = &mut (*self.trbs)[written_index] as *mut Trb as *mut u32;
         let dword3_ptr = trb_ptr.add(3);
         write_volatile(dword3_ptr, correct_control_dword);
 
 
         self.enqueue_index += 1;
 
-        Ok(())
+        Ok(self.trb_phys(written_index))
+    }
+
+    pub fn trb_phys(&self, index: usize) -> PhysAddr {
+        self.ring_phys + (index * size_of::<Trb>()) as u64
     }
 
     pub fn dequeue(&mut self) -> Result<Trb, RingError> {
@@ -228,7 +236,7 @@ impl Ring for EventRing {
         Self { ring }
     }
 
-    fn enqueue(&mut self, _: Trb) -> Result<(), RingError> {
+    fn enqueue(&mut self, _: Trb) -> Result<PhysAddr, RingError> {
         Err(Unsupported)
     }
 
@@ -239,10 +247,6 @@ impl Ring for EventRing {
         } else {
             Err(RingError::InvalidTrbOnEventRing)
         }
-    }
-
-    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
-        Err(Unsupported)
     }
 
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
@@ -272,7 +276,7 @@ impl Ring for CommandRing {
         Self { ring }
     }
 
-    fn enqueue(&mut self, trb: Trb) -> Result<(), RingError> {
+    fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
         if trb.is_command_trb() {
             unsafe { self.ring.enqueue(trb) }
         } else {
@@ -282,10 +286,6 @@ impl Ring for CommandRing {
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
         Err(Unsupported)
-    }
-
-    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
-        Ok(self.ring.get_enqueue_phys())
     }
 
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
@@ -314,7 +314,7 @@ impl Ring for TransferRing {
         Self { ring }
     }
 
-    fn enqueue(&mut self, trb: Trb) -> Result<(), RingError> {
+    fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
         if trb.is_transfer_trb() {
             unsafe { self.ring.enqueue(trb) }
         } else {
@@ -324,10 +324,6 @@ impl Ring for TransferRing {
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
         self.ring.dequeue()
-    }
-
-    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
-        Ok(self.ring.get_enqueue_phys())
     }
 
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError> {
@@ -357,28 +353,38 @@ impl<const SIZE: usize> ShadowRing<SIZE> {
         }
     }
 
-    pub fn save_context(&mut self, index: usize, context: CommandContext) {
-        assert!(index < SIZE, "Shadow ring index out of bounds!");
-        self.entries[index] = context;
+    /// Records the context of a command by the physical address of its TRB.
+    pub fn save_context_by_phys_addr(&mut self, phys_addr: PhysAddr, context: CommandContext) {
+        match self.calculate_index(phys_addr.as_u64()) {
+            Some(index) => self.entries[index] = context,
+            //unreachable for addresses returned by our own command ring
+            None => debug_assert!(false, "Command TRB address outside of the command ring"),
+        }
     }
 
     pub fn take_context_by_phys_addr(&mut self, phys_addr: PhysAddr) -> CommandContext {
-        let index = self.calculate_index(phys_addr.as_u64());
-        mem::replace(&mut self.entries[index], CommandContext::Empty)
+        match self.calculate_index(phys_addr.as_u64()) {
+            Some(index) => mem::replace(&mut self.entries[index], CommandContext::Empty),
+            None => CommandContext::Empty,
+        }
     }
 
-    fn calculate_index(&self, phys_addr: u64) -> usize {
-        assert!(
-            phys_addr >= self.command_ring_phys_base,
-            "TRB address is before command ring address start!"
-        );
+    fn calculate_index(&self, phys_addr: u64) -> Option<usize> {
+        if phys_addr < self.command_ring_phys_base {
+            return None;
+        }
 
         let offset_bytes = phys_addr - self.command_ring_phys_base;
-        let index = (offset_bytes / 16) as usize;
+        if offset_bytes % size_of::<Trb>() as u64 != 0 {
+            return None;
+        }
 
-        assert!(index < SIZE, "Shadow ring index out of bounds!");
+        let index = (offset_bytes / size_of::<Trb>() as u64) as usize;
+        if index >= SIZE {
+            return None;
+        }
 
-        index
+        Some(index)
     }
 }
 
@@ -473,10 +479,19 @@ impl ERST {
     }
 }
 
-pub fn xhci_alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
+/// Allocates an Event Ring Segment Table describing a single event ring segment.
+pub fn xhci_alloc_dma_erst(
+    event_ring_phys: PhysAddr,
+    ring_segment_size: u32,
+) -> Option<DmaAlloc> {
     let alloc = dma_alloc_zeroed(size_of::<ERST>(), PageSize::SIZE_4KB as usize)?;
-    let erst = unsafe { alloc.as_mut::<ERST>() };
-    Some((alloc, erst))
+    unsafe {
+        write_volatile(
+            alloc.virt.as_mut_ptr::<ERST>(),
+            ERST::new(event_ring_phys.as_u64(), ring_segment_size),
+        );
+    }
+    Some(alloc)
 }
 
 // Not quite a ring, but a helper for command ring saving command context for future access
@@ -484,7 +499,7 @@ pub fn xhci_alloc_dma_erst() -> Option<(DmaAlloc, &'static mut ERST)> {
 pub enum CommandContext {
     Empty,
     EnableSlot { port_id: u8 },
-    DisableSlot { port_id: u8 },
+    DisableSlot { port_id: u8, slot_id: u8 },
     AddressDevice { slot_id: u8 },
 }
 

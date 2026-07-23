@@ -86,7 +86,7 @@ impl Trb {
     pub const TRB_CONFIGURE_ENDPOINT: u8 = 12;
     pub const TRB_EVALUATE_CONTEXT_COMMAND: u8 = 13;
     pub const TRB_RESET_ENDPOINT: u8 = 14;
-    pub const TRB_STOP_ENDPOINT: u8 = 15;
+    pub const TRB_STOP_ENDPOINT_COMMAND: u8 = 15;
     pub const TRB_SET_DEQUEUE_PTR: u8 = 16;
     pub const TRB_RESET_DEVICE: u8 = 17;
     pub const TRB_FORCE_EVENT: u8 = 18;
@@ -1144,6 +1144,218 @@ impl EvaluateContextCmdTrb {
 
 impl TrbTrait for EvaluateContextCmdTrb {
     const TRB_TYPE: u8 = Self::TRB_TYPE;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct NormalTrb {
+    raw: Trb,
+}
+
+impl NormalTrb {
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_NORMAL);
+
+        Self { raw }
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_NORMAL {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_NORMAL,
+                actual,
+            });
+        }
+        Ok(Self { raw })
+    }
+
+    pub fn data_buffer(&self) -> u64 {
+        self.raw.parameter()
+    }
+
+    pub fn set_data_buffer(&mut self, val: u64) {
+        self.raw.set_parameter(val);
+    }
+
+    pub fn transfer_length(&self) -> u32 {
+        self.raw.length()
+    }
+
+    pub fn set_transfer_length(&mut self, val: u32) {
+        self.raw.set_length(val);
+    }
+
+    pub fn interrupter_target(&self) -> u16 {
+        self.raw.interrupter_target()
+    }
+
+    pub fn set_interrupter_target(&mut self, val: u16) {
+        self.raw.set_interrupter_target(val);
+    }
+
+    pub fn ent(&self) -> bool {
+        (self.raw.control() & (1 << 1)) != 0
+    }
+
+    pub fn set_ent(&mut self, ent: bool) {
+        let mut control = self.raw.control();
+        if ent {
+            control |= 1 << 1;
+        } else {
+            control &= !(1 << 1);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn isp(&self) -> bool {
+        (self.raw.control() & (1 << 2)) != 0
+    }
+
+    pub fn set_interrupt_on_short_packet(&mut self, isp: bool) {
+        let mut control = self.raw.control();
+        if isp {
+            control |= 1 << 2;
+        } else {
+            control &= !(1 << 2);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn ns(&self) -> bool {
+        (self.raw.control() & (1 << 3)) != 0
+    }
+
+    pub fn set_ns(&mut self, ns: bool) {
+        let mut control = self.raw.control();
+        if ns {
+            control |= 1 << 3;
+        } else {
+            control &= !(1 << 3);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn chain(&self) -> bool {
+        (self.raw.control() & (1 << 4)) != 0
+    }
+
+    pub fn set_chain(&mut self, chain: bool) {
+        let mut control = self.raw.control();
+        if chain {
+            control |= 1 << 4;
+        } else {
+            control &= !(1 << 4);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn bei(&self) -> bool {
+        (self.raw.control() & (1 << 9)) != 0
+    }
+
+    pub fn set_bei(&mut self, bei: bool) {
+        let mut control = self.raw.control();
+        if bei {
+            control |= 1 << 9;
+        } else {
+            control &= !(1 << 9);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+
+    pub fn ioc(&self) -> bool {
+        self.raw.ioc()
+    }
+
+    pub fn set_interrupt_on_completion(&mut self, ioc: bool) {
+        self.raw.set_ioc(ioc);
+    }
+}
+
+impl TrbTrait for NormalTrb {
+    const TRB_TYPE: u8 = Trb::TRB_NORMAL;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct StopEndpointCommandTrb {
+    raw: Trb,
+}
+
+impl StopEndpointCommandTrb {
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_STOP_ENDPOINT_COMMAND);
+
+        Self { raw }
+    }
+
+    pub fn endpoint_id(&self) -> u8 {
+        ((self.raw.control() >> 16) & 0x1F) as u8
+    }
+
+    pub fn set_endpoint_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0x1F << 16)) | ((id as u32) << 16);
+        self.raw.set_control(control);
+    }
+
+    pub fn suspend(&self) -> bool {
+        (self.raw.control() & (1 << 23)) != 0
+    }
+
+    pub fn set_suspend(&mut self, suspend: bool) {
+        let mut control = self.raw.control();
+        if suspend {
+            control |= 1 << 23;
+        } else {
+            control &= !(1 << 23);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_slot_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0xFF << 24)) | ((id as u32) << 24);
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+}
+
+impl TrbTrait for StopEndpointCommandTrb {
+    const TRB_TYPE: u8 = Trb::TRB_STOP_ENDPOINT_COMMAND;
 
     fn raw(&self) -> &Trb {
         &self.raw
