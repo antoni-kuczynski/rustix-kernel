@@ -20,6 +20,12 @@ impl InputControlContext {
         Self::default()
     }
 
+    /// Clears every Add and Drop flag.
+    pub fn reset_flags(&mut self) {
+        self.drop_flags = 0;
+        self.add_flags = 0;
+    }
+
     pub fn add_context(&mut self, index: u8) {
         assert!(index <= 31, "Add Context index must be <= 31");
         self.add_flags |= 1 << index;
