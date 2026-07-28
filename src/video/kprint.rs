@@ -7,6 +7,7 @@ use core::fmt::{Arguments, Write};
 use spin::{Mutex};
 use crate::video::framebuffer::{Framebuffer, FramebufferColor, FRAMEBUFFER};
 use core::cell::UnsafeCell;
+use x86_64::instructions::interrupts;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
@@ -54,26 +55,29 @@ impl LogLevel {
 
 #[doc(hidden)]
 pub fn _kprint_status(success: bool, args: Arguments) {
-    let mut lock = FRAMEBUFFER.lock();
-    let fb = lock.as_mut().unwrap();
+    //TODO: temporary fix for calling inside IRQ context. make this asynchronous via writing to a buffer first
+    interrupts::without_interrupts(|| {
+        let mut lock = FRAMEBUFFER.lock();
+        let fb = lock.as_mut().unwrap();
 
-    let colors = (fb.current_foreground, fb.current_background);
-    fb.current_background = FramebufferColor::from_rgb(0,0,0);
+        let colors = (fb.current_foreground, fb.current_background);
+        fb.current_background = FramebufferColor::from_rgb(0, 0, 0);
 
 
-    if success {
-        fb.current_foreground = FramebufferColor::from_rgb(0,160,0);
-        _print(format_args!("-  DONE  - "), fb, false);
-    } else {
-        fb.current_foreground = FramebufferColor::from_rgb(170,0,0);
-        _print(format_args!("-  FAIL  - "), fb, false);
-    }
+        if success {
+            fb.current_foreground = FramebufferColor::from_rgb(0, 160, 0);
+            _print(format_args!("-  DONE  - "), fb, false);
+        } else {
+            fb.current_foreground = FramebufferColor::from_rgb(170, 0, 0);
+            _print(format_args!("-  FAIL  - "), fb, false);
+        }
 
-    //restore old colors
-    fb.current_foreground = colors.0;
-    fb.current_background = colors.1;
+        //restore old colors
+        fb.current_foreground = colors.0;
+        fb.current_background = colors.1;
 
-    _print(format_args!("{} {}", args, "\n"), fb, true);
+        _print(format_args!("{} {}", args, "\n"), fb, true);
+    });
 }
 
 
@@ -95,25 +99,31 @@ pub fn _kprint_panic(args: Arguments) {
 
 #[doc(hidden)]
 pub fn _kprint(level: LogLevel, args: Arguments) {
-    let mut lock = FRAMEBUFFER.lock();
-    let fb = lock.as_mut().unwrap();
-    let colors = (fb.current_foreground, fb.current_background);
+    //TODO: temporary fix for calling inside IRQ context. make this asynchronous via writing to a buffer first
+    interrupts::without_interrupts(|| {
+        let mut lock = FRAMEBUFFER.lock();
+        let fb = lock.as_mut().unwrap();
+        let colors = (fb.current_foreground, fb.current_background);
 
-    fb.current_background = FramebufferColor::from_rgb(0,0,0);
-    fb.current_foreground = level.color();
+        fb.current_background = FramebufferColor::from_rgb(0, 0, 0);
+        fb.current_foreground = level.color();
 
-    _print(format_args!("{}", level.as_str()), fb, false);
+        _print(format_args!("{}", level.as_str()), fb, false);
 
-    fb.current_foreground = colors.0;
-    fb.current_background = colors.1;
+        fb.current_foreground = colors.0;
+        fb.current_background = colors.1;
 
-    _print(format_args!("{}", args), fb, true);
+        _print(format_args!("{}", args), fb, true);
+    });
 }
 
 #[doc(hidden)]
 pub fn _kprintln(level: LogLevel, args: Arguments) {
-    let args1 = format_args!("{}\n", args);
-    _kprint(level, args1);
+    //TODO: temporary fix for calling inside IRQ context. make this asynchronous via writing to a buffer first
+    interrupts::without_interrupts(|| {
+        let args1 = format_args!("{}\n", args);
+        _kprint(level, args1);
+    });
 }
 
 #[macro_export]
