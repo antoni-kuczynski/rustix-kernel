@@ -365,11 +365,6 @@ impl EndpointContext {
         (self.dword0 & Self::MAX_ESIT_PAYLOAD_HI_MASK) >> Self::MAX_ESIT_PAYLOAD_HI_SHIFT
     }
 
-    pub fn set_max_esit_payload_hi(&mut self, val: u32) {
-        self.dword0 = (self.dword0 & !Self::MAX_ESIT_PAYLOAD_HI_MASK)
-            | ((val << Self::MAX_ESIT_PAYLOAD_HI_SHIFT) & Self::MAX_ESIT_PAYLOAD_HI_MASK);
-    }
-
     /* ================= DWORD 1 (0x04) ================= */
 
     const CERR_MASK: u32 = 0b11 << 1;
@@ -478,9 +473,14 @@ impl EndpointContext {
         (self.dword4 & Self::MAX_ESIT_PAYLOAD_LO_MASK) >> 16
     }
 
-    pub fn set_max_esit_payload_lo(&mut self, val: u32) {
+
+    pub fn set_max_esit_payload(&mut self, val: u32) {
         self.dword4 = (self.dword4 & !Self::MAX_ESIT_PAYLOAD_LO_MASK)
             | ((val << 16) & Self::MAX_ESIT_PAYLOAD_LO_MASK);
+
+        let val_hi = val >> 16;
+        self.dword0 = (self.dword0 & !Self::MAX_ESIT_PAYLOAD_HI_MASK)
+            | ((val_hi << Self::MAX_ESIT_PAYLOAD_HI_SHIFT) & Self::MAX_ESIT_PAYLOAD_HI_MASK);
     }
 }
 
