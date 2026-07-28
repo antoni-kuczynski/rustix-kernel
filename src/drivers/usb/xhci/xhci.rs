@@ -37,10 +37,11 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use core::arch::x86_64::_mm_mfence;
 use core::mem::size_of;
 use core::ops::Add;
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicUsize, Ordering};
 use spin::once::Once;
 use x86_64::structures::idt::InterruptStackFrame;
 use x86_64::{PhysAddr, VirtAddr};
@@ -84,6 +85,7 @@ use crate::kprintln;
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use crate::memory::page_tables::PageSize;
+use crate::video::kprint::LogLevel::Debug;
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -1034,8 +1036,15 @@ pub struct XHCI {
 
 impl XHCI {
     fn send_command(&self, trb: Trb, context: CommandContext) -> Result<PhysAddr, RingError> {
-        let phys = self.commands.lock().submit(trb, context)?;
+        let phys = {
+            let mut commands_guard = self.commands.lock();
+            commands_guard.submit(trb, context)?
+        };
+        compiler_fence(Ordering::SeqCst);
+
+        unsafe { _mm_mfence() }
         self.regs.ring_command_doorbell();
+
         Ok(phys)
     }
 
@@ -2113,7 +2122,9 @@ fn complete_request(
     };
 
     if let Some(callback) = callback {
-        callback(request);
+        set_timeout(10, move || {
+            callback(request);
+        });
     }
 }
 

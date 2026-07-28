@@ -3,6 +3,7 @@
  * 22/07/2026
  */
 use alloc::sync::{Arc, Weak};
+use spin::Once;
 use crate::drivers::usb::descriptors::{UsbConfigurationTree, UsbDeviceDescriptor};
 use crate::drivers::usb::irq_mutex::IrqMutex;
 use crate::memory::dma::DmaAlloc;
@@ -47,8 +48,8 @@ pub struct UsbDevice {
     pub system_id: u64,
     pub hardware_id: u8,
     pub host_controller: Weak<dyn UsbHostController>, //weak to prevent controller reference count loop
-    pub configuration_tree: Option<UsbConfigurationTree>,
-    pub device_descriptor: Option<UsbDeviceDescriptor>
+    pub configuration_tree: Once<UsbConfigurationTree>,
+    pub device_descriptor: Once<UsbDeviceDescriptor>
 }
 
 pub type UsbTransferCallback = fn(Arc<IrqMutex<UsbTransferRequest>>);

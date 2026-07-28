@@ -4,7 +4,8 @@
  */
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use crate::drivers::usb::descriptors::UsbDeviceDescriptor;
+use spin::Once;
+use crate::drivers::usb::descriptors::{UsbConfigurationTree, UsbDeviceDescriptor};
 use crate::drivers::usb::irq_mutex::IrqMutex;
 use crate::drivers::usb::usb_transfers::{UsbDevice, UsbHostController, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::usb_transfers::UsbTransferDirection::DeviceToHost;
@@ -39,8 +40,8 @@ impl UsbCore {
             system_id: self.new_system_id(),
             hardware_id,
             host_controller,
-            configuration_tree: None,
-            device_descriptor: None
+            configuration_tree: Once::new(),
+            device_descriptor: Once::new()
         });
 
         self.devices.push(device.clone());
@@ -93,18 +94,105 @@ pub fn usb_register_device(hardware_id: u8, host_controller: Weak<dyn UsbHostCon
     kprintln!("Issued request.");
 }
 
-fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
-    let req = request.lock();
-    kprintln!(
-        Debug,
-        "Got device descriptor in layer2 ({:?}, {} bytes).",
-        req.status,
-        req.bytes_transferred
-    );
-    let desc = unsafe { &*req.dma_buffer.virt.as_ptr::<UsbDeviceDescriptor>() };
-    desc.print();
 
+fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let (dev, next_request) = {
+        let req = request.lock();
+        kprintln!(
+            Debug,
+            "Got device descriptor in layer2 ({:?}, {} bytes).",
+            req.status,
+            req.bytes_transferred
+        );
+        
+        let desc = unsafe { &*req.dma_buffer.virt.as_ptr::<UsbDeviceDescriptor>() };
+        let dev = req.target_device.clone();
+        dev.device_descriptor.call_once(|| *desc);
+
+        let next_dma = dma_alloc_zeroed(8, 1).unwrap();
+        let setup = UsbSetupPacket::new(
+            0x80,
+            0x06,
+            0x0200,
+            0x0000,
+            8
+        );
+
+        let config_req = Arc::new(IrqMutex::new(UsbTransferRequest {
+            target_device: dev.clone(),
+            endpoint_address: 0,
+            transfer_direction: DeviceToHost,
+            transfer_type: UsbTransferType::Control,
+            setup_packet: Some(setup),
+            dma_buffer: next_dma,
+            data_buffer_length: 8, //8bytes to get the total length. we dont need the 9th byte now
+            status: UsbTransferStatus::Pending,
+            bytes_transferred: 0,
+            completion_callback: Some(on_config_header_received),
+        }));
+        (dev, config_req)
+    };
+
+    if let Some(controller) = dev.host_controller.upgrade() {
+        let _ = controller.submit_request(next_request);
+    }
 }
 
+pub fn on_config_header_received(request_arc: Arc<IrqMutex<UsbTransferRequest>>) {
+    let (device, full_config_request) = {
+        let req = request_arc.lock();
+        let dev = req.target_device.clone();
+
+        let dma_ptr = req.dma_buffer.virt.as_ptr::<u64>();
+        let first_8_bytes = unsafe { core::ptr::read(dma_ptr) };
+
+        let bytes = first_8_bytes.to_le_bytes();
+        let w_total_length = u16::from_le_bytes([bytes[2], bytes[3]]);
+
+        kprintln!(Debug, "[USB CORE] Detected Configuration Descriptor size: {} bytes", w_total_length);
+
+        //now, it's time for the full configuration descriptor
+        let next_dma = dma_alloc_zeroed(w_total_length as usize, 1).unwrap();
+        let setup = UsbSetupPacket::new(0x80, 0x06, 0x0200, 0x0000, w_total_length);
+
+        let full_req = Arc::new(IrqMutex::new(UsbTransferRequest {
+            target_device: dev.clone(),
+            endpoint_address: 0,
+            transfer_direction: DeviceToHost,
+            transfer_type: UsbTransferType::Control,
+            setup_packet: Some(setup),
+            dma_buffer: next_dma,
+            data_buffer_length: w_total_length as usize,
+            status: UsbTransferStatus::Pending,
+            bytes_transferred: 0,
+            completion_callback: Some(on_full_config_received),
+        }));
+
+        (dev, full_req)
+    };
+
+    if let Some(controller) = device.host_controller.upgrade() {
+        let _ = controller.submit_request(full_config_request);
+    }
+}
+
+pub fn on_full_config_received(request_arc: Arc<IrqMutex<UsbTransferRequest>>) {
+    let req = request_arc.lock();
+    let dev = req.target_device.clone();
+
+    let ptr = req.dma_buffer.virt.as_ptr::<u8>();
+
+    let config_tree = unsafe {
+        UsbConfigurationTree::from_ptr(ptr, req.data_buffer_length)
+    }.expect("Failed to parse full USB configuration tree!");
+
+    kprintln!(Info, "[USB CORE] Successfully fully enumerated device ID {}!", dev.system_id);
+    kprintln!(Debug, "{}", config_tree);
+
+    dev.configuration_tree.call_once(|| config_tree);
+
+
+
+}
 
 pub static USB_CORE: IrqMutex<UsbCore> = IrqMutex::new(UsbCore::new());
