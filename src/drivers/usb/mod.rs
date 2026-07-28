@@ -1,16 +1,13 @@
 use crate::{kprintln};
-use core::fmt::Error;
-use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitializer};
+use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceInitializer};
 use crate::drivers::pci::pci_bar::PciBAR;
 use crate::drivers::usb::xhci::xhci::XHCI;
 
 pub mod uhci;
 pub mod xhci;
 pub mod ehci;
-mod descriptors;
-mod irq_mutex;
-mod usb_transfers;
-mod usb_core;
+pub mod core;
+mod hid;
 
 const PIF_UHCI_CONTROLLER: u8 = 0x00;
 const PIF_OHCI_CONTROLLER: u8 = 0x10;
@@ -18,7 +15,7 @@ pub(crate) const PIF_EHCI_CONTROLLER: u8 = 0x20;
 const PIF_XHCI_CONTROLLER: u8 = 0x30;
 
 pub trait UsbControllerInitializer {
-    fn initialize(&self) -> Result<(), Error>;
+    fn initialize(&self) -> Result<(), PciDeviceInitError>;
 }
 
 pub fn init_usb_controller(pci_dev: PciDevice) {

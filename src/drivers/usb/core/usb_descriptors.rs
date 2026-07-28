@@ -133,7 +133,7 @@ impl UsbDeviceDescriptor {
 }
 
 
-use core::{ptr, slice};
+use core::{slice};
 use crate::kprintln;
 
 pub struct DescriptorType;
@@ -251,7 +251,7 @@ pub struct UsbConfigurationTree {
 
 impl UsbConfigurationTree {
     pub unsafe fn from_ptr(ptr: *const u8, size: usize) -> Option<Self> {
-        let data = slice::from_raw_parts(ptr, size);
+        let data = unsafe { slice::from_raw_parts(ptr, size) };
         Self::parse(data)
     }
 

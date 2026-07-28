@@ -57,17 +57,15 @@ use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceIn
 use crate::drivers::pci::pci_io::PciVendor;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::pci::*;
-use crate::drivers::usb::irq_mutex::IrqMutex;
-use crate::drivers::usb::usb_core::usb_register_device;
-use crate::drivers::usb::usb_transfers::{
+use crate::drivers::usb::core::irq_mutex::IrqMutex;
+use crate::drivers::usb::core::usb_core::usb_register_device;
+use crate::drivers::usb::core::usb_transfers::{
     UsbHostController, UsbTransferRequest, UsbTransferStatus,
 };
 use crate::drivers::usb::xhci::xhci_context::{Dcbaa, DeviceContext};
 use crate::drivers::usb::xhci::xhci_endpoint_context::*;
 use crate::drivers::usb::xhci::xhci_ext_cap::XhciPortProtocol::Usb2;
-use crate::drivers::usb::xhci::xhci_ext_cap::{
-    parse_xhci_supported_protocols, XhciPortInfo, XhciPortProtocol,
-};
+use crate::drivers::usb::xhci::xhci_ext_cap::{parse_xhci_supported_protocols, XhciPortInfo, XhciPortProtocol, XhciPortSpeed};
 use crate::drivers::usb::xhci::xhci_input_context::InputContext;
 use crate::drivers::usb::xhci::xhci_portsc::PortLinkState::{U0, U3};
 use crate::drivers::usb::xhci::xhci_portsc::{PortLinkState, PortStatusControl};
@@ -79,13 +77,13 @@ use crate::drivers::usb::xhci::xhci_trb_ring::{
 };
 use crate::drivers::usb::xhci::*;
 use crate::drivers::usb::{UsbBmRequestType, UsbBRequest, WValue};
+use crate::drivers::usb::xhci::xhci::PortState::{Configured, PendingSetConfiguration};
 use crate::interrupts::router::register_handler_with_context;
 use crate::interrupts::vector::InterruptVector;
 use crate::kprintln;
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use crate::memory::page_tables::PageSize;
-use crate::video::kprint::LogLevel::Debug;
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -517,6 +515,12 @@ enum ResumePhase {
     RExit,
 }
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum SetConfigurationPhase {
+    PendingEndpoint,
+    PendingDma,
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum PortState {
     Idle,
@@ -524,6 +528,8 @@ enum PortState {
     ResetInProgress { attempts: u8 },
     Enabled,
     Resuming { phase: ResumePhase },
+    PendingSetConfiguration,
+    Configured
 }
 
 /// Per-port state machine plus the slot currently assigned to each port.
@@ -670,6 +676,10 @@ impl XhciDevice {
             _dma: ep0_transfer_ring_dma,
         }));
 
+        for i in 0..(MAX_DCI as usize + 1 - 2) {
+            transfer_rings.push(None); //I just want to finish this...
+        }
+
         XhciDevice {
             input_context_dma,
             device_context_dma,
@@ -772,7 +782,7 @@ impl XhciDevice {
 
         transfer_ring.enqueue(*setup_stage_td.raw())?;
 
-        if let Some(phys_addr) = data_buffer_phys {
+        if let Some(dma_alloc) = data_buffer_phys {
             let mut data_stage_td = DataStageTrb::new();
             let direction = if is_in { 1 } else { 0 };
 
@@ -781,7 +791,7 @@ impl XhciDevice {
             data_stage_td.set_chain(false);
             data_stage_td.set_ioc(false);
             data_stage_td.set_idt(false);
-            data_stage_td.set_data_buffer(phys_addr);
+            data_stage_td.set_data_buffer(dma_alloc);
             data_stage_td.set_interrupter_target(interrupter_target);
 
             transfer_ring.enqueue(*data_stage_td.raw())?;
@@ -804,7 +814,7 @@ impl XhciDevice {
         &mut self,
         interrupter_target: u16,
         dci: u8,
-        buf_phys_addr: u64,
+        dma_buf: Option<u64>,
         transfer_length: usize,
     ) -> Result<TrbPhysAddr, RingError> {
         let transfer_ring = match self.transfer_ring_mut(dci) {
@@ -812,8 +822,14 @@ impl XhciDevice {
             None => return Err(RingError::Unsupported),
         };
 
+        let buf_addr = if dma_buf.is_none() {
+            0
+        } else {
+            dma_buf.unwrap()
+        };
+
         let mut normal_trb = NormalTrb::new();
-        normal_trb.set_data_buffer(buf_phys_addr);
+        normal_trb.set_data_buffer(buf_addr);
         normal_trb.set_transfer_length(transfer_length as u32);
         normal_trb.set_interrupt_on_completion(true);
         normal_trb.set_interrupt_on_short_packet(true);
@@ -930,6 +946,7 @@ impl XhciInterrupter {
                     }
                     Err(RingError::Empty) => break,
                     Err(_) => {
+                        //TODO: if u spam the keyboard really fast, this happens
                         //malformed trb doesnt fill a batch slot, dequeue pointer already skipped it
                         kprintln!(Warn, "xHCI {} event ring: skipping malformed TRB", self.name);
                     }
@@ -1302,6 +1319,72 @@ impl XHCI {
         );
     }
 
+    unsafe fn on_endpoint_configured(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
+        if trb.completion_code() != TrbCompletionCode::SUCCESS {
+            kprintln!(Error, "[SLOT {}] Configure endpoint command failed with code {}", trb.slot_id(), trb.completion_code());
+            return; //TODO: better way to handle this without a deadlock
+        }
+
+        let phys_addr = TrbPhysAddr(trb.command_trb_pointer());
+        let (port, req) = {
+            let dev_lock = self.device(trb.slot_id());
+            let mut dev = dev_lock.as_ref().unwrap().lock();
+            let port = dev.port;
+
+            //we already inserted the request to the map with the key of command trb
+            let req = dev.pending_requests.remove(&phys_addr)
+                .expect("No pending request present for configure event");
+
+            (port, req)
+        };
+
+
+        let port_state = {
+            let ports = self.ports.lock();
+            ports.state[port as usize]
+        };
+
+        if !matches!(port_state, PendingSetConfiguration) {
+            kprintln!(Warn, "Tried sending SET_CONFIGURATION while not in pending set configuration state.");
+            return;
+        }
+
+        kprintln!(Debug, "Endpoint configured, sending SET_CONFIGURATION request.");
+        let dev_lock = self.device(trb.slot_id());
+        let mut dev = dev_lock.as_ref().unwrap().lock();
+
+        let setup = {
+            let req_lock = req.lock();
+            req_lock.setup_packet
+                .expect("no setup packet in set configuration request")
+        };
+        kprintln!("Created setup packer.");
+
+        let phys_address_new = dev.ep0_issue_request(
+            self.transfer_interrupter_target,
+            setup.bm_request_type,
+            setup.b_request,
+            0,
+            setup.w_value,
+            setup.w_index,
+            None, //you stupid idiot there's no dma buffer inside set configuration
+        )
+            .expect("Failed to issue set configuration request after configure endpoint command.");
+
+        kprintln!("Issued ep0 set configuration request.");
+
+        //TODO: this can cause deadlocks :(((((((((((((((((((((((((((((((((((((((((((((((((((((((((
+        dev.pending_requests.insert(
+            phys_address_new,
+            req
+        );
+
+        kprintln!("Inserted request to pending map.");
+
+        self.regs.ring_doorbell(dev.slot_id, 1,0);
+        kprintln!("Rang doorbell for set configuration request.");
+    }
+
     unsafe fn on_command_completion(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
         let command_trb_phys = PhysAddr::new(trb.command_trb_pointer());
 
@@ -1337,6 +1420,7 @@ impl XHCI {
             }
             Trb::TRB_DISABLE_SLOT_COMMAND => self.on_disable_slot_completion(trb, context),
             Trb::TRB_EVALUATE_CONTEXT_COMMAND => self.on_evaluate_context_completion(trb),
+            Trb::TRB_CONFIGURE_ENDPOINT_COMMAND => self.on_endpoint_configured(trb),
             other => {
                 kprintln!(
                     Warn,
@@ -1916,6 +2000,141 @@ impl XHCI {
             .trb_type()
     }
 
+    unsafe fn on_pending_set_configuration(&self, pending: Arc<IrqMutex<UsbTransferRequest>>, xhci_device: &Arc<IrqMutex<XhciDevice>>) {
+        kprintln!(Debug, "Began endpoint configuration for device");
+
+        let target_dev = {
+            let req = pending.lock();
+            req.target_device.clone()
+        };
+
+        if target_dev.configuration_tree.get().is_none() {
+            kprintln!(Error, "Device has no interfaces present inside configuration descriptor.");
+            return;
+        }
+
+        let context_size = self.regs.context_size;
+
+        let mut dev = xhci_device.lock();
+        let input_context = &mut *dev.input_context_dma.virt.as_mut_ptr::<InputContext>();
+
+        input_context.control().reset_flags();
+
+        let output_context = &mut *dev.device_context_dma.virt.as_mut_ptr::<DeviceContext>();
+        let output_slot_context = output_context.slot();
+        let input_slot_context = input_context.slot::<SlotContext>(context_size);
+
+
+        input_slot_context.dword0 = output_slot_context.dword0;
+        input_slot_context.dword1 = output_slot_context.dword1;
+        input_slot_context.dword2 = output_slot_context.dword2;
+        input_slot_context.dword3 = output_slot_context.dword3;
+
+        let slot_context = input_context.slot::<SlotContext>(context_size);
+        let mut max_dci = slot_context.get_context_entries();
+
+        for interface in &target_dev.configuration_tree.get().unwrap().interfaces {
+            for ep in &interface.endpoints {
+                let (transfer_ring_dma, trbs) = TrbRing::dma_alloc(TRANSFER_RING_TRBS)
+                    .expect("Dma alloc for transfer ring for new endpoint failed.");
+
+                let transfer_ring = TransferRing::new(trbs, transfer_ring_dma.phys);
+
+                let dci = xhci_endpoint_address_to_dci(ep.b_endpoint_address);
+                let ici = dci + 1;
+
+                if dci > max_dci {
+                    max_dci = dci;
+                }
+
+                input_context.control().add_context(dci);
+
+                let ctx = input_context.endpoint::<EndpointContext>(ici as usize, context_size);
+                ctx.set_tr_dequeue_ptr(transfer_ring_dma.phys.as_u64());
+                ctx.set_dequeue_cycle_state(true);
+
+                let mps = (ep.w_max_packet_size & 0x7FF) as u32;
+                let extra = ((ep.w_max_packet_size >> 11) & 0x3) as u32;
+
+                ctx.set_max_packet_size(mps);
+
+                dev.transfer_rings[dci as usize] = Some(TransferRingSlot {
+                    ring: transfer_ring,
+                    _dma: transfer_ring_dma,
+                });
+
+
+                let port_speed = PortStatusControl::from_port(
+                    self.regs.operational_base, dev.port
+                ).ps_read();
+
+
+
+                let xhci_interval = if port_speed == XhciPortSpeed::LOW_SPEED || port_speed == XhciPortSpeed::FULL_SPEED {
+                    //full/low speed
+                    if ep.b_interval > 0 {
+                        let log2 = 31 - (ep.b_interval as u32).leading_zeros();
+                        log2 + 3
+                    } else {
+                        0
+                    }
+                } else {
+                    //high speed and others
+                    (ep.b_interval - 1) as u32
+                };
+
+
+                ctx.set_interval(xhci_interval);
+
+                let transfer_type = ep.bm_attributes & 0b11;
+                let is_in = (ep.b_endpoint_address & 0x80) != 0;
+                let ep_type = match transfer_type {
+                    1 => if is_in { 5 } else { 1 }, // isoch
+                    2 => if is_in { 6 } else { 2 }, // bulk
+                    3 => if is_in { 7 } else { 3 }, // interrupt
+                    _ => {
+                        kprintln!(Error, "Invalid ep type");
+                        continue;
+                    },
+                };
+
+                let ep_is_isochronous = (ep.bm_attributes & 0b11) == 0b01;
+                let error_count = if ep_is_isochronous {
+                    0
+                } else {
+                    3
+                };
+
+
+                ctx.set_ep_type(ep_type);
+                ctx.set_error_count(error_count);
+                ctx.set_max_burst(0);
+                ctx.set_avg_trb_len(ep.w_max_packet_size as u32);
+                ctx.set_max_esit_payload(extra);
+            }
+        }
+
+        let slot_context = input_context.slot::<SlotContext>(context_size);
+        slot_context.set_context_entries(max_dci);
+        input_context.control().add_context(0);
+
+        let mut cmd = ConfigureEndpointCommandTrb::new();
+        cmd.set_input_context_pointer(dev.input_context_dma.phys.as_u64());
+        cmd.set_slot_id(dev.slot_id);
+        cmd.set_deconfigure(false);
+
+        let phys = self.send_command(*cmd.raw(), CommandContext::Empty)
+            .expect("Sending configure endpoint command failed");
+
+        kprintln!(Debug, "Sent configure endpoint command.");
+
+        //insert that to device's pending requets, so that we can use it inside command completion handler
+        dev.pending_requests.insert(
+            TrbPhysAddr(phys.as_u64()),
+            pending
+        );
+    }
+
     /// Handles the end of a control transfer, which the controller reports against the Status
     /// Stage TRB that closes the descriptor.
     unsafe fn on_control_transfer_completion(
@@ -1926,13 +2145,22 @@ impl XHCI {
         status: UsbTransferStatus,
         residual: usize,
     ) {
-        let (pending, is_descriptor_probe) = {
+        let (pending, is_descriptor_probe, port) = {
             let mut dev = device.lock();
             (
                 dev.take_pending(event_trb),
                 dev.take_descriptor_probe(event_trb),
+                dev.port
             )
         };
+
+        let port_state = {
+            self.ports.lock().state[port as usize]
+        };
+
+        if port_state == PendingSetConfiguration {
+            self.ports.lock().state[port as usize] = Configured;
+        }
 
         if let Some(request) = pending {
             complete_request(request, status, residual);
@@ -2500,13 +2728,19 @@ fn xhci_endpoint_address_to_dci(b_endpoint_address: u8) -> u8 {
 
 impl UsbHostController for XHCI {
     fn submit_request(&self, request: Arc<IrqMutex<UsbTransferRequest>>) -> Result<(), &'static str> {
-        let (slot_id, dci, setup_packet, buffer_phys, buffer_length) = {
+        let (slot_id, dci, setup_packet, dma_buffer, buffer_length) = {
             let req = request.lock();
+
+            let phys_dma_addr = match req.dma_buffer.as_ref() {
+                None => None,
+                Some(x) => Some(x.phys.as_u64())
+            };
+
             (
                 req.target_device.hardware_id,
                 xhci_endpoint_address_to_dci(req.endpoint_address),
                 req.setup_packet,
-                req.dma_buffer.phys.as_u64(),
+                phys_dma_addr,
                 req.data_buffer_length,
             )
         };
@@ -2527,27 +2761,49 @@ impl UsbHostController for XHCI {
         };
 
         {
-            let mut dev = dev.lock();
-
             let issued = match setup_packet {
                 Some(setup) => unsafe {
-                    dev.ep0_issue_request(
+
+                    //for the SET_CONFIGURATION request, first we need to send a configure endpoint
+                    //trb before we issue the request
+                    if setup.b_request == 0x09 {
+                        let port = {
+                            dev.lock().port
+                        };
+
+                        {
+                            self.ports.lock().state[port as usize] = PendingSetConfiguration;
+                        }
+
+                        self.on_pending_set_configuration(request, &dev);
+                        return Ok(());
+                    }
+
+                    let mut dev_lock = dev.lock();
+                    dev_lock.ep0_issue_request(
                         interrupter_target,
                         setup.bm_request_type,
                         setup.b_request,
                         buffer_length,
                         setup.w_value,
                         setup.w_index,
-                        Some(buffer_phys),
+                        dma_buffer,
                     )
                 },
                 None => unsafe {
-                    dev.issue_normal_transfer(interrupter_target, dci, buffer_phys, buffer_length)
+                    let mut dev_lock = dev.lock();
+                    dev_lock.issue_normal_transfer(
+                        interrupter_target,
+                        dci,
+                        dma_buffer,
+                        buffer_length
+                    )
                 },
             };
 
+            let mut dev_lock = dev.lock();
             let trb_phys = issued.map_err(|_| "Failed to enqueue the transfer TRBs.")?;
-            dev.insert_pending(trb_phys, request.clone());
+            dev_lock.insert_pending(trb_phys, request.clone());
         }
 
         self.regs.ring_doorbell(slot_id, dci, 0);

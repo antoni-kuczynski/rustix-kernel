@@ -26,9 +26,9 @@ impl InputControlContext {
         self.add_flags = 0;
     }
 
-    pub fn add_context(&mut self, index: u8) {
-        assert!(index <= 31, "Add Context index must be <= 31");
-        self.add_flags |= 1 << index;
+    pub fn add_context(&mut self, dci: u8) {
+        assert!(dci <= 31, "Add Context index must be <= 31");
+        self.add_flags |= 1 << dci;
     }
 
     pub fn drop_context(&mut self, index: u8) {

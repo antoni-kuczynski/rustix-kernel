@@ -83,7 +83,7 @@ impl Trb {
     pub const TRB_ENABLE_SLOT_COMMAND: u8 = 9;
     pub const TRB_DISABLE_SLOT_COMMAND: u8 = 10;
     pub const TRB_ADDRESS_DEVICE_COMMAND: u8 = 11;
-    pub const TRB_CONFIGURE_ENDPOINT: u8 = 12;
+    pub const TRB_CONFIGURE_ENDPOINT_COMMAND: u8 = 12;
     pub const TRB_EVALUATE_CONTEXT_COMMAND: u8 = 13;
     pub const TRB_RESET_ENDPOINT: u8 = 14;
     pub const TRB_STOP_ENDPOINT_COMMAND: u8 = 15;
@@ -1356,6 +1356,71 @@ impl StopEndpointCommandTrb {
 
 impl TrbTrait for StopEndpointCommandTrb {
     const TRB_TYPE: u8 = Trb::TRB_STOP_ENDPOINT_COMMAND;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct ConfigureEndpointCommandTrb {
+    raw: Trb,
+}
+
+impl ConfigureEndpointCommandTrb {
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_CONFIGURE_ENDPOINT_COMMAND);
+
+        Self { raw }
+    }
+
+    pub fn input_context_pointer(&self) -> u64 {
+        self.raw.parameter() & !0xF
+    }
+
+    pub fn set_input_context_pointer(&mut self, ptr: u64) {
+        self.raw.set_parameter(ptr & !0xF);
+    }
+
+    pub fn deconfigure(&self) -> bool {
+        (self.raw.control() & (1 << 9)) != 0
+    }
+
+    pub fn set_deconfigure(&mut self, dc: bool) {
+        let mut control = self.raw.control();
+        if dc {
+            control |= 1 << 9;
+        } else {
+            control &= !(1 << 9);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_slot_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0xFF << 24)) | ((id as u32) << 24);
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+}
+
+impl TrbTrait for ConfigureEndpointCommandTrb {
+    const TRB_TYPE: u8 = Trb::TRB_CONFIGURE_ENDPOINT_COMMAND;
 
     fn raw(&self) -> &Trb {
         &self.raw

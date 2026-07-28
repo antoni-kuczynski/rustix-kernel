@@ -4,8 +4,8 @@
  */
 use alloc::sync::{Arc, Weak};
 use spin::Once;
-use crate::drivers::usb::descriptors::{UsbConfigurationTree, UsbDeviceDescriptor};
-use crate::drivers::usb::irq_mutex::IrqMutex;
+use crate::drivers::usb::core::usb_descriptors::{UsbConfigurationTree, UsbDeviceDescriptor};
+use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::memory::dma::DmaAlloc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -101,7 +101,7 @@ pub struct UsbTransferRequest {
     pub transfer_direction: UsbTransferDirection,
     pub transfer_type: UsbTransferType,
     pub setup_packet: Option<UsbSetupPacket>,
-    pub dma_buffer: DmaAlloc,
+    pub dma_buffer: Option<DmaAlloc>,
     pub data_buffer_length: usize,
     pub status: UsbTransferStatus,
     pub bytes_transferred: usize,
@@ -125,7 +125,7 @@ impl UsbTransferRequest {
             transfer_direction: UsbTransferDirection::HostToDevice,
             transfer_type: UsbTransferType::Interrupt,
             setup_packet: None,
-            dma_buffer: dma_buffer,
+            dma_buffer: Some(dma_buffer),
             data_buffer_length: buffer_length,
             status: UsbTransferStatus::Pending,
             bytes_transferred: 0,

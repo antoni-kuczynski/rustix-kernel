@@ -41,10 +41,10 @@
 
 #[repr(C, packed)]
 pub struct SlotContext {
-    pub(crate) dword0: u32,
-    pub(crate) dword1: u32,
-    dword2: u32,
-    dword3: u32,
+    pub dword0: u32,
+    pub dword1: u32,
+    pub dword2: u32,
+    pub dword3: u32,
     reserved: [u32; 4],
 }
 
