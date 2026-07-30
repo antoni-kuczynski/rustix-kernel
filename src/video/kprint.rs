@@ -118,6 +118,16 @@ pub fn _kprint(level: LogLevel, args: Arguments) {
 }
 
 #[doc(hidden)]
+pub fn _kprint_raw(args: Arguments) {
+    //TODO: temporary fix for calling inside IRQ context. make this asynchronous via writing to a buffer first
+    interrupts::without_interrupts(|| {
+        let mut lock = FRAMEBUFFER.lock();
+        let fb = lock.as_mut().unwrap();
+        _print(format_args!("{}", args), fb, true);
+    });
+}
+
+#[doc(hidden)]
 pub fn _kprintln(level: LogLevel, args: Arguments) {
     //TODO: temporary fix for calling inside IRQ context. make this asynchronous via writing to a buffer first
     interrupts::without_interrupts(|| {
@@ -133,6 +143,13 @@ macro_rules! kprint {
     };
     ($($arg:tt)*) => {
         $crate::video::kprint::_kprint($crate::video::kprint::LogLevel::Info, format_args!($($arg)*));
+    };
+}
+
+#[macro_export]
+macro_rules! kprint_raw {
+    ($($arg:tt)*) => {
+        $crate::video::kprint::_kprint_raw(core::format_args!($($arg)*));
     };
 }
 

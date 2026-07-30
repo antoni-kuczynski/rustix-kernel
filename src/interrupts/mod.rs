@@ -60,6 +60,6 @@ pub fn idt_init() {
 }
 
 pub fn interrupts_enable() {
-    x86_64::instructions::interrupts::enable();
     kprintln_ok!("Enabled interrupts.");
+    x86_64::instructions::interrupts::enable();
 }

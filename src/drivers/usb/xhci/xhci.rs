@@ -945,10 +945,8 @@ impl XhciInterrupter {
                         count += 1;
                     }
                     Err(RingError::Empty) => break,
-                    Err(_) => {
-                        //TODO: if u spam the keyboard really fast, this happens
-                        //malformed trb doesnt fill a batch slot, dequeue pointer already skipped it
-                        kprintln!(Warn, "xHCI {} event ring: skipping malformed TRB", self.name);
+                    Err(x) => {
+                        kprintln!(Error, "Malformed TRB detected. RingError: {:?}", x);
                     }
                 }
             }
@@ -957,6 +955,7 @@ impl XhciInterrupter {
         };
 
         if let Ok(phys) = dequeue_phys {
+            // kprintln!("Acknowledged command.");
             self.ack(phys.as_u64());
         }
 
@@ -965,6 +964,7 @@ impl XhciInterrupter {
 
     unsafe fn handle(&self) {
         self.acknowledge_interrupt();
+        // kprintln!("Handle interrupt");
 
         let controller = self.controller();
         let mut batch = [Trb::new(); EVENT_BATCH_TRBS];
@@ -2774,6 +2774,7 @@ impl UsbHostController for XHCI {
                         {
                             self.ports.lock().state[port as usize] = PendingSetConfiguration;
                         }
+                        kprintln!("Set port to pending set configuration.");
 
                         self.on_pending_set_configuration(request, &dev);
                         return Ok(());

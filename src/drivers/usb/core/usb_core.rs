@@ -53,6 +53,8 @@ impl UsbCore {
         let dma_buffer = dma_alloc_zeroed(size_of::<UsbDeviceDescriptor>(), 1)
             .expect("Failed to allocate memory for GET_DESCRIPTOR request!");
 
+        kprintln!("Allocated dma buffer for device descriptor at phys {:#011x} virt {:#011x}.", dma_buffer.phys, dma_buffer.virt);
+
         let setup = UsbSetupPacket::new(
             0x80,
             0x06,
@@ -118,7 +120,11 @@ fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let dev = req.target_device.clone();
         dev.device_descriptor.call_once(|| *desc);
 
-        let next_dma = dma_alloc_zeroed(8, 1).unwrap();
+        let next_dma = dma_alloc_zeroed(8, 1)
+            .expect("Failed to allocate memory for configuration descriptor header.");
+
+        kprintln!("Allocated dma buffer for config descriptor header at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
+
         let setup = UsbSetupPacket::new(
             0x80,
             0x06,
@@ -168,6 +174,9 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         //now, it's time for the full configuration descriptor
         let next_dma = dma_alloc_zeroed(w_total_length as usize, 1)
             .expect("Memory allocation for full config descriptor failed.");
+
+        kprintln!("Allocated dma buffer for full config descriptor at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
+
         let setup = UsbSetupPacket::new(0x80, 0x06, 0x0200, 0x0000, w_total_length);
 
         let full_req = Arc::new(IrqMutex::new(UsbTransferRequest {
@@ -205,8 +214,8 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
             UsbConfigurationTree::from_ptr(ptr, req.data_buffer_length)
         }.expect("Failed to parse full USB configuration tree!");
 
-        kprintln!(Info, "[USB CORE] Successfully fully enumerated device ID {}!", dev.system_id);
-        kprintln!(Debug, "{}", config_tree);
+        // kprintln!(Info, "[USB CORE] Successfully fully enumerated device ID {}!", dev.system_id);
+        // kprintln!(Debug, "{}", config_tree);
 
         let config_value = config_tree.configuration.b_configuration_value;
 
