@@ -5,13 +5,15 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use crate::drivers::input::kbd::keyboard::{GlobalKeyboard, GLOBAL_KEYBOARD};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_descriptors::{UsbInterfaceTree};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed};
+use crate::drivers::usb::hid::hid_keyboard::{HidKeyboard};
 use crate::kprintln;
-use crate::memory::dma::{dma_alloc_coherent};
+use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 
 pub const HID_SUBCLASS_NONE: u8 = 0x00;
 pub const HID_SUBCLASS_BOOT: u8 = 0x01;
@@ -25,15 +27,22 @@ pub struct RawHidReport<'a> {
     pub data: &'a [u8],
 }
 
+impl<'a> RawHidReport<'a> {
+    fn new(data: &'a [u8]) -> Self {
+        RawHidReport {
+            data
+        }
+    }
+}
+
 pub trait HidDriver: Send {
     fn handle_hid_report(&mut self, report: RawHidReport);
 
     fn start_listening(&mut self);
 }
 
-
 pub struct HidCore {
-    devices: BTreeMap<u64, Box<dyn HidDriver>>
+    devices: BTreeMap<u64, Arc<IrqMutex<Box<dyn HidDriver>>>>
 }
 
 impl HidCore {
@@ -44,71 +53,20 @@ impl HidCore {
     }
 }
 
-pub struct HidKeyboard {
-    device: Arc<UsbDevice>,
-    in_endpoint_address: u8,
-    pending_request: Option<Arc<IrqMutex<UsbTransferRequest>>>
-}
-
-impl HidKeyboard {
-    fn new(device: Arc<UsbDevice>, in_endpoint_address: u8) -> Self {
-        Self {
-            device,
-            in_endpoint_address,
-            pending_request: None
-        }
-    }
-}
-
-impl HidDriver for HidKeyboard {
-    fn handle_hid_report(&mut self, report: RawHidReport) {
-        todo!()
-    }
-
-    fn start_listening(&mut self) {
-        let device = self.device.clone();
-
-        let buffer = dma_alloc_coherent(8, 8)
-            .expect("Failed to allocate buffer for keyboard boot protocol.");
-
-
-        let dma_ptr = buffer.virt.as_mut_ptr::<u64>();
-
-        let request = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: device.clone(),
-            endpoint_address: self.in_endpoint_address,
-            transfer_direction: DeviceToHost,
-            transfer_type: UsbTransferType::Interrupt,
-            setup_packet: None,
-            dma_buffer: Some(buffer),
-            data_buffer_length: 8,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_interrupt_in),
-        }));
-
-        self.pending_request = Some(request.clone());
-
-        if let Some(controller) = device.host_controller.upgrade() {
-            let _ = controller.submit_request(request);
-        }
-
-        kprintln!("Started listening.");
-    }
-}
-
 pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
-    kprintln!("Got interrupt in.");
     let (device, endpoint_address) = {
         let mut req = request.lock();
 
         if let Some(buffer) = &req.dma_buffer {
             let data = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr::<u8>(), req.bytes_transferred) };
 
-            for i in data {
-                kprintln!("Data: {:#06x}", i);
-            }
+            let mut hid = HID_CORE.lock();
+            let mut dev = hid.devices
+                .get_mut(&req.target_device.system_id)
+                .expect("No HID device present inside hid core to handle data packet.")
+                .lock();
 
+            dev.handle_hid_report(RawHidReport::new(data));
         }
 
         req.status = UsbTransferStatus::Pending;
@@ -161,7 +119,7 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_KEYBOARD) => {
             kprintln!("Found USB keyboard with boot mode support.");
             let hid_kbd = HidKeyboard::new(dev.clone(), endpoint_in_address.unwrap());
-            HID_CORE.lock().devices.insert(system_id, Box::new(hid_kbd));
+            HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_kbd))));
         },
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_MOUSE) => {
             kprintln!("Found USB mouse with boot mode support.");
@@ -177,7 +135,6 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
     }
 
     hid_set_protocol(dev, interface.b_interface_number as u16);
-
 }
 
 fn hid_set_protocol(device: Arc<UsbDevice>, interface_num: u16) {
@@ -255,8 +212,14 @@ pub fn hid_on_set_idle_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
         req.target_device.clone()
     };
 
+    if GLOBAL_KEYBOARD.get().is_none() {
+        GlobalKeyboard::init();
+    }
+
     let mut hid_core = HID_CORE.lock();
-    let dev: &mut Box<dyn HidDriver> = hid_core.devices.get_mut(&usb_device.system_id).unwrap();
+    let mut dev = hid_core.devices.get_mut(&usb_device.system_id)
+        .unwrap()
+        .lock();
     dev.start_listening();
 }
 

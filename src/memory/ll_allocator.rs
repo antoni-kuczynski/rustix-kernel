@@ -180,7 +180,7 @@ impl LinkedListAllocator {
         };
 
         if end > self.current_end {
-            kprintln!(Debug,
+            kprintln!(Warn,
                 "[ALLOCATOR] Invalid free-list node range [{}]: node=0x{:X}..0x{:X}, heap_end=0x{:X}, size={}, next=0x{:X}, last_write=0x{:X}/{}",
                 context,
                 node as usize,
@@ -191,6 +191,7 @@ impl LinkedListAllocator {
                 self.debug_last_free_node,
                 self.debug_last_free_size
             );
+            kprintln!(Warn, "[ALLOCATOR] Corrupted node size in HEX: {:#018x}", (*node).size);
             return false;
         }
 
@@ -208,7 +209,7 @@ impl LinkedListAllocator {
         }
 
         if (*node).size != self.debug_last_free_size {
-            kprintln!(Debug,
+            kprintln!(Warn,
                 "[ALLOCATOR] Last free node changed [{}]: node=0x{:X}, expected_size={}, actual_size={}, next=0x{:X}",
                 context,
                 self.debug_last_free_node,
@@ -216,6 +217,7 @@ impl LinkedListAllocator {
                 (*node).size,
                 (*node).next as usize
             );
+            kprintln!(Warn, "[ALLOCATOR] Corrupted node size in HEX: {:#018x}", (*node).size);
             return false;
         }
 
@@ -236,14 +238,19 @@ impl LinkedListAllocator {
     /// Adds a free region with the given address and size to the front of the list
     pub unsafe fn add_free_region(&mut self, addr: usize, size: usize) {
         let aligned_addr = align_up(addr, align_of::<ListNode>());
-        let padding = aligned_addr - addr;
 
         if addr < self.global_start || addr > self.global_end {
             kprintln!(Warn, "[ALLOCATOR] Invalid region address {:#011x}", addr);
             return;
         }
 
+        let Some(padding) = aligned_addr.checked_sub(addr) else {
+            kprintln!(Warn, "[ALLOCATOR] Address overflow during alignment {:#011x}", addr);
+            return;
+        };
+
         let Some(size) = size.checked_sub(padding) else {
+            kprintln!(Warn, "[ALLOCATOR] Size overflow during padding subtraction {:#011x}", addr);
             return;
         };
 
@@ -692,10 +699,16 @@ impl LinkedListAllocator {
         let (size, _align) = Self::size_align(layout);
         self.add_free_region(ptr as usize, size);
 
+
+        //shrink top tries to deallocate pages that are at the highest virtual addresses, only
+        //if nothing's allocated in higher addresses, to keep a contiguous virtual memory block.
+        //well, currently this shit is broken, so just leave it commented out all together instead.
+        //it's not gonna waste a lot of memory so it's ok i think
+
         //only do that for the heap, not the DMA pool. it may mess up its continuity
-        if !self.is_contiguous {
-            self.try_shrink_top();
-        }
+        // if !self.is_contiguous {
+        //     self.try_shrink_top();
+        // }
     }
 }
 

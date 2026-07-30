@@ -45,11 +45,12 @@ ring.
 
  */
 use core::{mem, ptr};
-use core::ptr::write_volatile;
-use core::sync::atomic::{fence, Ordering};
-use x86_64::PhysAddr;
+use core::ptr::{read_volatile, write_volatile};
+use core::sync::atomic::{compiler_fence, fence, Ordering};
+use x86_64::{PhysAddr, VirtAddr};
 use crate::drivers::usb::xhci::xhci_trb::Trb;
 use crate::drivers::usb::xhci::xhci_trb_ring::RingError::Unsupported;
+use crate::kprintln;
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use crate::memory::page_tables::PageSize;
 
@@ -142,35 +143,29 @@ impl TrbRing {
         let len = self.trbs.len();
         let link_index = len - 1;
 
-        if self.enqueue_index == link_index {
-            let last_trb = (*self.trbs)[link_index];
-
-            //TODO: clean up
-            let correct_control_dword = last_trb.control() ^ 1;
-            let trb_ptr = &mut (*self.trbs)[link_index] as *mut Trb as *mut u32;
-            let dword3_ptr = trb_ptr.add(3);
-            write_volatile(dword3_ptr, correct_control_dword);
-
-            // write_volatile(self.trbs.add(link_index))
-            (*self.trbs)[link_index].set_cycle(self.cycle_state);
-            self.enqueue_index = 0;
-            self.cycle_state = !self.cycle_state;
-        }
-
         let mut next_index = self.enqueue_index + 1;
         if next_index == link_index {
             next_index = 0;
         }
 
-        if next_index == self.dequeue_index {
-            return Err(RingError::Full);
-        }
+        //TODO: thats temporary for transfer ring?
+        // if next_index == self.dequeue_index {
+        //     kprintln!(Error, "Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
+        //     return Err(RingError::Full);
+        // }
 
-        //captured after the wrap above, so it is the slot the TRB actually lands in
         let written_index = self.enqueue_index;
+        let is_last_slot = written_index == link_index - 1;
+
 
         trb.set_cycle(!self.cycle_state);
         write_volatile(&mut (*self.trbs)[written_index], trb);
+
+        if is_last_slot {
+            let mut link_trb = read_volatile(&(*self.trbs)[link_index]);
+            link_trb.set_cycle(self.cycle_state);
+            write_volatile(&mut (*self.trbs)[link_index], link_trb);
+        }
 
         //memory barrier
         fence(Ordering::Release);
@@ -181,7 +176,12 @@ impl TrbRing {
         write_volatile(dword3_ptr, correct_control_dword);
 
 
-        self.enqueue_index += 1;
+        if is_last_slot {
+            self.enqueue_index = 0;
+            self.cycle_state = !self.cycle_state;
+        } else {
+            self.enqueue_index += 1;
+        }
 
         Ok(self.trb_phys(written_index))
     }
@@ -190,13 +190,27 @@ impl TrbRing {
         self.ring_phys + (index * size_of::<Trb>()) as u64
     }
 
+
     pub fn dequeue(&mut self) -> Result<Trb, RingError> {
-        let trb = unsafe { core::ptr::read_volatile(&(*self.trbs)[self.dequeue_index]) };
-        if trb.cycle() != self.cycle_state {
+        let trb_ptr = unsafe { &(*self.trbs)[self.dequeue_index] };
+        let control_ptr = unsafe {
+            core::ptr::addr_of!((*self.trbs)[self.dequeue_index].control)
+        };
+        let control_dword = unsafe { read_volatile(control_ptr) };
+
+        let cycle_bit = (control_dword & 1) != 0;
+
+        if cycle_bit != self.cycle_state {
             return Err(RingError::Empty);
         }
 
+        compiler_fence(Ordering::Acquire);
+
+        let trb = unsafe { ptr::read_volatile(trb_ptr) };
+
+        // kprintln!("Dequeue index: {}, Cycle bit: {}, Trb type: {}",self.dequeue_index, trb.cycle(), trb.trb_type());
         self.dequeue_index += 1;
+
         if self.dequeue_index == self.trbs.len() {
             self.dequeue_index = 0;
             self.cycle_state = !self.cycle_state;
@@ -226,14 +240,24 @@ impl TrbRing {
 // EVENT RING
 //==================================================================================================
 pub struct EventRing {
-    ring: TrbRing
+    ring: TrbRing,
+    erdp_offset: Option<(VirtAddr, u64)>,
 }
 
 impl Ring for EventRing {
     fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
-        let ring = unsafe { TrbRing::new(trbs, ring_phys) }
-            .expect("Ring creation for event ring failed.");
-        Self { ring }
+        let ring = TrbRing {
+            trbs,
+            ring_phys,
+            enqueue_index: 0,
+            dequeue_index: 0,
+            cycle_state: true,
+        };
+
+        Self {
+            ring,
+            erdp_offset: None
+        }
     }
 
     fn enqueue(&mut self, _: Trb) -> Result<PhysAddr, RingError> {
@@ -277,6 +301,7 @@ impl Ring for CommandRing {
     }
 
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
+        kprintln!("Command ring enqueue index {}.", self.enqueue_index());
         if trb.is_command_trb() {
             unsafe { self.ring.enqueue(trb) }
         } else {
