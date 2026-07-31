@@ -53,7 +53,7 @@ impl UsbCore {
         let dma_buffer = dma_alloc_zeroed(size_of::<UsbDeviceDescriptor>(), 1)
             .expect("Failed to allocate memory for GET_DESCRIPTOR request!");
 
-        kprintln!("Allocated dma buffer for device descriptor at phys {:#011x} virt {:#011x}.", dma_buffer.phys, dma_buffer.virt);
+        kprintln!(Debug, "[USB CORE] Allocated dma buffer for device descriptor at phys {:#011x} virt {:#011x}.", dma_buffer.phys, dma_buffer.virt);
 
         let setup = UsbSetupPacket::new(
             0x80,
@@ -88,25 +88,28 @@ pub fn usb_register_device(hardware_id: u8, host_controller: Weak<dyn UsbHostCon
     };
 
     let Some(controller) = device.host_controller.upgrade() else {
-        kprintln!(Warn, "Host controller went away before the device could be registered.");
+        kprintln!(Warn, "[USB CORE] Host controller went away before the device could be registered.");
         return;
     };
 
-    kprintln!("Prepared request.");
     if let Err(error) = controller.submit_request(request) {
-        kprintln!(Error, "Failed to request the device descriptor: {}", error);
+        kprintln!(Error, "[USB CORE] Failed to request the device descriptor: {}", error);
         return;
     }
-    kprintln!("Issued request.");
 }
 
 
 fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status != UsbTransferStatus::Completed {
+        kprintln!(Error, "[USB CORE] Failed to complete GET_DESCRIPTOR request for device descriptor.");
+        return;
+    }
+
     let (dev, next_request) = {
         let req = request.lock();
         kprintln!(
             Debug,
-            "Got device descriptor in layer2 ({:?}, {} bytes).",
+            "[USB CORE] Got device descriptor: ({:?}, {} bytes).",
             req.status,
             req.bytes_transferred
         );
@@ -123,7 +126,7 @@ fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let next_dma = dma_alloc_zeroed(8, 1)
             .expect("Failed to allocate memory for configuration descriptor header.");
 
-        kprintln!("Allocated dma buffer for config descriptor header at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
+        kprintln!(Debug, "[USB CORE] Allocated dma buffer for config descriptor header at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
 
         let setup = UsbSetupPacket::new(
             0x80,
@@ -154,6 +157,11 @@ fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 }
 
 pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status != UsbTransferStatus::Completed {
+        kprintln!(Error, "[USB CORE] Failed to complete GET_DESCRIPTOR request for configuration descriptor header.");
+        return;
+    }
+
     let (device, full_config_request) = {
         let req = request.lock();
         let dev = req.target_device.clone();
@@ -169,13 +177,13 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let bytes = first_8_bytes.to_le_bytes();
         let w_total_length = u16::from_le_bytes([bytes[2], bytes[3]]);
 
-        kprintln!(Debug, "[USB CORE] Detected Configuration Descriptor size: {} bytes", w_total_length);
+        kprintln!(Debug, "[USB CORE] Detected Configuration Descriptor size: {} bytes.", w_total_length);
 
         //now, it's time for the full configuration descriptor
         let next_dma = dma_alloc_zeroed(w_total_length as usize, 1)
             .expect("Memory allocation for full config descriptor failed.");
 
-        kprintln!("Allocated dma buffer for full config descriptor at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
+        kprintln!(Debug, "[USB CORE] Allocated dma buffer for full config descriptor at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
 
         let setup = UsbSetupPacket::new(0x80, 0x06, 0x0200, 0x0000, w_total_length);
 
@@ -201,6 +209,11 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 }
 
 pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status != UsbTransferStatus::Completed {
+        kprintln!(Error, "[USB CORE] Failed to complete GET_DESCRIPTOR request for configuration descriptor.");
+        return;
+    }
+
     let (device, full_config_request) = {
         let req = request.lock();
         let dev = req.target_device.clone();
@@ -214,8 +227,7 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
             UsbConfigurationTree::from_ptr(ptr, req.data_buffer_length)
         }.expect("Failed to parse full USB configuration tree!");
 
-        // kprintln!(Info, "[USB CORE] Successfully fully enumerated device ID {}!", dev.system_id);
-        // kprintln!(Debug, "{}", config_tree);
+        kprintln!(Debug, "[USB CORE] Successfully fully enumerated device ID {}!", dev.system_id);
 
         let config_value = config_tree.configuration.b_configuration_value;
 
@@ -251,7 +263,12 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 }
 
 pub fn on_set_configuration_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
-    kprintln!("Completed SET_CONFIGURATION request");
+    if request.lock().status != UsbTransferStatus::Completed {
+        kprintln!(Error, "[USB CORE] Failed to complete SET_CONFIGURATION request.");
+        return;
+    }
+
+    kprintln!(Debug, "[USB CORE] Completed SET_CONFIGURATION request.");
 
     let dev = {
         let req = request.lock();

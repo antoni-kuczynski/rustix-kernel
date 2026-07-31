@@ -9,7 +9,7 @@ use crate::video::framebuffer::{Framebuffer, FramebufferColor, FRAMEBUFFER};
 use core::cell::UnsafeCell;
 use x86_64::instructions::interrupts;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
     Error,
     Warn,
@@ -99,6 +99,10 @@ pub fn _kprint_panic(args: Arguments) {
 
 #[doc(hidden)]
 pub fn _kprint(level: LogLevel, args: Arguments) {
+    if !cfg!(debug_assertions) && level == LogLevel::Debug {
+        return;
+    }
+
     //TODO: temporary fix for calling inside IRQ context. make this asynchronous via writing to a buffer first
     interrupts::without_interrupts(|| {
         let mut lock = FRAMEBUFFER.lock();

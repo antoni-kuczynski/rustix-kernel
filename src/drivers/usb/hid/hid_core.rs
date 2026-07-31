@@ -64,7 +64,7 @@ pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
             let mut hid = HID_CORE.lock();
             let mut dev = hid.devices
                 .get_mut(&req.target_device.system_id)
-                .expect("No HID device present inside hid core to handle data packet.")
+                .expect("HID device present inside hid core to handle data packet.")
                 .lock();
 
             dev.handle_hid_report(RawHidReport::new(data));
@@ -111,14 +111,14 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
     let system_id = dev.system_id;
 
     if endpoint_in_address.is_none() {
-        kprintln!(Error, "IN endpoint for HID device was not found.");
+        kprintln!(Error, "[HID CORE] IN endpoint for HID device was not found.");
         return;
     }
 
 
     match (interface.b_interface_sub_class, interface.b_interface_protocol) {
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_KEYBOARD) => {
-            kprintln!("Found USB keyboard with boot mode support.");
+            kprintln!(Debug, "[HID CORE] Found USB keyboard with boot mode support.");
 
             if GLOBAL_KEYBOARD.get().is_none() {
                 GlobalKeyboard::init();
@@ -128,7 +128,7 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
             HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_kbd))));
         },
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_MOUSE) => {
-            kprintln!("Found USB mouse with boot mode support.");
+            kprintln!(Debug, "[HID CORE] Found USB mouse with boot mode support.");
 
             if GLOBAL_MOUSE.get().is_none() {
                 GlobalMouse::init();
@@ -138,11 +138,11 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
             HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_mouse))));
         },
         (HID_SUBCLASS_NONE, _) => {
-            kprintln!("Usb HID interfaces without boot mode are currently not supported!");
+            kprintln!(Debug, "[HID CORE] Usb HID interfaces without boot mode are currently not supported!");
             return;
         },
         _ => {
-            kprintln!(Error, "Invalid HID interface found.");
+            kprintln!(Error, "[HID CORE] Invalid HID interface found.");
             return;
         }
     }
@@ -175,7 +175,7 @@ fn hid_set_protocol(device: Arc<UsbDevice>, interface_num: u16) {
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_protocol_request);
     }
-    kprintln!(Debug, "Issued SET_PROTOCOL request for HID.");
+    kprintln!(Debug, "[HID CORE] Issued SET_PROTOCOL request for HID.");
 }
 
 pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
@@ -188,7 +188,7 @@ pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
     };
 
     if status != Completed {
-        kprintln!(Error, "SET_PROTOCOL request failed for HID.");
+        kprintln!(Error, "[HID CORE] SET_PROTOCOL request failed for HID.");
         return;
     }
 
@@ -216,7 +216,7 @@ pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_idle_request);
     }
-    kprintln!(Debug, "Issued SET_IDLE request for HID.");
+    kprintln!(Debug, "[HID CORE] Issued SET_IDLE request for HID.");
 }
 
 pub fn hid_on_set_idle_done(request: Arc<IrqMutex<UsbTransferRequest>>) {

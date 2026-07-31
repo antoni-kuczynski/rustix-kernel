@@ -10,8 +10,9 @@ use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbTransferRequest, Us
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::DeviceToHost;
 use crate::drivers::usb::hid::hid_core::{on_interrupt_in, HidDriver, RawHidReport};
 use crate::kprintln;
-use crate::memory::dma::{dma_alloc_coherent, dma_alloc_zeroed, DmaAlloc};
+use crate::memory::dma::{dma_alloc_zeroed};
 
+//TODO: typematic support
 pub struct HidKeyboard {
     device: Arc<UsbDevice>,
     in_endpoint_address: u8,
@@ -32,13 +33,14 @@ impl HidKeyboard {
 
 impl HidDriver for HidKeyboard {
     fn handle_hid_report(&mut self, report: RawHidReport) {
+        if report.data.len() == 0 {
+            kprintln!(Debug, "[HID KBD] Received HID report size=0, skipping.");
+            return;
+        }
+
         let new_keys = report.data;
         let old_keys = self.previous_key_state;
         let changed_modifiers = new_keys[0] ^ old_keys[0];
-
-        // for i in report.data {
-        //     kprintln!("Report: {}", *i);
-        // }
 
         if changed_modifiers != 0 {
             for &(mask, key_code) in MODIFIER_MAPPINGS.iter() {

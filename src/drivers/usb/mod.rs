@@ -35,8 +35,8 @@ pub fn init_usb_controller(pci_dev: PciDevice) {
             // bar.print();
         },
         PIF_XHCI_CONTROLLER => {
-            kprintln!(Info, "Found XHCI controller with id {:#06x}.", dev_id);
-            XHCI::initialize(pci_dev).expect("XHCI init failed!");
+            kprintln!(Info, "Found xHCI controller with id {:#06x}.", dev_id);
+            XHCI::initialize(pci_dev).expect("xHCI init failed!");
         },
         _ => todo!()
     }

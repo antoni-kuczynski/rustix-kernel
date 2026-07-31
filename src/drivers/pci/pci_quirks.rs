@@ -45,12 +45,12 @@ impl PciDevice {
         self.pci_write32(USB_INTEL_USB3_PSSEN, available_ports);
 
         let switched_ports = self.pci_read32(USB_INTEL_USB3_PSSEN);
-        kprintln!(Info,"USB 3.0 ports enabled under XHCI: {}", switched_ports);
+        kprintln!(Info,"USB 3.0 ports enabled under xHCI: {}", switched_ports);
 
         // set usb2 ports to be controller by xhci (usb 2 port routing mask)
         let ports_usb2 = self.pci_read32(USB_INTEL_USB2PRM);
         self.pci_write32(USB_INTEL_XUSB2PR, ports_usb2);
         let switched_ports_usb2 = self.pci_read32(USB_INTEL_XUSB2PR);
-        kprintln!(Info,"USB 2.0 ports enabled under XHCI: {}", switched_ports_usb2);
+        kprintln!(Info,"USB 2.0 ports enabled under xHCI: {}", switched_ports_usb2);
     }
 }
