@@ -17,7 +17,6 @@ pub struct HidKeyboard {
     in_endpoint_address: u8,
     pending_request: Option<Arc<IrqMutex<UsbTransferRequest>>>,
     previous_key_state: [u8; 8],
-    boot_buffer: DmaAlloc
 }
 
 impl HidKeyboard {
@@ -26,9 +25,7 @@ impl HidKeyboard {
             device,
             in_endpoint_address,
             pending_request: None,
-            previous_key_state: [0; 8],
-            boot_buffer: dma_alloc_coherent(8, 8)
-                .expect("Failed to allocate buffer for keyboard boot protocol.")
+            previous_key_state: [0; 8]
         }
     }
 }
@@ -93,12 +90,11 @@ impl HidDriver for HidKeyboard {
 
     fn start_listening(&mut self) {
         let device = self.device.clone();
-        
+
         let dma = {
             dma_alloc_zeroed(8, 8).expect("Failed to allocate keyboard boot buffer.")
         };
 
-        let dma_ptr = self.boot_buffer.virt.as_mut_ptr::<u64>();
 
         let request = Arc::new(IrqMutex::new(UsbTransferRequest {
             target_device: device.clone(),

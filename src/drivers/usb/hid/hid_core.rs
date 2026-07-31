@@ -6,14 +6,15 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use crate::drivers::input::kbd::keyboard::{GlobalKeyboard, GLOBAL_KEYBOARD};
+use crate::drivers::input::mouse::mouse::{GlobalMouse, GLOBAL_MOUSE};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_descriptors::{UsbInterfaceTree};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
-use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
+use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{HostToDevice};
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed};
 use crate::drivers::usb::hid::hid_keyboard::{HidKeyboard};
+use crate::drivers::usb::hid::hid_mouse::HidMouse;
 use crate::kprintln;
-use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 
 pub const HID_SUBCLASS_NONE: u8 = 0x00;
 pub const HID_SUBCLASS_BOOT: u8 = 0x01;
@@ -118,11 +119,23 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
     match (interface.b_interface_sub_class, interface.b_interface_protocol) {
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_KEYBOARD) => {
             kprintln!("Found USB keyboard with boot mode support.");
+
+            if GLOBAL_KEYBOARD.get().is_none() {
+                GlobalKeyboard::init();
+            }
+
             let hid_kbd = HidKeyboard::new(dev.clone(), endpoint_in_address.unwrap());
             HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_kbd))));
         },
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_MOUSE) => {
             kprintln!("Found USB mouse with boot mode support.");
+
+            if GLOBAL_MOUSE.get().is_none() {
+                GlobalMouse::init();
+            }
+
+            let hid_mouse = HidMouse::new(dev.clone(), endpoint_in_address.unwrap());
+            HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_mouse))));
         },
         (HID_SUBCLASS_NONE, _) => {
             kprintln!("Usb HID interfaces without boot mode are currently not supported!");
@@ -211,10 +224,6 @@ pub fn hid_on_set_idle_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let req = request.lock();
         req.target_device.clone()
     };
-
-    if GLOBAL_KEYBOARD.get().is_none() {
-        GlobalKeyboard::init();
-    }
 
     let mut hid_core = HID_CORE.lock();
     let mut dev = hid_core.devices.get_mut(&usb_device.system_id)
