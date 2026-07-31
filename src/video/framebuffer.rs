@@ -200,6 +200,17 @@ impl Framebuffer {
         self.fb_write(base_offset + 2, (color_data >> 16) as u8);
     }
 
+    #[inline(always)]
+    pub unsafe fn fb_primary_write_raw_pixel_24(&mut self, base_offset: usize, color_data: u32, bpp: usize) {
+        if base_offset >= self.length_bytes {
+            return;
+        }
+
+        unsafe { ptr::write_volatile(self.base.add(base_offset), color_data as u8) };
+        unsafe { ptr::write_volatile(self.base.add(base_offset + 1), (color_data >> 8) as u8) };
+        unsafe { ptr::write_volatile(self.base.add(base_offset + 2), (color_data >> 16) as u8) };
+    }
+
     pub(crate) fn width(&self) -> usize {
         self._pixel_info.width
     }
