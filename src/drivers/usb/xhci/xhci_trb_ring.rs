@@ -139,7 +139,11 @@ impl TrbRing {
         Some((alloc, trbs))
     }
 
-    pub unsafe fn enqueue(&mut self, mut trb: Trb) -> Result<PhysAddr, RingError> {
+    /// Enqueues trb on a ring.
+    ///
+    /// `dequeue_index_check` enables checking for ring being full via
+    /// dequeue_index == next_enqueue_index, should be false on event ring and true on command ring.
+    pub unsafe fn enqueue(&mut self, mut trb: Trb, dequeue_index_check: bool) -> Result<PhysAddr, RingError> {
         let len = self.trbs.len();
         let link_index = len - 1;
 
@@ -148,11 +152,10 @@ impl TrbRing {
             next_index = 0;
         }
 
-        //TODO: thats temporary for transfer ring?
-        // if next_index == self.dequeue_index {
-        //     kprintln!(Error, "Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
-        //     return Err(RingError::Full);
-        // }
+        if dequeue_index_check && next_index == self.dequeue_index {
+            kprintln!(Error, "Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
+            return Err(RingError::Full);
+        }
 
         let written_index = self.enqueue_index;
         let is_last_slot = written_index == link_index - 1;
@@ -194,7 +197,7 @@ impl TrbRing {
     pub fn dequeue(&mut self) -> Result<Trb, RingError> {
         let trb_ptr = unsafe { &(*self.trbs)[self.dequeue_index] };
         let control_ptr = unsafe {
-            core::ptr::addr_of!((*self.trbs)[self.dequeue_index].control)
+            ptr::addr_of!((*self.trbs)[self.dequeue_index].control)
         };
         let control_dword = unsafe { read_volatile(control_ptr) };
 
@@ -206,7 +209,7 @@ impl TrbRing {
 
         compiler_fence(Ordering::Acquire);
 
-        let trb = unsafe { ptr::read_volatile(trb_ptr) };
+        let trb = unsafe { read_volatile(trb_ptr) };
 
         // kprintln!("Dequeue index: {}, Cycle bit: {}, Trb type: {}",self.dequeue_index, trb.cycle(), trb.trb_type());
         self.dequeue_index += 1;
@@ -301,9 +304,9 @@ impl Ring for CommandRing {
     }
 
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
-        kprintln!("Command ring enqueue index {}.", self.enqueue_index());
+        // kprintln!(Debug, "Command ring enqueue index {}.", self.enqueue_index());
         if trb.is_command_trb() {
-            unsafe { self.ring.enqueue(trb) }
+            unsafe { self.ring.enqueue(trb, true) }
         } else {
             Err(RingError::InvalidTrbOnCommandRing)
         }
@@ -341,7 +344,7 @@ impl Ring for TransferRing {
 
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
         if trb.is_transfer_trb() {
-            unsafe { self.ring.enqueue(trb) }
+            unsafe { self.ring.enqueue(trb, false) }
         } else {
             Err(RingError::InvalidTrbOnTransferRing)
         }

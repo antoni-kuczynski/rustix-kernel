@@ -47,7 +47,7 @@ impl HidDriver for HidMouse {
         let data = report.data;
 
         if data.len() < 3 {
-            kprintln!(Warn, "Skipping invalid data packet with length {} < 3.", data.len());
+            kprintln!(Debug, "Skipping invalid data packet with length {} < 3.", data.len());
             return;
         }
 
@@ -104,8 +104,10 @@ impl HidDriver for HidMouse {
     fn start_listening(&mut self) {
         let device = self.device.clone();
 
+        //event though, mice should only send 3 bytes in boot protocol, we allocate 4 byte buffer
+        //because some mice like to send additional byte which is scroll data
         let dma = {
-            dma_alloc_zeroed(8, 8).expect("Failed to allocate mouse boot buffer.")
+            dma_alloc_zeroed(4, 4).expect("Failed to allocate mouse boot buffer.")
         };
 
         let request = Arc::new(IrqMutex::new(UsbTransferRequest {
@@ -115,7 +117,7 @@ impl HidDriver for HidMouse {
             transfer_type: UsbTransferType::Interrupt,
             setup_packet: None,
             dma_buffer: Some(dma),
-            data_buffer_length: 8,
+            data_buffer_length: 4,
             status: UsbTransferStatus::Pending,
             bytes_transferred: 0,
             completion_callback: Some(on_interrupt_in),
