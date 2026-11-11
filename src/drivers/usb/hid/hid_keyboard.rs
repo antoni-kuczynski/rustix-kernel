@@ -93,10 +93,19 @@ impl HidDriver for HidKeyboard {
     fn start_listening(&mut self) {
         let device = self.device.clone();
 
+        let endpoint = device
+            .configuration_tree
+            .get()
+            .unwrap()
+            .find_endpoint(self.in_endpoint_address)
+            .unwrap();
+        
+        let max_packet_size = endpoint.w_max_packet_size as usize;
+        
+        kprintln!(Debug, "[HID KBD] Allocating buffer with size w_max_packet_size={}.", max_packet_size);
         let dma = {
-            dma_alloc_zeroed(8, 8).expect("Failed to allocate keyboard boot buffer.")
+            dma_alloc_zeroed(max_packet_size, 8).expect("Failed to allocate keyboard boot buffer.")
         };
-
 
         let request = Arc::new(IrqMutex::new(UsbTransferRequest {
             target_device: device.clone(),
@@ -105,7 +114,7 @@ impl HidDriver for HidKeyboard {
             transfer_type: UsbTransferType::Interrupt,
             setup_packet: None,
             dma_buffer: Some(dma),
-            data_buffer_length: 8,
+            data_buffer_length: max_packet_size,
             status: UsbTransferStatus::Pending,
             bytes_transferred: 0,
             completion_callback: Some(on_interrupt_in),

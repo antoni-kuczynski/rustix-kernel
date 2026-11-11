@@ -85,9 +85,9 @@ impl Trb {
     pub const TRB_ADDRESS_DEVICE_COMMAND: u8 = 11;
     pub const TRB_CONFIGURE_ENDPOINT_COMMAND: u8 = 12;
     pub const TRB_EVALUATE_CONTEXT_COMMAND: u8 = 13;
-    pub const TRB_RESET_ENDPOINT: u8 = 14;
+    pub const TRB_RESET_ENDPOINT_COMMAND: u8 = 14;
     pub const TRB_STOP_ENDPOINT_COMMAND: u8 = 15;
-    pub const TRB_SET_DEQUEUE_PTR: u8 = 16;
+    pub const TRB_SET_DEQUEUE_PTR_COMMAND: u8 = 16;
     pub const TRB_RESET_DEVICE: u8 = 17;
     pub const TRB_FORCE_EVENT: u8 = 18;
 
@@ -1421,6 +1421,196 @@ impl ConfigureEndpointCommandTrb {
 
 impl TrbTrait for ConfigureEndpointCommandTrb {
     const TRB_TYPE: u8 = Trb::TRB_CONFIGURE_ENDPOINT_COMMAND;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct ResetEndpointCommandTrb {
+    raw: Trb,
+}
+
+impl ResetEndpointCommandTrb {
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_RESET_ENDPOINT_COMMAND);
+
+        Self { raw }
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_RESET_ENDPOINT_COMMAND {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_RESET_ENDPOINT_COMMAND,
+                actual,
+            });
+        }
+        Ok(Self { raw })
+    }
+
+    /// Transfer State Preserve. `true` keeps the Data Toggle / Sequence Number (Soft Retry),
+    /// `false` resets it to 0 (full pipe reset).
+    pub fn tsp(&self) -> bool {
+        (self.raw.control() & (1 << 9)) != 0
+    }
+
+    pub fn set_tsp(&mut self, tsp: bool) {
+        let mut control = self.raw.control();
+        if tsp {
+            control |= 1 << 9;
+        } else {
+            control &= !(1 << 9);
+        }
+        self.raw.set_control(control);
+    }
+
+    pub fn endpoint_id(&self) -> u8 {
+        ((self.raw.control() >> 16) & 0x1F) as u8
+    }
+
+    pub fn set_endpoint_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0x1F << 16)) | (((id as u32) & 0x1F) << 16);
+        self.raw.set_control(control);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_slot_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0xFF << 24)) | ((id as u32) << 24);
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+}
+
+impl TrbTrait for ResetEndpointCommandTrb {
+    const TRB_TYPE: u8 = Trb::TRB_RESET_ENDPOINT_COMMAND;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct SetTrDequeuePointerCommandTrb {
+    raw: Trb,
+}
+
+impl SetTrDequeuePointerCommandTrb {
+    pub fn new() -> Self {
+        let mut raw = Trb::new();
+        raw.set_trb_type(Trb::TRB_SET_DEQUEUE_PTR_COMMAND);
+
+        Self { raw }
+    }
+
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_SET_DEQUEUE_PTR_COMMAND {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_SET_DEQUEUE_PTR_COMMAND,
+                actual,
+            });
+        }
+        Ok(Self { raw })
+    }
+
+    /// Dequeue Cycle State. Must match the cycle bit the xHC should expect
+    /// at the TRB referenced by the new dequeue pointer.
+    pub fn dequeue_cycle_state(&self) -> bool {
+        (self.raw.parameter() & 1) != 0
+    }
+
+    pub fn set_dequeue_cycle_state(&mut self, dcs: bool) {
+        let mut parameter = self.raw.parameter();
+        if dcs {
+            parameter |= 1;
+        } else {
+            parameter &= !1;
+        }
+        self.raw.set_parameter(parameter);
+    }
+
+    /// Stream Context Type. Must be 0 when stream_id is 0.
+    pub fn stream_context_type(&self) -> u8 {
+        ((self.raw.parameter() >> 1) & 0x7) as u8
+    }
+
+    pub fn set_stream_context_type(&mut self, sct: u8) {
+        let mut parameter = self.raw.parameter();
+        parameter = (parameter & !(0x7 << 1)) | (((sct as u64) & 0x7) << 1);
+        self.raw.set_parameter(parameter);
+    }
+
+    pub fn new_tr_dequeue_pointer(&self) -> u64 {
+        self.raw.parameter() & !0xF
+    }
+
+    pub fn set_new_tr_dequeue_pointer(&mut self, ptr: u64) {
+        let parameter = (self.raw.parameter() & 0xF) | (ptr & !0xF);
+        self.raw.set_parameter(parameter);
+    }
+
+    pub fn stream_id(&self) -> u16 {
+        ((self.raw.status() >> 16) & 0xFFFF) as u16
+    }
+
+    pub fn set_stream_id(&mut self, id: u16) {
+        let mut status = self.raw.status();
+        status = (status & !(0xFFFF << 16)) | ((id as u32) << 16);
+        self.raw.set_status(status);
+    }
+
+    pub fn endpoint_id(&self) -> u8 {
+        ((self.raw.control() >> 16) & 0x1F) as u8
+    }
+
+    pub fn set_endpoint_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0x1F << 16)) | (((id as u32) & 0x1F) << 16);
+        self.raw.set_control(control);
+    }
+
+    pub fn slot_id(&self) -> u8 {
+        ((self.raw.control() >> 24) & 0xFF) as u8
+    }
+
+    pub fn set_slot_id(&mut self, id: u8) {
+        let mut control = self.raw.control();
+        control = (control & !(0xFF << 24)) | ((id as u32) << 24);
+        self.raw.set_control(control);
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+
+    pub fn set_cycle(&mut self, cycle: bool) {
+        self.raw.set_cycle(cycle);
+    }
+}
+
+impl TrbTrait for SetTrDequeuePointerCommandTrb {
+    const TRB_TYPE: u8 = Trb::TRB_SET_DEQUEUE_PTR_COMMAND;
 
     fn raw(&self) -> &Trb {
         &self.raw

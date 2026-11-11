@@ -43,7 +43,7 @@ pub trait HidDriver: Send {
 }
 
 pub struct HidCore {
-    devices: BTreeMap<u64, Arc<IrqMutex<Box<dyn HidDriver>>>>
+    devices: BTreeMap<(u64, u8), Arc<IrqMutex<Box<dyn HidDriver>>>> //(system_id, endpoint_address)
 }
 
 impl HidCore {
@@ -58,22 +58,30 @@ pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (device, endpoint_address) = {
         let mut req = request.lock();
 
+        if req.status != Completed {
+            kprintln!(Error, "[HID CORE] Transfer request failed to complete - status {:?}", req.status);
+            return;
+        }
+
+        let endpoint_address = req.endpoint_address;
+
         if let Some(buffer) = &req.dma_buffer {
             let data = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr::<u8>(), req.bytes_transferred) };
 
             let mut hid = HID_CORE.lock();
             let mut dev = hid.devices
-                .get_mut(&req.target_device.system_id)
+                .get_mut(&(req.target_device.system_id, endpoint_address))
                 .expect("HID device present inside hid core to handle data packet.")
                 .lock();
 
+            
             dev.handle_hid_report(RawHidReport::new(data));
         }
 
         req.status = UsbTransferStatus::Pending;
         req.bytes_transferred = 0;
 
-        (req.target_device.clone(), req.endpoint_address)
+        (req.target_device.clone(), endpoint_address)
     };
 
     if let Some(controller) = device.host_controller.upgrade() {
@@ -107,14 +115,14 @@ fn find_in_endpoint_address(interface_tree: &UsbInterfaceTree) -> Option<u8> {
 pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInterfaceTree) {
     let a = dev.configuration_tree.get().unwrap();
     let interface = &usb_interface_tree.interface;
-    let endpoint_in_address = find_in_endpoint_address(usb_interface_tree);
+    let endpoint_in_address = match find_in_endpoint_address(usb_interface_tree) {
+        None => {
+            kprintln!(Error, "[HID CORE] IN endpoint for HID device was not found.");
+            return;
+        },
+        Some(x) => x
+    };
     let system_id = dev.system_id;
-
-    if endpoint_in_address.is_none() {
-        kprintln!(Error, "[HID CORE] IN endpoint for HID device was not found.");
-        return;
-    }
-
 
     match (interface.b_interface_sub_class, interface.b_interface_protocol) {
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_KEYBOARD) => {
@@ -124,8 +132,8 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
                 GlobalKeyboard::init();
             }
 
-            let hid_kbd = HidKeyboard::new(dev.clone(), endpoint_in_address.unwrap());
-            HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_kbd))));
+            let hid_kbd = HidKeyboard::new(dev.clone(), endpoint_in_address);
+            HID_CORE.lock().devices.insert((system_id, endpoint_in_address), Arc::new(IrqMutex::new(Box::new(hid_kbd))));
         },
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_MOUSE) => {
             kprintln!(Debug, "[HID CORE] Found USB mouse with boot mode support.");
@@ -134,8 +142,8 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
                 GlobalMouse::init();
             }
 
-            let hid_mouse = HidMouse::new(dev.clone(), endpoint_in_address.unwrap());
-            HID_CORE.lock().devices.insert(system_id, Arc::new(IrqMutex::new(Box::new(hid_mouse))));
+            let hid_mouse = HidMouse::new(dev.clone(), endpoint_in_address);
+            HID_CORE.lock().devices.insert((system_id, endpoint_in_address), Arc::new(IrqMutex::new(Box::new(hid_mouse))));
         },
         (HID_SUBCLASS_NONE, _) => {
             kprintln!(Debug, "[HID CORE] Usb HID interfaces without boot mode are currently not supported!");
@@ -220,16 +228,35 @@ pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
 }
 
 pub fn hid_on_set_idle_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
-    let usb_device = {
+    let (usb_device, interface_number) = {
         let req = request.lock();
-        req.target_device.clone()
+        (req.target_device.clone(), req.setup_packet.unwrap().w_index as u8)
     };
 
-    let mut hid_core = HID_CORE.lock();
-    let mut dev = hid_core.devices.get_mut(&usb_device.system_id)
-        .unwrap()
-        .lock();
-    dev.start_listening();
+    //find enpoint address in config tree
+    let endpoint_address = usb_device
+        .configuration_tree
+        .get()
+        .and_then(|tree| {
+            tree.interfaces
+                .iter()
+                .find(|i| i.interface.b_interface_number == interface_number)
+        })
+        .and_then(find_in_endpoint_address);
+
+    let Some(endpoint_address) = endpoint_address else {
+        kprintln!(Error, "[HID CORE] No IN endpoint for interface {} after SET_IDLE.", interface_number);
+        return;
+    };
+
+    let dev = HID_CORE.lock()
+        .devices
+        .get(&(usb_device.system_id, endpoint_address))
+        .cloned();
+
+    if let Some(driver) = dev {
+        driver.lock().start_listening();
+    }
 }
 
 pub static HID_CORE: IrqMutex<HidCore> = IrqMutex::new(HidCore::new());

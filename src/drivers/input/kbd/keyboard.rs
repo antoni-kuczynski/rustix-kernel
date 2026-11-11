@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::once::Once;
 use crate::drivers::input::kbd::{keycode_to_char, KeyCode};
 use crate::{kprint_raw};
+use crate::drivers::acpi::acpi::{acpi2_reset_command, acpi_soft_off_state};
 use crate::drivers::input::kbd::keyboard::KeyAction::Pressed;
 
 #[derive(Copy, Clone, PartialEq)]
@@ -63,6 +64,14 @@ impl GlobalKeyboard {
 }
 
 fn handle_key_press(key_event: KeyEvent, kbd: &GlobalKeyboard) {
+
+    //TODO: temporary, for debugging
+    if key_event.key_code == KeyCode::CAPS_LOCK {
+        if acpi2_reset_command().is_err() {
+            acpi_soft_off_state().expect("dfdsffd");
+        }
+    }
+
     let mods = &kbd.active_modifiers;
 
     if key_event.key_code == KeyCode::CAPS_LOCK {

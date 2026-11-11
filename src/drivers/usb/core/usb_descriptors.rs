@@ -326,6 +326,13 @@ impl UsbConfigurationTree {
 
         config_tree
     }
+
+    pub fn find_endpoint(&self, address: u8) -> Option<&EndpointDescriptor> {
+        self.interfaces
+            .iter()
+            .flat_map(|i| i.endpoints.iter())
+            .find(|e| e.b_endpoint_address == address)
+    }
 }
 
 use core::fmt;

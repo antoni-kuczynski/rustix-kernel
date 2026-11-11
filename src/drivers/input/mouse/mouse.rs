@@ -32,7 +32,8 @@ pub struct MouseEvent {
     move_y: isize,
     mouse_button: Option<MouseButton>,
     mouse_button_action: Option<MouseButtonAction>,
-    scroll: isize
+    scroll: isize,
+    is_absolute: bool
 }
 
 impl MouseEvent {
@@ -42,17 +43,30 @@ impl MouseEvent {
             move_y: 0,
             mouse_button: Some(mouse_button),
             mouse_button_action: Some(mouse_button_action),
-            scroll: 0
+            scroll: 0,
+            is_absolute: false
         }
     }
 
-    pub fn new_move(move_x : isize, move_y: isize) -> Self {
+    pub fn new_move_relative(move_x : isize, move_y: isize) -> Self {
         Self {
             move_x,
             move_y,
             mouse_button: None,
             mouse_button_action: None,
-            scroll: 0
+            scroll: 0,
+            is_absolute: false
+        }
+    }
+
+    pub fn new_move_absolute(pos_x : isize, pos_y: isize) -> Self {
+        Self {
+            move_x: pos_x,
+            move_y: pos_y,
+            mouse_button: None,
+            mouse_button_action: None,
+            scroll: 0,
+            is_absolute: true
         }
     }
 
@@ -62,7 +76,8 @@ impl MouseEvent {
             move_y: 0,
             mouse_button: None,
             mouse_button_action: None,
-            scroll
+            scroll,
+            is_absolute: false
         }
     }
 }
@@ -101,6 +116,22 @@ impl GlobalMouse {
     }
 }
 
+fn handle_absolute_mouse_event(event: MouseEvent, mouse: &GlobalMouse) {
+    let x_pos = event.move_x;
+    let y_pos = event.move_y;
+
+    mouse.x_pos.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_x| {
+        Some(x_pos.clamp(0, fb_width() as isize - 1))
+    }).unwrap();
+
+    mouse.y_pos.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current_y| {
+        Some(y_pos.clamp(0, fb_height() as isize - 1))
+    }).unwrap();
+
+    let fb = FRAMEBUFFER.lock();
+    draw_cursor(fb);
+}
+
 pub fn handle_mouse_event(event: MouseEvent) {
     let mouse = GLOBAL_MOUSE.get()
         .expect("global mouse not initialized");
@@ -115,6 +146,12 @@ pub fn handle_mouse_event(event: MouseEvent) {
         }
     }
 
+    if event.is_absolute {
+        handle_absolute_mouse_event(event, mouse);
+        return;
+    }
+
+    //relative mouse report
     if event.move_x == 0 && event.move_y == 0 {
         return;
     }
@@ -129,14 +166,8 @@ pub fn handle_mouse_event(event: MouseEvent) {
         Some(new_y.clamp(0, fb_height() as isize - 1))
     }).unwrap();
 
-    {
-        let fb = FRAMEBUFFER.lock();
-        // fb.as_mut().unwrap().plot_pixel(mouse.x_pos.load(Ordering::Relaxed) as usize, mouse.y_pos.load(Ordering::Relaxed) as usize, &FramebufferColor::from_rgb(255,0,0));
-
-        draw_cursor(fb);
-    }
-
-    // kprintln!("({},{})", mouse.x_pos.load(Ordering::Relaxed), mouse.y_pos.load(Ordering::Relaxed));
+    let fb = FRAMEBUFFER.lock();
+    draw_cursor(fb);
 }
 
 pub static GLOBAL_MOUSE: Once<GlobalMouse> = Once::new();

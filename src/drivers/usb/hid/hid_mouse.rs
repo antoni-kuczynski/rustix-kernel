@@ -3,13 +3,19 @@
  * 31/07/2026
  */
 use alloc::sync::Arc;
+use core::ptr::slice_from_raw_parts;
 use crate::drivers::input::mouse::mouse::{handle_mouse_event, MouseButton, MouseButtonAction, MouseEvent};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::DeviceToHost;
 use crate::drivers::usb::hid::hid_core::{on_interrupt_in, HidDriver, RawHidReport};
-use crate::kprintln;
+use crate::{kprintln};
 use crate::memory::dma::{dma_alloc_zeroed};
+use crate::video::framebuffer::{fb_height, fb_width};
+
+const CH9329_VENDOR_ID: u16 = 0x1a86;
+const CH9329_PRODUCT_ID: u16 = 0xe129;
+const CH9329_ABS_MAX: isize = 4096; //from HID descriptor
 
 pub struct HidMouse {
     device: Arc<UsbDevice>,
@@ -42,13 +48,58 @@ pub const MOUSE_BUTTONS_MAPPINGS: [(u8, MouseButton); 5] = [
     (0x10, MouseButton::SideFront)
 ];
 
+/*
+        CH9329 absolute mouse report
+        for now (but probably for forever) I'm hardcoding this here, so that my debugging tools work,
+        without parsing the HID descriptor - there's no absolute mouse in boot protocol, and relative one sucks
+
+        [0]: report type - absolute=0x02, relative=0x01
+        [1]: unused, always zero
+        [2]: X absolute pos [low byte]
+        [3]: X absolute pos [high byte]
+        [4]: Y absolute pos [low byte]
+        [5]: Y absolute pos [high byte]
+        [6]: unused, my CH9329 doesnt carry button presses or scroll in this mode
+*/
+fn handle_ch92329_absolute_quirk(data: &[u8]) {
+    if data.len() < 5 {
+        kprintln!(Debug, "Skipping invalid CH9329 absolute mouse data packet with length {} < 5.", data.len());
+        return;
+    }
+
+    let x = u16::from_le_bytes([data[2], data[3]]);
+    let y = u16::from_le_bytes([data[4], data[5]]);
+
+    let px = x as isize * fb_width() as isize / CH9329_ABS_MAX;
+    let py = y as isize * fb_height() as isize / CH9329_ABS_MAX;
+
+    let mouse_event = MouseEvent::new_move_absolute(px, py);
+    handle_mouse_event(mouse_event);
+}
+
+
 impl HidDriver for HidMouse {
     fn handle_hid_report(&mut self, report: RawHidReport) {
-        let data = report.data;
+        let mut data = report.data;
+
+        let desc = self.device.device_descriptor
+            .get()
+            .unwrap();
 
         if data.len() < 3 {
             kprintln!(Debug, "Skipping invalid data packet with length {} < 3.", data.len());
             return;
+        }
+
+        //stupid CH9329 quirk, purely out of my laziness
+        if desc.id_vendor() == CH9329_VENDOR_ID && desc.id_product() == CH9329_PRODUCT_ID {
+            if data[0] == 0x01 {
+                //relative mouse - remove the report type byte
+                data = unsafe { &*slice_from_raw_parts(data.as_ptr().add(1), 4) };
+            } else if data[0] == 0x02 {
+                handle_ch92329_absolute_quirk(data);
+                return;
+            }
         }
 
         if data[1] != 0 && data[2] != 0 {
@@ -61,7 +112,7 @@ impl HidDriver for HidMouse {
             let move_x = x_raw * sign_x;
             let move_y = y_raw * sign_y;
 
-            let mouse_event = MouseEvent::new_move(move_x, move_y);
+            let mouse_event = MouseEvent::new_move_relative(move_x, move_y);
             handle_mouse_event(mouse_event);
         }
 
@@ -104,10 +155,18 @@ impl HidDriver for HidMouse {
     fn start_listening(&mut self) {
         let device = self.device.clone();
 
-        //event though, mice should only send 3 bytes in boot protocol, we allocate 4 byte buffer
-        //because some mice like to send additional byte which is scroll data
+        let endpoint = device
+            .configuration_tree
+            .get()
+            .unwrap()
+            .find_endpoint(self.in_endpoint_address)
+            .unwrap();
+
+        let max_packet_size = endpoint.w_max_packet_size as usize;
+
+        kprintln!(Debug, "[HID MOUSE] Allocating buffer with size w_max_packet_size={}.", max_packet_size);
         let dma = {
-            dma_alloc_zeroed(4, 4).expect("Failed to allocate mouse boot buffer.")
+            dma_alloc_zeroed(max_packet_size, 8).expect("Failed to allocate keyboard mouse buffer.")
         };
 
         let request = Arc::new(IrqMutex::new(UsbTransferRequest {
@@ -117,7 +176,7 @@ impl HidDriver for HidMouse {
             transfer_type: UsbTransferType::Interrupt,
             setup_packet: None,
             dma_buffer: Some(dma),
-            data_buffer_length: 4,
+            data_buffer_length: max_packet_size,
             status: UsbTransferStatus::Pending,
             bytes_transferred: 0,
             completion_callback: Some(on_interrupt_in),

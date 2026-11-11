@@ -7,14 +7,17 @@ use alloc::vec::Vec;
 use spin::Once;
 use crate::drivers::usb::core::usb_descriptors::*;
 use crate::drivers::usb::core::irq_mutex::*;
+use crate::drivers::usb::core::usb_hub::{usb_issue_hub_descriptor};
 use crate::drivers::usb::core::usb_transfers::*;
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
+use crate::drivers::usb::core::UsbSpeed;
 use crate::drivers::usb::hid::hid_core::hid_register_usb_device;
 use crate::kprintln;
 use crate::memory::dma::dma_alloc_zeroed;
 
 
 const USB_CLASS_HID: u8 = 0x03;
+const USB_CLASS_HUB: u8 = 0x09;
 
 pub struct UsbCore {
     devices: Vec<Arc<UsbDevice>>,
@@ -39,13 +42,19 @@ impl UsbCore {
         &mut self,
         hardware_id: u8,
         host_controller: Weak<dyn UsbHostController>,
+        port_on_parent: u8,
+        speed: UsbSpeed,
+        parent_hub: Option<Arc<IrqMutex<UsbDevice>>>
     ) -> (Arc<UsbDevice>, Arc<IrqMutex<UsbTransferRequest>>) {
         let device = Arc::new(UsbDevice {
             system_id: self.new_system_id(),
             hardware_id,
             host_controller,
             configuration_tree: Once::new(),
-            device_descriptor: Once::new()
+            device_descriptor: Once::new(),
+            port_on_parent,
+            speed,
+            parent_hub
         });
 
         self.devices.push(device.clone());
@@ -81,10 +90,12 @@ impl UsbCore {
 }
 
 /// Registers a newly addressed device and asks it for its device descriptor.
-pub fn usb_register_device(hardware_id: u8, host_controller: Weak<dyn UsbHostController>) {
+pub fn usb_register_device(
+    hardware_id: u8, host_controller: Weak<dyn UsbHostController>, 
+    parent_port: u8, speed: UsbSpeed, parent_hub: Option<Arc<IrqMutex<UsbDevice>>>) {
     let (device, request) = {
         let mut usb_core = USB_CORE.lock();
-        usb_core.add_device(hardware_id, host_controller)
+        usb_core.add_device(hardware_id, host_controller, parent_port, speed, parent_hub)
     };
 
     let Some(controller) = device.host_controller.upgrade() else {
@@ -232,6 +243,12 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let config_value = config_tree.configuration.b_configuration_value;
 
         dev.configuration_tree.call_once(|| config_tree);
+
+
+        if dev.device_descriptor.get().unwrap().b_device_class() == USB_CLASS_HUB {
+            usb_issue_hub_descriptor(dev);
+            return;
+        }
 
 
         let set_configuration_setup = UsbSetupPacket::new(

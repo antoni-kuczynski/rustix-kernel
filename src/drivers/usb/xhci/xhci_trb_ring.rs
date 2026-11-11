@@ -74,6 +74,7 @@ pub trait Ring {
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError>;
     fn dequeue(&mut self) -> Result<Trb, RingError>;
     fn get_dequeue_phys(&self) -> Result<PhysAddr, RingError>;
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError>;
     fn ring_mut(&mut self) -> &mut TrbRing;
     fn ring(&self) -> &TrbRing;
 
@@ -93,14 +94,21 @@ pub trait Ring {
         self.ring().cycle_state
     }
 
-    fn advance_dequeue_index(&mut self) {
+    fn advance_dequeue_index(&mut self, skip_link_trb: bool) {
         let ring = self.ring_mut();
-        let len = ring.trbs.len();
+        let mut len = ring.trbs.len();
+
+        if skip_link_trb {
+            len = len.checked_sub(1).expect("[xHCI] Ring with length=0!");
+        }
 
         ring.dequeue_index += 1;
         if ring.dequeue_index == len {
             ring.dequeue_index = 0;
-            ring.cycle_state = !ring.cycle_state;
+
+            if !skip_link_trb {
+                ring.cycle_state = !ring.cycle_state;
+            }
         }
     }
 }
@@ -153,7 +161,7 @@ impl TrbRing {
         }
 
         if dequeue_index_check && next_index == self.dequeue_index {
-            kprintln!(Error, "Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
+            kprintln!(Error, "[xHCI] Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
             return Err(RingError::Full);
         }
 
@@ -280,6 +288,10 @@ impl Ring for EventRing {
         Ok(self.ring.get_dequeue_phys())
     }
 
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
+        Err(Unsupported)
+    }
+
     fn ring_mut(&mut self) -> &mut TrbRing {
         &mut self.ring
     }
@@ -310,6 +322,10 @@ impl Ring for CommandRing {
         } else {
             Err(RingError::InvalidTrbOnCommandRing)
         }
+    }
+
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
+        Ok(self.ring.ring_phys + (self.ring.enqueue_index * size_of::<Trb>()) as u64)
     }
 
     fn dequeue(&mut self) -> Result<Trb, RingError> {
@@ -350,6 +366,10 @@ impl Ring for TransferRing {
         }
     }
 
+    fn get_enqueue_phys(&self) -> Result<PhysAddr, RingError> {
+        Ok(self.ring.ring_phys + (self.ring.enqueue_index * size_of::<Trb>()) as u64)
+    }
+
     fn dequeue(&mut self) -> Result<Trb, RingError> {
         self.ring.dequeue()
     }
@@ -365,6 +385,8 @@ impl Ring for TransferRing {
     fn ring(&self) -> &TrbRing {
         &self.ring
     }
+
+
 }
 
 
