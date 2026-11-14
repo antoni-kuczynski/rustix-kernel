@@ -34,6 +34,29 @@ pub enum UsbTransferDirection {
     DeviceToHost = 1
 }
 
+impl UsbTransferDirection {
+    pub const HOST_TO_DEVICE: u8 = 0;
+    pub const DEVICE_TO_HOST: u8 = 1;
+}
+
+/// Recipient field of bmRequestType (bits 4:0).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
+pub enum UsbTransferRecipient {
+    Device = 0,
+    Interface = 1,
+    Endpoint = 2,
+    Other = 3,
+}
+
+impl UsbTransferRecipient {
+    pub const DEVICE: u8 = 0;
+    pub const INTERFACE: u8 = 1;
+    pub const ENDPOINT: u8 = 2;
+    /// Used by hub class requests to target a hub port (wIndex = port number).
+    pub const OTHER: u8 = 3;
+}
+
 /// A host controller driver.
 ///
 /// The methods take `&self` because a controller is expected to guard its rings and devices

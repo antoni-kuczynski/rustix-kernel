@@ -189,10 +189,13 @@ impl WValue {
     pub const DESC_ENDPOINT: u8 = 0x05;
     pub const DESC_DEVICE_QUALIFIER: u8 = 0x06;
     pub const DESC_OTHER_SPEED: u8 = 0x07;
+    pub const PORT_POWER: u16 = 0x08;
 
     pub const DESC_HID: u8 = 0x21;
     pub const DESC_HID_REPORT: u8 = 0x22;
     pub const DESC_HID_PHYSICAL: u8 = 0x23;
+    pub const DESC_HUB: u8 = 0x29;
+    pub const DESC_SUPERSPEED_HUB: u8 = 0x2A;
 
     pub const HID_REPORT_INPUT: u8 = 0x01;
     pub const HID_REPORT_OUTPUT: u8 = 0x02;
