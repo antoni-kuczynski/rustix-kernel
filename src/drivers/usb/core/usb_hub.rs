@@ -11,6 +11,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_core::on_set_configuration_complete;
 use crate::drivers::usb::core::usb_descriptors::UsbConfigurationTree;
+use crate::drivers::usb::core::usb_requests::{usb_request_get_hub_descriptor, usb_request_set_hub_port_feature};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
 use crate::drivers::usb::{UsbBRequest, UsbBmRequestType, WValue};
@@ -42,30 +43,9 @@ impl UsbHub {
         let port_number = self.current_port_index;
         self.current_port_index += 1;
 
-        let set_port_power_feature = UsbSetupPacket::new(
-            UsbBmRequestType::new(
-                UsbTransferDirection::HOST_TO_DEVICE,
-                UsbBmRequestType::TYPE_CLASS,
-                UsbTransferRecipient::OTHER
-            ),
-            UsbBRequest::SET_FEATURE,
-            WValue::PORT_POWER,
-            port_number,
-            0 //no data stage
-        );
-
-        Some(Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: self.device.clone(),
-            endpoint_address: 0,
-            transfer_direction: HostToDevice,
-            transfer_type: UsbTransferType::Control,
-            setup_packet: Some(set_port_power_feature),
-            dma_buffer: None,
-            data_buffer_length: 0,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_set_port_power_complete),
-        })))
+        Some(usb_request_set_hub_port_feature(
+            self.device.clone(), port_number, WValue::PORT_POWER, on_set_port_power_complete
+        ))
     }
 }
 
@@ -117,37 +97,7 @@ fn usb_hub_get_number_of_ports(is_super_speed_hub: bool, dma: &DmaAlloc, bytes_t
 
 pub fn usb_issue_hub_descriptor(dev: Arc<UsbDevice>) {
     let is_superspeed = dev.speed.is_superspeed_or_higher();
-    let descriptor_type: u16 = if is_superspeed { 0x2A } else { 0x29 };
-    let w_value = (descriptor_type << 8) | 0x00;
-    let w_length: u16 = 128;
-
-    let (dev, full_req) = {
-        let get_hub_desc_setup = UsbSetupPacket::new(
-            0xA0,
-            0x06,
-            w_value,
-            0x0000,
-            w_length
-        );
-
-        let dma_buf = dma_alloc_zeroed(w_length as usize, 64)
-            .expect("DMA allocation for hub descriptor failed");
-
-        let hub_desc_request = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: dev.clone(),
-            endpoint_address: 0,
-            transfer_direction: DeviceToHost,
-            transfer_type: UsbTransferType::Control,
-            setup_packet: Some(get_hub_desc_setup),
-            dma_buffer: Some(dma_buf),
-            data_buffer_length: w_length as usize,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_get_hub_descriptor_complete),
-        }));
-
-        (dev, hub_desc_request)
-    };
+    let full_req = usb_request_get_hub_descriptor(dev.clone(), is_superspeed, on_get_hub_descriptor_complete);
 
     if let Some(controller) = dev.host_controller.upgrade() {
         let _ = controller.submit_request(full_req);

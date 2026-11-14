@@ -8,6 +8,10 @@ use spin::Once;
 use crate::drivers::usb::core::usb_descriptors::*;
 use crate::drivers::usb::core::irq_mutex::*;
 use crate::drivers::usb::core::usb_hub::{usb_issue_hub_descriptor};
+use crate::drivers::usb::core::usb_requests::{
+    usb_request_clear_endpoint_halt, usb_request_get_configuration_descriptor, usb_request_get_device_descriptor,
+    usb_request_set_configuration,
+};
 use crate::drivers::usb::core::usb_transfers::*;
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
 use crate::drivers::usb::core::UsbSpeed;
@@ -18,6 +22,7 @@ use crate::memory::dma::dma_alloc_zeroed;
 
 const USB_CLASS_HID: u8 = 0x03;
 const USB_CLASS_HUB: u8 = 0x09;
+const CONFIGURATION_DESCRIPTOR_TOTAL_LENGTH_PREFIX: u16 = 8;
 
 pub struct UsbCore {
     devices: Vec<Arc<UsbDevice>>,
@@ -59,34 +64,24 @@ impl UsbCore {
 
         self.devices.push(device.clone());
 
-        let dma_buffer = dma_alloc_zeroed(size_of::<UsbDeviceDescriptor>(), 1)
-            .expect("Failed to allocate memory for GET_DESCRIPTOR request!");
-
-        kprintln!(Debug, "[USB CORE] Allocated dma buffer for device descriptor at phys {:#011x} virt {:#011x}.", dma_buffer.phys, dma_buffer.virt);
-
-        let setup = UsbSetupPacket::new(
-            0x80,
-            0x06,
-            0x0100,
-            0x0000,
-            18
-        );
-
-        let request = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: device.clone(),
-            endpoint_address: 0,
-            transfer_direction: DeviceToHost,
-            transfer_type: UsbTransferType::Control,
-            setup_packet: Some(setup),
-            dma_buffer: Some(dma_buffer),
-            data_buffer_length: 18,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_device_descriptor_received),
-        }));
+        let request = usb_request_get_device_descriptor(device.clone(), on_device_descriptor_received);
 
         (device, request)
     }
+}
+
+pub fn usb_clear_endpoint_halt(
+    device: Arc<UsbDevice>,
+    endpoint_address: u8,
+    callback: UsbTransferCallback,
+) -> Result<(), &'static str> {
+    let controller = device
+        .host_controller
+        .upgrade()
+        .ok_or("Host controller is gone.")?;
+
+    let request = usb_request_clear_endpoint_halt(device, endpoint_address, callback);
+    controller.submit_request(request)
 }
 
 /// Registers a newly addressed device and asks it for its device descriptor.
@@ -134,31 +129,9 @@ fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let dev = req.target_device.clone();
         dev.device_descriptor.call_once(|| *desc);
 
-        let next_dma = dma_alloc_zeroed(8, 1)
-            .expect("Failed to allocate memory for configuration descriptor header.");
-
-        kprintln!(Debug, "[USB CORE] Allocated dma buffer for config descriptor header at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
-
-        let setup = UsbSetupPacket::new(
-            0x80,
-            0x06,
-            0x0200,
-            0x0000,
-            8
+        let config_req = usb_request_get_configuration_descriptor(
+            dev.clone(), CONFIGURATION_DESCRIPTOR_TOTAL_LENGTH_PREFIX, on_config_header_received
         );
-
-        let config_req = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: dev.clone(),
-            endpoint_address: 0,
-            transfer_direction: DeviceToHost,
-            transfer_type: UsbTransferType::Control,
-            setup_packet: Some(setup),
-            dma_buffer: Some(next_dma),
-            data_buffer_length: 8, //8bytes to get the total length. we dont need the 9th byte now
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_config_header_received),
-        }));
         (dev, config_req)
     };
 
@@ -191,25 +164,7 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         kprintln!(Debug, "[USB CORE] Detected Configuration Descriptor size: {} bytes.", w_total_length);
 
         //now, it's time for the full configuration descriptor
-        let next_dma = dma_alloc_zeroed(w_total_length as usize, 1)
-            .expect("Memory allocation for full config descriptor failed.");
-
-        kprintln!(Debug, "[USB CORE] Allocated dma buffer for full config descriptor at phys {:#011x} virt {:#011x}.", next_dma.phys, next_dma.virt);
-
-        let setup = UsbSetupPacket::new(0x80, 0x06, 0x0200, 0x0000, w_total_length);
-
-        let full_req = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: dev.clone(),
-            endpoint_address: 0,
-            transfer_direction: DeviceToHost,
-            transfer_type: UsbTransferType::Control,
-            setup_packet: Some(setup),
-            dma_buffer: Some(next_dma),
-            data_buffer_length: w_total_length as usize,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_full_config_received),
-        }));
+        let full_req = usb_request_get_configuration_descriptor(dev.clone(), w_total_length, on_full_config_received);
 
         (dev, full_req)
     };
@@ -251,26 +206,7 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         }
 
 
-        let set_configuration_setup = UsbSetupPacket::new(
-            0x00,
-            0x09,
-            config_value as u16,
-            0x0000,
-            0
-        );
-
-        let full_req = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: dev.clone(),
-            endpoint_address: 0,
-            transfer_direction: HostToDevice,
-            transfer_type: UsbTransferType::Control,
-            setup_packet: Some(set_configuration_setup),
-            dma_buffer: None,
-            data_buffer_length: 0,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_set_configuration_complete),
-        }));
+        let full_req = usb_request_set_configuration(dev.clone(), config_value, on_set_configuration_complete);
         (dev, full_req)
     };
 

@@ -8,10 +8,12 @@ use alloc::sync::Arc;
 use crate::drivers::input::kbd::keyboard::{GlobalKeyboard, GLOBAL_KEYBOARD};
 use crate::drivers::input::mouse::mouse::{GlobalMouse, GLOBAL_MOUSE};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
+use crate::drivers::usb::core::usb_core::usb_clear_endpoint_halt;
 use crate::drivers::usb::core::usb_descriptors::{UsbInterfaceTree};
+use crate::drivers::usb::core::usb_requests::{hid_request_set_boot_protocol, hid_request_set_idle_indefinitely};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{HostToDevice};
-use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed};
+use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error, Stalled};
 use crate::drivers::usb::hid::hid_keyboard::{HidKeyboard};
 use crate::drivers::usb::hid::hid_mouse::HidMouse;
 use crate::kprintln;
@@ -54,9 +56,40 @@ impl HidCore {
     }
 }
 
+pub fn hid_on_cleared_endpoint_halt(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let (status, system_id, endpoint_address) = {
+        let req = request.lock();
+
+        (req.status, req.target_device.system_id, req.setup_packet.unwrap().w_index)
+    };
+
+    if status != Completed {
+        kprintln!(Error, "[HID CORE] Cannot execute ClearFeature, the device is probably broken.");
+        return;
+    }
+
+    let hid_device = HID_CORE.lock()
+        .devices
+        .get(&(system_id, endpoint_address as u8))
+        .cloned();
+
+    let Some(hid_device) = hid_device else { return; };
+    hid_device.lock().start_listening();
+}
+
 pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (device, endpoint_address) = {
         let mut req = request.lock();
+
+        if req.status == Stalled {
+            let endpoint = req.endpoint_address;
+            let dev = req.target_device.clone();
+
+            if usb_clear_endpoint_halt(dev, endpoint, hid_on_cleared_endpoint_halt).is_err() {
+                kprintln!(Error, "[xHCI] Clearing halted endpoint failed.");
+            }
+            return;
+        }
 
         if req.status != Completed {
             kprintln!(Error, "[HID CORE] Transfer request failed to complete - status {:?}", req.status);
@@ -159,26 +192,7 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
 }
 
 fn hid_set_protocol(device: Arc<UsbDevice>, interface_num: u16) {
-    let set_protocol_request = Arc::new(IrqMutex::new(UsbTransferRequest {
-        target_device: device.clone(),
-        endpoint_address: 0,
-        transfer_direction: HostToDevice,
-        transfer_type: UsbTransferType::Control,
-
-        setup_packet: Some(UsbSetupPacket {
-            bm_request_type: 0x21,
-            b_request: 0x0B,       //SET_PROTOCOL
-            w_value: 0x0000,       //0 = Boot Protocol
-            w_index: interface_num,
-            w_length: 0,
-        }),
-
-        dma_buffer: None,
-        data_buffer_length: 0,
-        status: UsbTransferStatus::Pending,
-        bytes_transferred: 0,
-        completion_callback: Some(hid_on_set_protocol_done),
-    }));
+    let set_protocol_request = hid_request_set_boot_protocol(device.clone(), interface_num, hid_on_set_protocol_done);
 
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_protocol_request);
@@ -200,26 +214,7 @@ pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
         return;
     }
 
-    let set_idle_request = Arc::new(IrqMutex::new(UsbTransferRequest {
-        target_device: device.clone(),
-        endpoint_address: 0,
-        transfer_direction: HostToDevice,
-        transfer_type: UsbTransferType::Control,
-
-        setup_packet: Some(UsbSetupPacket {
-            bm_request_type: 0x21,
-            b_request: 0x0A,       //SET_IDLE
-            w_value: 0x0000,       //high byte (Duration) = 0, low byte (Report id) = 0
-            w_index: interface_number,
-            w_length: 0,
-        }),
-
-        dma_buffer: None,
-        data_buffer_length: 0,
-        status: UsbTransferStatus::Pending,
-        bytes_transferred: 0,
-        completion_callback: Some(hid_on_set_idle_done),
-    }));
+    let set_idle_request = hid_request_set_idle_indefinitely(device.clone(), interface_number, hid_on_set_idle_done);
 
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_idle_request);

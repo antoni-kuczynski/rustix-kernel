@@ -6,6 +6,7 @@ use alloc::sync::Arc;
 use crate::drivers::input::kbd::keyboard::{handle_key_event, KeyAction, KeyEvent};
 use crate::drivers::input::kbd::KeyCode;
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
+use crate::drivers::usb::core::usb_requests::usb_request_interrupt_in;
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::DeviceToHost;
 use crate::drivers::usb::hid::hid_core::{on_interrupt_in, HidDriver, RawHidReport};
@@ -103,22 +104,9 @@ impl HidDriver for HidKeyboard {
         let max_packet_size = endpoint.w_max_packet_size as usize;
         
         kprintln!(Debug, "[HID KBD] Allocating buffer with size w_max_packet_size={}.", max_packet_size);
-        let dma = {
-            dma_alloc_zeroed(max_packet_size, 8).expect("Failed to allocate keyboard boot buffer.")
-        };
+        kprintln!(Info, "Press Caps Lock to restart the PC.");
 
-        let request = Arc::new(IrqMutex::new(UsbTransferRequest {
-            target_device: device.clone(),
-            endpoint_address: self.in_endpoint_address,
-            transfer_direction: DeviceToHost,
-            transfer_type: UsbTransferType::Interrupt,
-            setup_packet: None,
-            dma_buffer: Some(dma),
-            data_buffer_length: max_packet_size,
-            status: UsbTransferStatus::Pending,
-            bytes_transferred: 0,
-            completion_callback: Some(on_interrupt_in),
-        }));
+        let request = usb_request_interrupt_in(device.clone(), self.in_endpoint_address, max_packet_size, on_interrupt_in);
 
         self.pending_request = Some(request.clone());
 

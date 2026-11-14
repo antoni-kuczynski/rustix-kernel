@@ -3,6 +3,7 @@ pub mod irq_mutex;
 pub mod usb_transfers;
 pub mod usb_core;
 pub mod usb_hub;
+pub mod usb_requests;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]

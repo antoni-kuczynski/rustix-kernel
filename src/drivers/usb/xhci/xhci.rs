@@ -654,7 +654,15 @@ struct TransferRingSlot {
     ring: TransferRing,
     _dma: DmaAlloc,
     halted_request: Option<Arc<IrqMutex<UsbTransferRequest>>>,
-    halted_attempts: usize
+    halted_attempts: usize,
+    halt_reason: XhciHaltReason
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum XhciHaltReason {
+    None = 0,
+    Babble = 1,
+    Stall = 2
 }
 
 pub struct XhciDevice {
@@ -685,7 +693,8 @@ impl XhciDevice {
             ring: ep0_transfer_ring,
             _dma: ep0_transfer_ring_dma,
             halted_request: None,
-            halted_attempts: 0
+            halted_attempts: 0,
+            halt_reason: XhciHaltReason::None,
         }));
 
         for i in 0..(MAX_DCI as usize + 1 - 2) {
@@ -1998,14 +2007,52 @@ impl XHCI {
             }
         }
 
+        if code != TrbCompletionCode::SUCCESS {
+            let dev_lock = match self.device_from_slot_id(slot_id) {
+                None => {
+                    kprintln!(Error, "[xHCI] No device present at slot {}.", slot_id);
+                    return;
+                },
+                Some(x) => x
+            };
+            let mut dev = dev_lock.lock();
+            let ring = dev.transfer_rings[dci as usize].as_mut().unwrap();
+            ring.halt_reason = XhciHaltReason::None;
+
+            let req = match dev.take_halted_request(dci) {
+                None => { return; },
+                Some(x) => x
+            };
+            complete_request(req, UsbTransferStatus::Error, 0);
+        }
+
         kprintln!(Debug, "[xHCI] Completed SET_DEQUEUE_PTR command for EP with DCI={}", dci);
 
         let (request, is_within_attempts) = {
-            let dev_lock = self.device_from_slot_id(slot_id)
-                .expect("[xHCI] No device present at slot - on_set_dequeue_ptr.");
+            let dev_lock = match self.device_from_slot_id(slot_id) {
+                None => {
+                    kprintln!(Error, "[xHCI] No device present at slot {}.", slot_id);
+                    return;
+                },
+                Some(x) => x
+            };
             let mut dev = dev_lock.lock();
 
             let ring = dev.transfer_rings[dci as usize].as_mut().unwrap();
+
+            if ring.halt_reason == XhciHaltReason::Stall {
+                kprintln!(Debug, "[xHCI] Skipping retrying the request - halt reason was {:?}.", ring.halt_reason);
+                ring.halt_reason = XhciHaltReason::None;
+                let req = dev.take_halted_request(dci);
+
+                if req.is_none() {
+                    return;
+                }
+
+                complete_request(req.unwrap(), UsbTransferStatus::Stalled, 0);
+                return;
+            }
+
             ring.halted_attempts += 1;
 
             let within_attempts = ring.halted_attempts <= MAX_EP_HALT_ATTEMPTS;
@@ -2104,10 +2151,6 @@ impl XHCI {
             let dev = dev_lock.lock();
             let ring = dev.transfer_rings[endpoint_dci as usize].as_ref().unwrap();
 
-            if ring.halted_request.is_none() {
-                return; //no halted, broken request = no jumping over it
-            }
-
             let new_addr = ring.ring.get_enqueue_phys().unwrap(); //always valid for this ring
             let dequeue_cycle_state = ring.ring.cycle_state();
             (new_addr, dequeue_cycle_state)
@@ -2182,10 +2225,8 @@ impl XHCI {
             TrbCompletionCode::SUCCESS | TrbCompletionCode::SHORT_PACKET => {
                 UsbTransferStatus::Completed
             }
-            TrbCompletionCode::STALL_ERROR => UsbTransferStatus::Stalled,
-            TrbCompletionCode::BABBLE_DETECTED_ERROR => {
+            TrbCompletionCode::BABBLE_DETECTED_ERROR | TrbCompletionCode::STALL_ERROR => {
                 //here, we need to reset the endpoint to revive it
-
                 {
                     let mut dev = device.lock();
                     let req = dev.take_pending(event_trb);
@@ -2197,10 +2238,22 @@ impl XHCI {
                         }
                     };
 
+                    endpoint.halt_reason = if completion_code == TrbCompletionCode::BABBLE_DETECTED_ERROR {
+                        XhciHaltReason::Babble
+                    } else if completion_code == TrbCompletionCode::STALL_ERROR {
+                        XhciHaltReason::Stall
+                    } else {
+                        kprintln!(Error, "[xHCI] Unhandled error type.");
+                        XhciHaltReason::None
+                    };
+
+                    //TODO: for requests that use more than one trb, it can fail during a different
+                    //stage trb rather than the one that is used as a key in pending_requests,
+                    //so the pending request wont be found and wont be resumed.
                     match req {
                         None => {
-                            kprintln!(Error, "[xHCI] Transfer TRB didn't point to a request at DCI={}.", endpoint_dci);
-                            return;
+                            kprintln!(Debug, "[xHCI] Transfer TRB didn't point to a request at DCI={}.", endpoint_dci);
+                            endpoint.halted_request = None;
                         }
                         Some(x) => {
                             kprintln!(Debug, "[xHCI] Took pending request from endpoint DCI={} and halted it.", endpoint_dci);
@@ -2320,7 +2373,8 @@ impl XHCI {
                     ring: transfer_ring,
                     _dma: transfer_ring_dma,
                     halted_request: None,
-                    halted_attempts: 0
+                    halted_attempts: 0,
+                    halt_reason: XhciHaltReason::None
                 });
 
 
