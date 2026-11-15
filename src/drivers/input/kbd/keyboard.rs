@@ -68,7 +68,7 @@ fn handle_key_press(key_event: KeyEvent, kbd: &GlobalKeyboard) {
     //TODO: temporary, for debugging
     if key_event.key_code == KeyCode::CAPS_LOCK {
         if acpi2_reset_command().is_err() {
-            acpi_soft_off_state().expect("dfdsffd");
+            // acpi_soft_off_state().expect("dfdsffd");
         }
     }
 
