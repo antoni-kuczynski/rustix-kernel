@@ -5,16 +5,18 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use core::cmp::min;
+use core::cmp::{max, min};
 use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::{AtomicU64, Ordering};
+use crate::drivers::apic::apic::set_timeout;
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_core::on_set_configuration_complete;
 use crate::drivers::usb::core::usb_descriptors::UsbConfigurationTree;
-use crate::drivers::usb::core::usb_requests::{usb_request_get_hub_descriptor, usb_request_set_hub_port_feature};
-use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
+use crate::drivers::usb::core::usb_requests::{usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_set_hub_port_feature};
+use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
 use crate::drivers::usb::{UsbBRequest, UsbBmRequestType, WValue};
+use crate::drivers::usb::core::UsbSpeed;
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error};
 use crate::drivers::usb::hid::hid_core::{HidCore, HidDriver};
 use crate::kprintln;
@@ -23,9 +25,18 @@ use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 //the device removable mask only covers 31 ports
 const HUB_MAX_PORTS: u16 = 31;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UsbHubId(pub u64);
+
+impl core::fmt::Display for UsbHubId {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
 pub struct UsbHub {
     device: Arc<UsbDevice>,
-    system_id: u64,
+    system_id: UsbHubId,
     number_of_ports: u16,
     current_port_index: u16,
     is_super_speed: bool,
@@ -35,24 +46,39 @@ pub struct UsbHub {
 impl UsbHub {
     /// Builds SET_FEATURE(PORT_POWER) for the next unpowered port and advances
     /// `current_port_index`. Returns `None` once every port has been covered.
-    fn next_port_power_request(&mut self) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
+    fn next_set_port_power_request(&mut self) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
+        let port_number = self.validate_and_set_next_port()?;
+
+        Some(usb_request_set_hub_port_feature(
+            self.device.clone(), port_number, WValue::PORT_POWER, on_set_port_power_complete
+        ))
+    }
+
+    /// Builds GET_HUB_PORT_STATUS for next hub port
+    fn next_get_port_status_request(&mut self) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
+        let port_number = self.validate_and_set_next_port()?;
+
+        Some(usb_request_get_hub_port_status(
+            self.device.clone(), port_number, on_get_port_status
+        ))
+    }
+
+    /// Returns current port
+    fn validate_and_set_next_port(&mut self) -> Option<u16> {
         if self.current_port_index > self.number_of_ports {
             return None;
         }
 
         let port_number = self.current_port_index;
         self.current_port_index += 1;
-
-        Some(usb_request_set_hub_port_feature(
-            self.device.clone(), port_number, WValue::PORT_POWER, on_set_port_power_complete
-        ))
+        Some(port_number)
     }
 }
 
 pub struct UsbHubCore {
     /// Keyed by `UsbDevice::system_id` of the hub, so completion callbacks can find the hub
     /// straight from `request.target_device`.
-    devices: BTreeMap<u64, Arc<IrqMutex<Box<UsbHub>>>>
+    devices: BTreeMap<UsbDeviceId, Arc<IrqMutex<Box<UsbHub>>>>
 }
 
 impl UsbHubCore {
@@ -62,34 +88,14 @@ impl UsbHubCore {
         }
     }
 
-    fn find_by_device(&self, device_system_id: u64) -> Option<Arc<IrqMutex<Box<UsbHub>>>> {
+    pub fn find_by_system_id(&self, device_system_id: UsbDeviceId) -> Option<Arc<IrqMutex<Box<UsbHub>>>> {
         self.devices.get(&device_system_id).cloned()
     }
 }
 
 /// Returns `None` if the descriptor is shorter than it claims or than the hub sent.
-fn usb_hub_get_number_of_ports(is_super_speed_hub: bool, dma: &DmaAlloc, bytes_transferred: usize) -> Option<u16> {
-    //the buffer is zeroed, so reading past what the hub actually sent would look like valid data
-    let received_length = min(bytes_transferred, dma.layout.size());
-    let buffer = unsafe {
-        core::slice::from_raw_parts(dma.virt.as_ptr::<u8>(), received_length)
-    };
-
-    let number_of_ports = if !is_super_speed_hub {
-        Usb2HubDescriptor::parse_from_dma(buffer)?.b_nbr_ports
-    } else {
-        if buffer.len() < size_of::<Usb3HubDescriptor>() {
-            return None;
-        }
-
-        let hub_descriptor = unsafe { &*(buffer.as_ptr() as *const Usb3HubDescriptor) };
-        hub_descriptor.b_nbr_ports
-    } as u16;
-
-    let b_length = buffer[0] as usize;
-    if b_length > buffer.len() {
-        return None;
-    }
+fn usb_hub_get_number_of_ports(is_super_speed: bool, dma: &DmaAlloc, bytes_transferred: usize) -> Option<u16> {
+    let number_of_ports = UsbHubDescriptor::from_dma(is_super_speed, dma)?.number_of_ports() as u16;
 
     //cap to the max size of 4 byte bitmask
     Some(min(number_of_ports, HUB_MAX_PORTS))
@@ -128,14 +134,14 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let Some(amount_of_ports) = usb_hub_get_number_of_ports(
             is_super_speed_hub, &descriptor_dma, req.bytes_transferred
         ) else {
-            kprintln!(Error, "[USB HUB] Malformed hub descriptor ({} bytes received).", req.bytes_transferred);
+            kprintln!(Error, "[USB_HUB] Malformed hub descriptor ({} bytes received).", req.bytes_transferred);
             return;
         };
 
         (descriptor_dma, is_super_speed_hub, amount_of_ports, dev)
     };
 
-    let system_id = USB_HUB_SYSTEM_ID.fetch_add(1, Ordering::AcqRel);
+    let system_id = UsbHubId(USB_HUB_SYSTEM_ID.fetch_add(1, Ordering::AcqRel));
     let mut hub_device = UsbHub {
         device: device.clone(),
         system_id,
@@ -146,12 +152,12 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     };
 
     //now, set the PORT_POWER for all ports of the hub, one at a time
-    let port_power_req = hub_device.next_port_power_request();
+    let port_power_req = hub_device.next_set_port_power_request();
 
     USB_HUB_CORE.lock().devices.insert(device.system_id, Arc::new(IrqMutex::new(Box::new(hub_device))));
 
     let Some(port_power_req) = port_power_req else {
-        kprintln!(Error, "[USB HUB] Hub reported 0 ports, nothing to power.");
+        kprintln!(Error, "[USB_HUB] Hub reported 0 ports, nothing to power.");
         return;
     };
 
@@ -162,25 +168,40 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
 //callback is called for each port completion
 fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
-    let req = {
+    let (req, device) = {
         let req1 = request.lock();
         if req1.status != Completed {
             kprintln!(Error, "[xHCI] Setting port power on hub failed with status {:?}.", req1.status);
             return;
         }
-        req1
+        let device = req1.target_device.clone();
+        (req1, device)
     };
-    let device = req.target_device.clone();
 
-    let Some(hub) = USB_HUB_CORE.lock().find_by_device(device.system_id) else {
-        kprintln!(Error, "[USB HUB] PORT_POWER completed for a device that is not a registered hub.");
+    let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(device.system_id) else {
+        kprintln!(Error, "[USB_HUB] PORT_POWER completed for a device that is not a registered hub.");
         return;
     };
 
-    let port_power_req = hub.lock().next_port_power_request();
+    let port_power_req = hub.lock().next_set_port_power_request();
 
     let Some(port_power_req) = port_power_req else {
-        on_all_ports_powered();
+        let (b_pwr_on_to_pwr_good_ms, system_id) = {
+            let hub_locked = hub.lock();
+            let desc = UsbHubDescriptor::from_dma(
+                hub_locked.is_super_speed,
+                &hub_locked.hub_descriptor
+            ).unwrap();
+            (desc.power_on_to_power_good_in_ms(), hub_locked.system_id)
+        };
+
+        //wait until the hub is ready to be powered
+        let timeout = max(b_pwr_on_to_pwr_good_ms, 100);
+        let device_system_id = device.system_id;
+        set_timeout(timeout, move || {
+           on_all_ports_powered(device_system_id);
+        });
+
         return;
     };
 
@@ -189,7 +210,61 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     }
 }
 
-fn on_all_ports_powered() {
+fn on_all_ports_powered(device_system_id: UsbDeviceId) {
+    let Some(hub) = USB_HUB_CORE
+        .lock()
+        .find_by_system_id(device_system_id)
+        else {
+            kprintln!("[USB_HUB] Hub with system ID={} disappeared.", device_system_id);
+            return;
+        };
+
+    //now, we need to start checking for port status using GetPortStatus
+    //doing that the same way as SetPortPower - callback for each port checked
+   let (get_port_power_req, usb_device) = {
+       let mut lock = hub.lock();
+       let hub = lock.as_mut();
+       let device = hub.device.clone();
+       lock.current_port_index = 1;
+       (lock.next_get_port_status_request(), device)
+   };
+
+    if get_port_power_req.is_none() {
+        kprintln!(Error, "[USB_HUB] USB hub reports 0 ports on checking port power.");
+        return;
+    }
+
+    if let Some(controller) = usb_device.host_controller.upgrade() {
+        let _ = controller.submit_request(get_port_power_req.unwrap());
+    }
+}
+
+fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let (get_port_pwr_request, device) = {
+        let device = request.lock().target_device.clone();
+        let system_id = device.system_id;
+        let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(system_id) else {
+            kprintln!("[USB_HUB] Hub with system id {} disappeared.", system_id);
+            return;
+        };
+
+        (hub.lock().next_get_port_status_request(), device)
+    };
+
+    //TODO: check port status and check if port needs to be reset
+
+    if get_port_pwr_request.is_none() {
+        //no more ports to check, so we finished
+        on_all_ports_status_checked();
+        return;
+    }
+
+    if let Some(controller) = device.host_controller.upgrade() {
+        let _ = controller.submit_request(get_port_pwr_request.unwrap());
+    }
+}
+
+fn on_all_ports_status_checked() {
 
 }
 
@@ -271,6 +346,167 @@ pub struct Usb3HubDescriptor {
     pub b_hub_hdr_dec_lat: u8,
     pub w_hub_delay: u16,
     pub device_removable: u16,
+}
+
+pub enum UsbHubDescriptor {
+    Usb2(Usb2HubDescriptor),
+    Usb3(Usb3HubDescriptor),
+}
+
+impl UsbHubDescriptor {
+    pub fn from_dma(is_super_speed: bool, dma: &DmaAlloc) -> Option<Self> {
+        //the buffer is zeroed, so reading past what the hub actually sent would look like valid data
+        let received_length = dma.layout.size();
+        let buffer = unsafe {
+            core::slice::from_raw_parts(dma.virt.as_ptr::<u8>(), received_length)
+        };
+
+        let b_length = *buffer.first()? as usize;
+        if b_length > buffer.len() {
+            return None;
+        }
+
+        if is_super_speed {
+            if buffer.len() < size_of::<Usb3HubDescriptor>() {
+                return None;
+            }
+
+            let descriptor = unsafe {
+                core::ptr::read_unaligned(buffer.as_ptr() as *const Usb3HubDescriptor)
+            };
+            Some(Self::Usb3(descriptor))
+        } else {
+            Usb2HubDescriptor::parse_from_dma(buffer).map(Self::Usb2)
+        }
+    }
+
+    pub fn number_of_ports(&self) -> u8 {
+        match self {
+            Self::Usb2(descriptor) => descriptor.b_nbr_ports,
+            Self::Usb3(descriptor) => descriptor.b_nbr_ports,
+        }
+    }
+
+    pub fn hub_characteristics(&self) -> u16 {
+        match self {
+            Self::Usb2(descriptor) => descriptor.w_hub_characteristics,
+            Self::Usb3(descriptor) => descriptor.w_hub_characteristics,
+        }
+    }
+
+    /// Returns value in ms, not 2*1ms!
+    pub fn power_on_to_power_good_in_ms(&self) -> u64 {
+        let power_on_to_power_good_2ms_units = match self {
+            Self::Usb2(descriptor) => descriptor.b_pwr_on_to_pwr_good,
+            Self::Usb3(descriptor) => descriptor.b_pwr_on_to_pwr_good,
+        };
+
+        power_on_to_power_good_2ms_units as u64 * 2
+    }
+}
+
+pub const HUB_PORT_STATUS_LENGTH: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+pub struct Usb2HubPortStatus {
+    port_status: u16,
+    port_change: u16,
+}
+
+impl Usb2HubPortStatus {
+    pub fn from_bytes(buffer: &[u8]) -> Option<Self> {
+        if buffer.len() < HUB_PORT_STATUS_LENGTH {
+            return None;
+        }
+
+        Some(Self {
+            port_status: u16::from_le_bytes([buffer[0], buffer[1]]),
+            port_change: u16::from_le_bytes([buffer[2], buffer[3]]),
+        })
+    }
+
+    fn status_bit(&self, bit: u8) -> bool {
+        self.port_status & (1 << bit) != 0
+    }
+
+    fn change_bit(&self, bit: u8) -> bool {
+        self.port_change & (1 << bit) != 0
+    }
+
+    pub fn raw_port_status(&self) -> u16 { self.port_status }
+    pub fn raw_port_change(&self) -> u16 { self.port_change }
+
+    pub fn is_connected(&self) -> bool { self.status_bit(0) }
+    pub fn is_enabled(&self) -> bool { self.status_bit(1) }
+    pub fn is_suspended(&self) -> bool { self.status_bit(2) }
+    pub fn is_over_current(&self) -> bool { self.status_bit(3) }
+    pub fn is_resetting(&self) -> bool { self.status_bit(4) }
+    pub fn is_powered(&self) -> bool { self.status_bit(8) }
+    pub fn is_low_speed(&self) -> bool { self.status_bit(9) }
+    pub fn is_high_speed(&self) -> bool { self.status_bit(10) }
+    pub fn is_in_test_mode(&self) -> bool { self.status_bit(11) }
+    pub fn is_indicator_controlled(&self) -> bool { self.status_bit(12) }
+
+    pub fn speed(&self) -> UsbSpeed {
+        if self.is_low_speed() {
+            UsbSpeed::Low
+        } else if self.is_high_speed() {
+            UsbSpeed::High
+        } else {
+            UsbSpeed::Full
+        }
+    }
+
+    pub fn connection_changed(&self) -> bool { self.change_bit(0) }
+    pub fn enable_changed(&self) -> bool { self.change_bit(1) }
+    pub fn suspend_changed(&self) -> bool { self.change_bit(2) }
+    pub fn over_current_changed(&self) -> bool { self.change_bit(3) }
+    pub fn reset_changed(&self) -> bool { self.change_bit(4) }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Usb3HubPortStatus {
+    port_status: u16,
+    port_change: u16,
+}
+
+impl Usb3HubPortStatus {
+    pub fn from_bytes(buffer: &[u8]) -> Option<Self> {
+        if buffer.len() < HUB_PORT_STATUS_LENGTH {
+            return None;
+        }
+
+        Some(Self {
+            port_status: u16::from_le_bytes([buffer[0], buffer[1]]),
+            port_change: u16::from_le_bytes([buffer[2], buffer[3]]),
+        })
+    }
+
+    fn status_bit(&self, bit: u8) -> bool {
+        self.port_status & (1 << bit) != 0
+    }
+
+    fn change_bit(&self, bit: u8) -> bool {
+        self.port_change & (1 << bit) != 0
+    }
+
+    pub fn raw_port_status(&self) -> u16 { self.port_status }
+    pub fn raw_port_change(&self) -> u16 { self.port_change }
+
+    pub fn is_connected(&self) -> bool { self.status_bit(0) }
+    pub fn is_enabled(&self) -> bool { self.status_bit(1) }
+    pub fn is_over_current(&self) -> bool { self.status_bit(3) }
+    pub fn is_resetting(&self) -> bool { self.status_bit(4) }
+    pub fn link_state(&self) -> u8 { ((self.port_status >> 5) & 0xF) as u8 }
+    pub fn is_powered(&self) -> bool { self.status_bit(9) }
+    pub fn raw_speed(&self) -> u8 { ((self.port_status >> 10) & 0x7) as u8 }
+
+    pub fn connection_changed(&self) -> bool { self.change_bit(0) }
+    pub fn over_current_changed(&self) -> bool { self.change_bit(3) }
+    pub fn reset_changed(&self) -> bool { self.change_bit(4) }
+    pub fn warm_reset_changed(&self) -> bool { self.change_bit(5) }
+    pub fn link_state_changed(&self) -> bool { self.change_bit(6) }
+    pub fn config_error_changed(&self) -> bool { self.change_bit(7) }
 }
 
 pub static USB_HUB_CORE: IrqMutex<UsbHubCore> = IrqMutex::new(UsbHubCore::new());
