@@ -11,7 +11,7 @@ use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_core::usb_clear_endpoint_halt;
 use crate::drivers::usb::core::usb_descriptors::{UsbInterfaceTree};
 use crate::drivers::usb::core::usb_requests::{hid_request_set_boot_protocol, hid_request_set_idle_indefinitely};
-use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
+use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{HostToDevice};
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error, Stalled};
 use crate::drivers::usb::hid::hid_keyboard::{HidKeyboard};
@@ -45,7 +45,7 @@ pub trait HidDriver: Send {
 }
 
 pub struct HidCore {
-    devices: BTreeMap<(u64, u8), Arc<IrqMutex<Box<dyn HidDriver>>>> //(system_id, endpoint_address)
+    devices: BTreeMap<(UsbDeviceId, u8), Arc<IrqMutex<Box<dyn HidDriver>>>> //(system_id, endpoint_address)
 }
 
 impl HidCore {

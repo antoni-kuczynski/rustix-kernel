@@ -37,10 +37,10 @@ impl UsbCore {
         }
     }
 
-    fn new_system_id(&mut self) -> u64 {
+    fn new_system_id(&mut self) -> UsbDeviceId {
         let id = self.next_system_id;
         self.next_system_id += 1;
-        id
+        UsbDeviceId(id)
     }
 
     fn add_device(

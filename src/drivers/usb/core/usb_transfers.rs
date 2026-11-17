@@ -68,8 +68,17 @@ pub trait UsbHostController: Send + Sync {
     fn cancel_request(&self, request: Arc<IrqMutex<UsbTransferRequest>>) -> Result<(), &'static str>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UsbDeviceId(pub u64);
+
+impl core::fmt::Display for UsbDeviceId {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
 pub struct UsbDevice {
-    pub system_id: u64,
+    pub system_id: UsbDeviceId,
     pub hardware_id: u8,
     pub host_controller: Weak<dyn UsbHostController>, //weak to prevent controller reference count loop
     pub configuration_tree: Once<UsbConfigurationTree>,
