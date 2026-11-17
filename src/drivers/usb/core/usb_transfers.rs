@@ -58,14 +58,13 @@ impl UsbTransferRecipient {
 }
 
 /// A host controller driver.
-///
-/// The methods take `&self` because a controller is expected to guard its rings and devices
-/// individually - requiring `&mut self` would force every submission to take a lock covering the
-/// whole controller and block its interrupt handlers.
 pub trait UsbHostController: Send + Sync {
     fn submit_request(&self, request: Arc<IrqMutex<UsbTransferRequest>>) -> Result<(), &'static str>;
-
+    
     fn cancel_request(&self, request: Arc<IrqMutex<UsbTransferRequest>>) -> Result<(), &'static str>;
+
+    /// USB address the controller assigned to the device
+    fn device_address(&self, hardware_id: u8) -> Option<u8>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -84,7 +83,7 @@ pub struct UsbDevice {
     pub configuration_tree: Once<UsbConfigurationTree>,
     pub device_descriptor: Once<UsbDeviceDescriptor>,
 
-    pub parent_hub: Option<Arc<IrqMutex<UsbDevice>>>,
+    pub parent_hub: Option<Arc<UsbDevice>>,
     pub port_on_parent: u8,
     pub speed: UsbSpeed
 }

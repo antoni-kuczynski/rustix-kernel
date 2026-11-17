@@ -9,20 +9,21 @@ use crate::drivers::usb::core::usb_descriptors::*;
 use crate::drivers::usb::core::irq_mutex::*;
 use crate::drivers::usb::core::usb_hub::{usb_issue_hub_descriptor};
 use crate::drivers::usb::core::usb_requests::{
-    usb_request_clear_endpoint_halt, usb_request_get_configuration_descriptor, usb_request_get_device_descriptor,
-    usb_request_set_configuration,
+    usb_request_clear_endpoint_halt, usb_request_clear_tt_buffer, usb_request_get_configuration_descriptor,
+    usb_request_get_device_descriptor, usb_request_set_configuration,
 };
 use crate::drivers::usb::core::usb_transfers::*;
-use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
 use crate::drivers::usb::core::UsbSpeed;
 use crate::drivers::usb::hid::hid_core::hid_register_usb_device;
 use crate::kprintln;
-use crate::memory::dma::dma_alloc_zeroed;
-
 
 const USB_CLASS_HID: u8 = 0x03;
 const USB_CLASS_HUB: u8 = 0x09;
 const CONFIGURATION_DESCRIPTOR_TOTAL_LENGTH_PREFIX: u16 = 8;
+const USB_ENDPOINT_TRANSFER_TYPE_MASK: u8 = 0x03;
+const USB_ENDPOINT_TRANSFER_TYPE_CONTROL: u8 = 0;
+const USB_ENDPOINT_TRANSFER_TYPE_BULK: u8 = 2;
+const USB_HUB_PROTOCOL_MULTI_TT: u8 = 2;
 
 pub struct UsbCore {
     devices: Vec<Arc<UsbDevice>>,
@@ -49,7 +50,7 @@ impl UsbCore {
         host_controller: Weak<dyn UsbHostController>,
         port_on_parent: u8,
         speed: UsbSpeed,
-        parent_hub: Option<Arc<IrqMutex<UsbDevice>>>
+        parent_hub: Option<Arc<UsbDevice>>
     ) -> (Arc<UsbDevice>, Arc<IrqMutex<UsbTransferRequest>>) {
         let device = Arc::new(UsbDevice {
             system_id: self.new_system_id(),
@@ -80,14 +81,65 @@ pub fn usb_clear_endpoint_halt(
         .upgrade()
         .ok_or("Host controller is gone.")?;
 
+    //high speed hub's tt buffers also have to be cleared for low/full speed devices in
+    //control/bulk endpoints
+    if let Some(hub) = &device.parent_hub {
+        let endpoint_transfer_type = device
+            .configuration_tree
+            .get()
+            .and_then(|tree| tree.find_endpoint(endpoint_address))
+            .map(|endpoint| endpoint.bm_attributes & USB_ENDPOINT_TRANSFER_TYPE_MASK);
+
+        let is_control_or_bulk = matches!(
+            endpoint_transfer_type,
+            Some(USB_ENDPOINT_TRANSFER_TYPE_CONTROL) | Some(USB_ENDPOINT_TRANSFER_TYPE_BULK)
+        );
+        let is_behind_tt = matches!(device.speed, UsbSpeed::Low | UsbSpeed::Full)
+            && hub.speed == UsbSpeed::High;
+
+        if is_behind_tt && is_control_or_bulk {
+            let is_multi_tt = hub
+                .device_descriptor
+                .get()
+                .is_some_and(|descriptor| descriptor.b_device_protocol() == USB_HUB_PROTOCOL_MULTI_TT);
+            let tt_port_number = if is_multi_tt { device.port_on_parent as u16 } else { 1 };
+
+            match controller.device_address(device.hardware_id) {
+                Some(device_address) => {
+                    let clear_tt_request = usb_request_clear_tt_buffer(
+                        hub.clone(),
+                        tt_port_number,
+                        device_address,
+                        endpoint_address,
+                        endpoint_transfer_type.unwrap(),
+                        on_clear_tt_buffer_complete,
+                    );
+                    if let Err(error) = controller.submit_request(clear_tt_request) {
+                        kprintln!(Error, "[USB CORE] Failed to submit CLEAR_TT_BUFFER: {}", error);
+                    }
+                }
+                None => {
+                    kprintln!(Error, "[USB CORE] No USB address for device {}, skipping CLEAR_TT_BUFFER.", device.system_id);
+                }
+            }
+        }
+    }
+
     let request = usb_request_clear_endpoint_halt(device, endpoint_address, callback);
     controller.submit_request(request)
+}
+
+fn on_clear_tt_buffer_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let status = request.lock().status;
+    if status != UsbTransferStatus::Completed {
+        kprintln!(Error, "[USB CORE] CLEAR_TT_BUFFER failed with status {:?}.", status);
+    }
 }
 
 /// Registers a newly addressed device and asks it for its device descriptor.
 pub fn usb_register_device(
     hardware_id: u8, host_controller: Weak<dyn UsbHostController>, 
-    parent_port: u8, speed: UsbSpeed, parent_hub: Option<Arc<IrqMutex<UsbDevice>>>) {
+    parent_port: u8, speed: UsbSpeed, parent_hub: Option<Arc<UsbDevice>>) {
     let (device, request) = {
         let mut usb_core = USB_CORE.lock();
         usb_core.add_device(hardware_id, host_controller, parent_port, speed, parent_hub)

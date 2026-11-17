@@ -693,7 +693,8 @@ struct TransferRingSlot {
     _dma: DmaAlloc,
     halted_request: Option<Arc<IrqMutex<UsbTransferRequest>>>,
     halted_attempts: usize,
-    halt_reason: XhciHaltReason
+    halt_reason: XhciHaltReason,
+    soft_retry_trb: Option<TrbPhysAddr>, //key of the request during soft reset
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -704,6 +705,7 @@ enum XhciHaltReason {
     TransactionError = 3,
     TransactionErrorExhausted = 4,
     SplitTransactionError = 5,
+    UnknownError = 6,
 }
 
 pub struct XhciDevice {
@@ -737,6 +739,7 @@ impl XhciDevice {
             halted_request: None,
             halted_attempts: 0,
             halt_reason: XhciHaltReason::None,
+            soft_retry_trb: None,
         }));
 
         for i in 0..(MAX_DCI as usize + 1 - 2) {
@@ -2005,7 +2008,22 @@ impl XHCI {
             return Err(());
         };
 
-        let Some(req) = dev.lock().take_halted_request(dci) else {
+        let req = {
+            let mut dev = dev.lock();
+            match dev.take_halted_request(dci) {
+                Some(req) => Some(req),
+                //failed soft retry - its request never left pending_requests
+                None => {
+                    let soft_retry_trb = dev.transfer_rings[dci as usize]
+                        .as_mut()
+                        .and_then(|ring| ring.soft_retry_trb.take());
+
+                    soft_retry_trb.and_then(|trb| dev.take_pending(trb))
+                }
+            }
+        };
+
+        let Some(req) = req else {
             kprintln!(Debug, "[xHCI] No halted request exists for device slot={}, dci={}.", slot_id, dci);
             return Err(());
         };
@@ -2122,7 +2140,8 @@ impl XHCI {
                 ring.halt_reason,
                 XhciHaltReason::Stall |
                 XhciHaltReason::TransactionErrorExhausted |
-                XhciHaltReason::SplitTransactionError
+                XhciHaltReason::SplitTransactionError |
+                XhciHaltReason::UnknownError
             ) {
                 kprintln!(Debug, "[xHCI] Skipping retrying the request - halt reason was {:?}.", ring.halt_reason);
                 let status = if ring.halt_reason == XhciHaltReason::Stall {
@@ -2295,89 +2314,15 @@ impl XHCI {
                 UsbTransferStatus::Completed
             },
             TrbCompletionCode::USB_TRANSACTION_ERROR => {
-                let is_soft_retry = {
-                    let mut dev = device.lock();
-                    let attempts_exhausted = match dev.transfer_rings[endpoint_dci as usize].as_mut() {
-                        Some(endpoint) => {
-                            endpoint.halted_attempts += 1;
-                            endpoint.halted_attempts > MAX_EP_HALT_ATTEMPTS
-                        }
-                        None => {
-                            kprintln!(Error, "[xHCI] No endpoint found at DCI.");
-                            return;
-                        }
-                    };
-
-                    if attempts_exhausted {
-                        kprintln!(Error,
-                            "[xHCI] Failed to soft reset the endpoint dci={} after {} tries.",
-                            endpoint_dci,
-                            MAX_EP_HALT_ATTEMPTS
-                        );
-
-                        //the request leaves pending_requests only now - during soft retries
-                        //the same TD completes under the same key
-                        let request = dev.take_pending(event_trb);
-                        if let Some(endpoint) = dev.transfer_rings[endpoint_dci as usize].as_mut() {
-                            endpoint.halted_request = request;
-                            endpoint.halt_reason = XhciHaltReason::TransactionErrorExhausted;
-                            endpoint.halted_attempts = 0;
-                        }
-                    } else if let Some(endpoint) = dev.transfer_rings[endpoint_dci as usize].as_mut() {
-                        endpoint.halt_reason = XhciHaltReason::TransactionError;
-                    }
-
-                    !attempts_exhausted
-                };
-
-                //soft retry keeps the TD on the ring, hard reset skips it with Set TR Dequeue
-                self.reset_endpoint(slot_id, endpoint_dci, is_soft_retry);
-
+                let soft_reset_requested = true;
+                self.reset_halted_endpoint(&device, slot_id, endpoint_dci, event_trb, completion_code, soft_reset_requested);
                 return;
             },
             TrbCompletionCode::BABBLE_DETECTED_ERROR |
             TrbCompletionCode::STALL_ERROR |
             TrbCompletionCode::SPLIT_TRANSACTION_ERROR => {
-                //here, we need to reset the endpoint to revive it
-                {
-                    let mut dev = device.lock();
-                    let req = dev.take_pending(event_trb);
-                    let endpoint = match dev.transfer_rings[endpoint_dci as usize].as_mut() {
-                        Some(x) => x,
-                        None => {
-                            kprintln!(Error, "[xHCI] No endpoint found at DCI.");
-                            return;
-                        }
-                    };
-
-                    endpoint.halt_reason = if completion_code == TrbCompletionCode::BABBLE_DETECTED_ERROR {
-                        XhciHaltReason::Babble
-                    } else if completion_code == TrbCompletionCode::STALL_ERROR {
-                        XhciHaltReason::Stall
-                    } else if completion_code == TrbCompletionCode::SPLIT_TRANSACTION_ERROR {
-                        XhciHaltReason::SplitTransactionError
-                    } else {
-                        kprintln!(Error, "[xHCI] Unhandled error type.");
-                        XhciHaltReason::None
-                    };
-
-                    //TODO: for requests that use more than one trb, it can fail during a different
-                    //stage trb rather than the one that is used as a key in pending_requests,
-                    //so the pending request wont be found and wont be resumed.
-                    match req {
-                        None => {
-                            kprintln!(Debug, "[xHCI] Transfer TRB didn't point to a request at DCI={}.", endpoint_dci);
-                            endpoint.halted_request = None;
-                        }
-                        Some(x) => {
-                            kprintln!(Debug, "[xHCI] Took pending request from endpoint DCI={} and halted it.", endpoint_dci);
-                            endpoint.halted_request = Some(x);
-                        }
-                    }
-                }
-
-                let preserve_transfer_state = false;
-                self.reset_endpoint(slot_id, endpoint_dci, preserve_transfer_state);
+                let soft_reset_requested = false;
+                self.reset_halted_endpoint(&device, slot_id, endpoint_dci, event_trb, completion_code, soft_reset_requested);
                 return;
             }
 
@@ -2388,6 +2333,60 @@ impl XHCI {
                     slot_id,
                     code
                 );
+
+                //error path without a dedicated code
+                //just check the endpoint state and determine if soft or hard reset it
+                let endpoint_state = {
+                    let dev = device.lock();
+                    let device_context = &*(dev.device_context_dma.virt.as_ptr::<DeviceContext>());
+                    device_context.endpoint(endpoint_dci as usize, self.regs.context_size).get_ep_state()
+                };
+
+                if endpoint_state == EndpointState::HALTED {
+                    let soft_reset_requested = false;
+                    self.reset_halted_endpoint(&device, slot_id, endpoint_dci, event_trb, code, soft_reset_requested);
+                    return;
+                }
+
+                //ERROR state means TRB_ERROR, which is an invalid trb constructed by the software
+                if endpoint_state == EndpointState::ERROR {
+                    let failed_trb = Trb::from_trb_phys_addr(event_trb);
+                    kprintln!(
+                        Error,
+                        "[xHCI] [SLOT {}] [DCI={}] Endpoint entered the Error state - malformed TRB. \
+                        completion code={}, TRB at {:#011x}: type={} parameter={:#018x} status={:#010x} control={:#010x}, residual={}.",
+                        slot_id,
+                        endpoint_dci,
+                        code,
+                        event_trb.0,
+                        failed_trb.trb_type(),
+                        failed_trb.parameter(),
+                        failed_trb.status(),
+                        failed_trb.control(),
+                        trb.transfer_length()
+                    );
+
+                    let dequeue_target = {
+                        let mut dev = device.lock();
+                        let request = dev.take_pending(event_trb);
+
+                        match dev.transfer_rings[endpoint_dci as usize].as_mut() {
+                            Some(ring) => {
+                                ring.halted_request = request;
+                                ring.halt_reason = XhciHaltReason::UnknownError;
+                                Some((ring.ring.get_enqueue_phys().unwrap(), ring.ring.cycle_state()))
+                            }
+                            None => None,
+                        }
+                    };
+
+                    //just move past it
+                    if let Some((new_addr, dequeue_cycle_state)) = dequeue_target {
+                        self.set_new_tr_dequeue_pointer(new_addr, slot_id, endpoint_dci, dequeue_cycle_state);
+                    }
+                    return;
+                }
+
                 UsbTransferStatus::Error
             }
         };
@@ -2412,6 +2411,106 @@ impl XHCI {
                 );
             }
         }
+    }
+
+    fn reset_halted_endpoint(
+        &self,
+        device: &Arc<IrqMutex<XhciDevice>>,
+        slot_id: u8,
+        dci: u8,
+        event_trb: TrbPhysAddr,
+        completion_code: u8,
+        soft_reset_requested: bool,
+    ) {
+        //soft retry isnt allowed behind a HS hub TT and isoch endpoints
+        let soft_reset_requested = soft_reset_requested && {
+            let dev = device.lock();
+            let slot_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<SlotContext>() };
+            let device_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<DeviceContext>() };
+            let ep_type = device_context.endpoint(dci as usize, self.regs.context_size).get_ep_type();
+
+            let is_behind_tt = slot_context.get_parent_hub_slot() != 0;
+            let is_isoch = ep_type == EndpointContext::EP_TYPE_ISOCH_IN
+                || ep_type == EndpointContext::EP_TYPE_ISOCH_OUT;
+
+            if is_behind_tt || is_isoch {
+                kprintln!(Debug,
+                    "[xHCI] [SLOT {}] [DCI={}] Soft retry not allowed (behind TT={}, isoch={}), doing a hard reset.",
+                    slot_id, dci, is_behind_tt, is_isoch
+                );
+            }
+
+            !is_behind_tt && !is_isoch
+        };
+
+        let is_soft_reset = {
+            let mut dev = device.lock();
+
+            let (is_soft_reset, halt_reason) = {
+                let Some(endpoint) = dev.transfer_rings[dci as usize].as_mut() else {
+                    kprintln!(Error, "[xHCI] No endpoint found at DCI={}.", dci);
+                    return;
+                };
+
+                let is_soft_reset = if soft_reset_requested {
+                    endpoint.halted_attempts += 1;
+                    endpoint.halted_attempts <= MAX_EP_HALT_ATTEMPTS
+                } else {
+                    false
+                };
+
+                if soft_reset_requested && !is_soft_reset {
+                    kprintln!(Error,
+                        "[xHCI] Failed to soft reset the endpoint dci={} after {} tries.",
+                        dci,
+                        MAX_EP_HALT_ATTEMPTS
+                    );
+                    endpoint.halted_attempts = 0;
+                }
+
+                let halt_reason = match completion_code {
+                    TrbCompletionCode::USB_TRANSACTION_ERROR if is_soft_reset => XhciHaltReason::TransactionError,
+                    TrbCompletionCode::USB_TRANSACTION_ERROR => XhciHaltReason::TransactionErrorExhausted,
+                    TrbCompletionCode::BABBLE_DETECTED_ERROR => XhciHaltReason::Babble,
+                    TrbCompletionCode::STALL_ERROR => XhciHaltReason::Stall,
+                    TrbCompletionCode::SPLIT_TRANSACTION_ERROR => XhciHaltReason::SplitTransactionError,
+                    _ => {
+                        kprintln!(Error, "[xHCI] Unhandled error type.");
+                        XhciHaltReason::UnknownError
+                    }
+                };
+
+                (is_soft_reset, halt_reason)
+            };
+
+            //TODO: for requests that use more than one trb, it can fail during a different
+            //stage trb rather than the one that is used as a key in pending_requests,
+            //so the pending request wont be found and wont be resumed.
+            let halted_request = if is_soft_reset {
+                None
+            } else {
+                let request = dev.take_pending(event_trb);
+                match request {
+                    None => { kprintln!(Debug, "[xHCI] Transfer TRB didn't point to a request at DCI={}.", dci); }
+                    Some(_) => { kprintln!(Debug, "[xHCI] Took pending request from endpoint DCI={} and halted it.", dci); }
+                }
+                request
+            };
+
+            if let Some(endpoint) = dev.transfer_rings[dci as usize].as_mut() {
+                endpoint.halt_reason = halt_reason;
+                if is_soft_reset {
+                    endpoint.soft_retry_trb = Some(event_trb);
+                } else {
+                    endpoint.halted_request = halted_request;
+                    endpoint.soft_retry_trb = None;
+                }
+            }
+
+            is_soft_reset
+        };
+
+        self.reset_endpoint(slot_id, dci, is_soft_reset);
     }
 
     /// Type of the TRB a transfer event points at.
@@ -2487,7 +2586,8 @@ impl XHCI {
                     _dma: transfer_ring_dma,
                     halted_request: None,
                     halted_attempts: 0,
-                    halt_reason: XhciHaltReason::None
+                    halt_reason: XhciHaltReason::None,
+                    soft_retry_trb: None,
                 });
 
 
@@ -2640,6 +2740,7 @@ impl XHCI {
                 if ring.halted_attempts != 0 {
                     ring.halted_attempts = 0;
                     ring.halt_reason = XhciHaltReason::None;
+                    ring.soft_retry_trb = None;
                 }
             }
 
@@ -2695,6 +2796,7 @@ impl XHCI {
                 if ring.halted_attempts != 0 {
                     ring.halted_attempts = 0;
                     ring.halt_reason = XhciHaltReason::None;
+                    ring.soft_retry_trb = None;
                 }
             }
 
@@ -3408,5 +3510,14 @@ impl UsbHostController for XHCI {
         // let slot_id = req.target_device.hardware_id;
         // self.cancel_request_for_device(slot_id, enpoint_address_to_dci(req.endpoint_address));
         // self.ring_global_doorbell();
+    }
+
+    fn device_address(&self, hardware_id: u8) -> Option<u8> {
+        let device = self.device_from_slot_id(hardware_id)?;
+        let dev = device.lock();
+
+        //the address assigned by Address Device lives in the output slot context
+        let slot_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<SlotContext>() };
+        Some(slot_context.get_usb_address())
     }
 }

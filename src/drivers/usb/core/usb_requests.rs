@@ -19,6 +19,9 @@ const HUB_DESCRIPTOR_MAX_LENGTH: u16 = 128;
 const HUB_PORT_STATUS_LENGTH: u16 = 4;
 const HID_BOOT_PROTOCOL: u16 = 0;
 const HID_IDLE_INDEFINITELY_ALL_REPORTS: u16 = 0;
+const HUB_CLEAR_TT_BUFFER: u8 = 8;
+const ENDPOINT_NUMBER_MASK: u8 = 0x0F;
+const ENDPOINT_DIRECTION_IN: u8 = 0x80;
 
 pub type UsbRequestHandle = Arc<IrqMutex<UsbTransferRequest>>;
 
@@ -201,6 +204,37 @@ pub fn usb_request_clear_endpoint_halt(
     );
 
     control_request(device, setup_packet, callback)
+}
+
+pub fn usb_request_clear_tt_buffer(
+    hub: Arc<UsbDevice>,
+    tt_port_number: u16,
+    device_address: u8,
+    endpoint_address: u8,
+    endpoint_transfer_type: u8,
+    callback: UsbTransferCallback,
+) -> UsbRequestHandle {
+    let endpoint_number = (endpoint_address & ENDPOINT_NUMBER_MASK) as u16;
+    let is_direction_in = endpoint_address & ENDPOINT_DIRECTION_IN != 0;
+
+    let w_value = endpoint_number
+        | ((device_address as u16 & 0x7F) << 4)
+        | ((endpoint_transfer_type as u16 & 0x3) << 11)
+        | ((is_direction_in as u16) << 15);
+
+    let setup_packet = UsbSetupPacket::new(
+        UsbBmRequestType::new(
+            UsbBmRequestType::DIR_HOST_TO_DEVICE,
+            UsbBmRequestType::TYPE_CLASS,
+            UsbBmRequestType::REC_OTHER,
+        ),
+        HUB_CLEAR_TT_BUFFER,
+        w_value,
+        tt_port_number,
+        0,
+    );
+
+    control_request(hub, setup_packet, callback)
 }
 
 pub fn hid_request_set_boot_protocol(
