@@ -81,7 +81,7 @@ pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (device, endpoint_address) = {
         let mut req = request.lock();
 
-        if req.status == Stalled {
+        if req.status == Stalled || req.status == Error {
             let endpoint = req.endpoint_address;
             let dev = req.target_device.clone();
 

@@ -650,6 +650,13 @@ struct ScratchpadArea {
 #[derive(Ord, Eq, PartialEq, PartialOrd, Clone, Copy, Debug)]
 struct TrbPhysAddr(u64);
 
+impl Trb {
+    /// The address must point at a TRB inside a ring owned by this controller.
+    unsafe fn from_trb_phys_addr(address: TrbPhysAddr) -> Self {
+        ptr::read_volatile(physical_to_virtual(PhysAddr::new(address.0)).as_ptr::<Trb>())
+    }
+}
+
 struct TransferRingSlot {
     ring: TransferRing,
     _dma: DmaAlloc,
@@ -662,7 +669,9 @@ struct TransferRingSlot {
 enum XhciHaltReason {
     None = 0,
     Babble = 1,
-    Stall = 2
+    Stall = 2,
+    TransactionError = 3,
+    TransactionErrorExhausted = 4
 }
 
 pub struct XhciDevice {
@@ -2024,6 +2033,7 @@ impl XHCI {
                 Some(x) => x
             };
             complete_request(req, UsbTransferStatus::Error, 0);
+            return;
         }
 
         kprintln!(Debug, "[xHCI] Completed SET_DEQUEUE_PTR command for EP with DCI={}", dci);
@@ -2040,8 +2050,13 @@ impl XHCI {
 
             let ring = dev.transfer_rings[dci as usize].as_mut().unwrap();
 
-            if ring.halt_reason == XhciHaltReason::Stall {
+            if matches!(ring.halt_reason, XhciHaltReason::Stall | XhciHaltReason::TransactionErrorExhausted) {
                 kprintln!(Debug, "[xHCI] Skipping retrying the request - halt reason was {:?}.", ring.halt_reason);
+                let status = if ring.halt_reason == XhciHaltReason::Stall {
+                    UsbTransferStatus::Stalled
+                } else {
+                    UsbTransferStatus::Error
+                };
                 ring.halt_reason = XhciHaltReason::None;
                 let req = dev.take_halted_request(dci);
 
@@ -2049,7 +2064,7 @@ impl XHCI {
                     return;
                 }
 
-                complete_request(req.unwrap(), UsbTransferStatus::Stalled, 0);
+                complete_request(req.unwrap(), status, 0);
                 return;
             }
 
@@ -2113,16 +2128,22 @@ impl XHCI {
         let slot_id = command_completion_trb.slot_id();
         let endpoint_dci = command.endpoint_id();
 
-        let (slot_state, ep_state) = {
+        let (slot_state, ep_state, halt_reason) = {
             let dev_lock = self.device_from_slot_id(slot_id)
                 .expect("[xHCI] No device present at slot - on_endpoint_reset.");
-            let dev = dev_lock.lock();
+            let mut dev = dev_lock.lock();
+
+            let halt_reason = dev.
+                transfer_rings[endpoint_dci as usize]
+                .as_ref()
+                .unwrap()
+                .halt_reason;
 
             let slot_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<SlotContext>() };
             let device_context = unsafe { &*(dev.device_context_dma.virt.as_ptr::<DeviceContext>()) };
             let ep_state = device_context.endpoint(endpoint_dci as usize, self.regs.context_size).get_ep_state();
 
-            (slot_context.get_slot_state(), ep_state)
+            (slot_context.get_slot_state(), ep_state, halt_reason)
         };
 
         //TODO: remove malformed request on failure
@@ -2140,6 +2161,13 @@ impl XHCI {
 
         if command_completion_trb.completion_code() != TrbCompletionCode::SUCCESS {
             kprintln!(Error, "[xHCI] [SLOT {}] Endpoint reset command failed with status {}", slot_id, command_completion_trb.completion_code());
+            return;
+        }
+
+        //if the error is transaction error, we perform a soft reset,
+        //without setting tr dequeue pointer
+        if halt_reason == XhciHaltReason::TransactionError {
+            self.regs.ring_doorbell(slot_id, endpoint_dci, 0);
             return;
         }
 
@@ -2224,7 +2252,48 @@ impl XHCI {
         let status = match completion_code {
             TrbCompletionCode::SUCCESS | TrbCompletionCode::SHORT_PACKET => {
                 UsbTransferStatus::Completed
-            }
+            },
+            TrbCompletionCode::USB_TRANSACTION_ERROR => {
+                let is_soft_retry = {
+                    let mut dev = device.lock();
+                    let attempts_exhausted = match dev.transfer_rings[endpoint_dci as usize].as_mut() {
+                        Some(endpoint) => {
+                            endpoint.halted_attempts += 1;
+                            endpoint.halted_attempts > MAX_EP_HALT_ATTEMPTS
+                        }
+                        None => {
+                            kprintln!(Error, "[xHCI] No endpoint found at DCI.");
+                            return;
+                        }
+                    };
+
+                    if attempts_exhausted {
+                        kprintln!(Error,
+                            "[xHCI] Failed to soft reset the endpoint dci={} after {} tries.",
+                            endpoint_dci,
+                            MAX_EP_HALT_ATTEMPTS
+                        );
+
+                        //the request leaves pending_requests only now - during soft retries
+                        //the same TD completes under the same key
+                        let request = dev.take_pending(event_trb);
+                        if let Some(endpoint) = dev.transfer_rings[endpoint_dci as usize].as_mut() {
+                            endpoint.halted_request = request;
+                            endpoint.halt_reason = XhciHaltReason::TransactionErrorExhausted;
+                            endpoint.halted_attempts = 0;
+                        }
+                    } else if let Some(endpoint) = dev.transfer_rings[endpoint_dci as usize].as_mut() {
+                        endpoint.halt_reason = XhciHaltReason::TransactionError;
+                    }
+
+                    !attempts_exhausted
+                };
+
+                //soft retry keeps the TD on the ring, hard reset skips it with Set TR Dequeue
+                self.reset_endpoint(slot_id, endpoint_dci, is_soft_retry);
+
+                return;
+            },
             TrbCompletionCode::BABBLE_DETECTED_ERROR | TrbCompletionCode::STALL_ERROR => {
                 //here, we need to reset the endpoint to revive it
                 {
@@ -2286,7 +2355,7 @@ impl XHCI {
                 self.on_control_transfer_completion(&device, slot_id, event_trb, status, residual)
             }
             Trb::TRB_NORMAL => {
-                self.on_data_transfer_completion(&device, slot_id, event_trb, status, residual)
+                self.on_data_transfer_completion(&device, slot_id, event_trb, status, residual, endpoint_dci)
             }
             other => {
                 kprintln!(
@@ -2307,8 +2376,7 @@ impl XHCI {
             return Trb::TRB_RESERVED0;
         }
 
-        ptr::read_volatile(physical_to_virtual(PhysAddr::new(event_trb.0)).as_ptr::<Trb>())
-            .trb_type()
+        Trb::from_trb_phys_addr(event_trb).trb_type()
     }
 
     unsafe fn on_pending_set_configuration(&self, pending: Arc<IrqMutex<UsbTransferRequest>>, xhci_device: &Arc<IrqMutex<XhciDevice>>) {
@@ -2508,6 +2576,16 @@ impl XHCI {
     ) {
         let (pending, is_descriptor_probe, port) = {
             let mut dev = device.lock();
+            let dci = EP0_DCI;
+
+            //clear errors after transaction error
+            if let Some(ring) = dev.transfer_rings[dci as usize].as_mut() {
+                if ring.halted_attempts != 0 {
+                    ring.halted_attempts = 0;
+                    ring.halt_reason = XhciHaltReason::None;
+                }
+            }
+
             (
                 dev.take_pending(event_trb),
                 dev.take_descriptor_probe(event_trb),
@@ -2553,14 +2631,28 @@ impl XHCI {
         event_trb: TrbPhysAddr,
         status: UsbTransferStatus,
         residual: usize,
+        endpoint_dci: u8
     ) {
-        let Some(request) = device.lock().take_pending(event_trb) else {
-            kprintln!(
+        let request = {
+            let mut dev = device.lock();
+
+            //clear errors after transaction error
+            if let Some(ring) = dev.transfer_rings[endpoint_dci as usize].as_mut() {
+                if ring.halted_attempts != 0 {
+                    ring.halted_attempts = 0;
+                    ring.halt_reason = XhciHaltReason::None;
+                }
+            }
+
+            let Some(request) = dev.take_pending(event_trb) else {
+                kprintln!(
                 Warn,
                 "[xHCI] [SLOT {}] Data transfer finished with nothing waiting for it.",
                 slot_id
             );
-            return;
+                return;
+            };
+            request
         };
 
         complete_request(request, status, residual);
