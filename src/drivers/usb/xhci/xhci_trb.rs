@@ -304,6 +304,12 @@ impl Trb {
     ) -> Result<TransferEventTrb, TrbParseError> {
         TransferEventTrb::new(*self)
     }
+
+    pub fn try_as_host_controller_event(
+        &self,
+    ) -> Result<HostControllerEventTrb, TrbParseError> {
+        HostControllerEventTrb::new(*self)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -370,6 +376,42 @@ impl PortStatusChangeEventTrb {
 
 impl TrbTrait for PortStatusChangeEventTrb {
     const TRB_TYPE: u8 = Trb::TRB_PORT_STATUS_CHANGE_EVENT;
+
+    fn raw(&self) -> &Trb {
+        &self.raw
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(transparent)]
+pub struct HostControllerEventTrb {
+    raw: Trb,
+}
+
+impl HostControllerEventTrb {
+    pub fn new(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_HOST_CONTROLLER_EVENT {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_HOST_CONTROLLER_EVENT,
+                actual,
+            });
+        }
+
+        Ok(Self { raw })
+    }
+
+    pub fn completion_code(&self) -> u8 {
+        ((self.raw.status() >> 24) & 0xFF) as u8
+    }
+
+    pub fn cycle(&self) -> bool {
+        self.raw.cycle()
+    }
+}
+
+impl TrbTrait for HostControllerEventTrb {
+    const TRB_TYPE: u8 = Trb::TRB_HOST_CONTROLLER_EVENT;
 
     fn raw(&self) -> &Trb {
         &self.raw

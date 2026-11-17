@@ -199,13 +199,6 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
         dev.configuration_tree.call_once(|| config_tree);
 
-
-        if dev.device_descriptor.get().unwrap().b_device_class() == USB_CLASS_HUB {
-            usb_issue_hub_descriptor(dev);
-            return;
-        }
-
-
         let full_req = usb_request_set_configuration(dev.clone(), config_value, on_set_configuration_complete);
         (dev, full_req)
     };
@@ -229,6 +222,11 @@ pub fn on_set_configuration_complete(request: Arc<IrqMutex<UsbTransferRequest>>)
         dev
     };
 
+    if dev.device_descriptor.get().unwrap().b_device_class() == USB_CLASS_HUB {
+        usb_issue_hub_descriptor(dev);
+        return;
+    }
+    
     let a = dev.configuration_tree.get().unwrap();
     for interface_tree in  &a.interfaces {
         if interface_tree.interface.b_interface_class == USB_CLASS_HID {

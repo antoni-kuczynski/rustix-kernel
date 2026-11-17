@@ -79,7 +79,7 @@ use crate::drivers::usb::xhci::xhci_trb_ring::{
 };
 use crate::drivers::usb::xhci::*;
 use crate::drivers::usb::{UsbBmRequestType, UsbBRequest, WValue};
-use crate::drivers::usb::xhci::xhci::PortState::{Configured, Idle, PendingHubConfiguration, PendingSetConfiguration};
+use crate::drivers::usb::xhci::xhci::XhciDeviceConfigurationState::{Configured, PendingHubConfiguration, PendingSetConfiguration};
 use crate::interrupts::router::register_handler_with_context;
 use crate::interrupts::vector::InterruptVector;
 use crate::{kprintln, kprintln_ok};
@@ -561,6 +561,11 @@ enum PortState {
     ResetInProgress { attempts: u8 },
     Enabled,
     Resuming { phase: ResumePhase },
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum XhciDeviceConfigurationState {
+    Unconfigured,
     PendingSetConfiguration,
     Configured,
     PendingHubConfiguration { is_super_speed: bool },
@@ -710,6 +715,7 @@ pub struct XhciDevice {
     first_8_bytes_of_device_descriptor: Option<DmaAlloc>,
     descriptor_probe_trb: Option<TrbPhysAddr>,
     pending_requests: BTreeMap<TrbPhysAddr, Arc<IrqMutex<UsbTransferRequest>>>,
+    configuration_state: XhciDeviceConfigurationState,
 }
 
 unsafe impl Send for XhciDevice {}
@@ -746,6 +752,7 @@ impl XhciDevice {
             first_8_bytes_of_device_descriptor: None,
             descriptor_probe_trb: None,
             pending_requests: BTreeMap::new(),
+            configuration_state: XhciDeviceConfigurationState::Unconfigured,
         }
     }
 
@@ -1279,8 +1286,26 @@ impl XHCI {
                     kprintln!(Error, "[xHCI] Cannot parse transfer event TRB: {:?}.", error);
                 }
             }
+        } else if trb_type == Trb::TRB_HOST_CONTROLLER_EVENT {
+            match trb.try_as_host_controller_event() {
+                Ok(event) => self.on_host_controller_event(event),
+                Err(error) => {
+                    kprintln!(Error, "[xHCI] Cannot parse host controller event TRB: {:?}.", error);
+                }
+            }
         } else {
             kprintln!(Warn, "[xHCI] Unhandled TRB type {} received.", trb_type);
+        }
+    }
+
+    unsafe fn on_host_controller_event(self: &Arc<Self>, trb: HostControllerEventTrb) {
+        match trb.completion_code() {
+            TrbCompletionCode::EVENT_RING_FULL_ERROR => {
+                kprintln!(Warn, "[xHCI] Event ring is full - events are handled to slowly.");
+            },
+            code => {
+                kprintln!(Error, "[xHCI] Host controller event with completion code {}.", code);
+            },
         }
     }
 
@@ -1392,16 +1417,23 @@ impl XHCI {
 
     unsafe fn on_endpoint_configured(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
         let phys_addr = TrbPhysAddr(trb.command_trb_pointer());
-        let (port, req) = {
+        let (configuration_state, req) = {
             let dev_lock = self.device_from_slot_id(trb.slot_id());
             let mut dev = dev_lock.as_ref().unwrap().lock();
-            let port = dev.port;
 
             //we already inserted the request to the map with the key of command trb
             let req = dev.pending_requests.remove(&phys_addr)
                 .expect("No pending request present for configure event");
 
-            (port, req)
+            let configuration_state = dev.configuration_state;
+            if trb.completion_code() != TrbCompletionCode::SUCCESS {
+                //otherwise next SET_CONFIGURATION would be mistaken for a retry
+                dev.configuration_state = XhciDeviceConfigurationState::Unconfigured;
+            } else if matches!(configuration_state, PendingHubConfiguration { .. }) {
+                dev.configuration_state = Configured;
+            }
+
+            (configuration_state, req)
         };
 
         if trb.completion_code() != TrbCompletionCode::SUCCESS {
@@ -1410,12 +1442,13 @@ impl XHCI {
             return;
         }
 
-        let port_state = {
-            let ports = self.ports.lock();
-            ports.state[port as usize]
-        };
+        if let PendingHubConfiguration { .. } = configuration_state {
+            kprintln!(Debug, "[xHCI] [SLOT {}] Hub fields of the slot context configured.", trb.slot_id());
+            complete_request(req, UsbTransferStatus::Completed, 0);
+            return;
+        }
 
-        if !matches!(port_state, PendingSetConfiguration) {
+        if !matches!(configuration_state, PendingSetConfiguration) {
             kprintln!(Warn, "[xHCI] Tried sending SET_CONFIGURATION while not in pending set configuration state.");
             return;
         }
@@ -2238,35 +2271,6 @@ impl XHCI {
         }
 
 
-        let (port, req) = {
-            let lock = self.devices.lock();
-            let mut dev = lock
-                .get(&slot_id)
-                .unwrap()
-                .lock();
-
-            //second part of the nasty hack
-            let req = dev.pending_requests.remove(&TrbPhysAddr(0));
-            (dev.port, req)
-        };
-
-        let port_state = self.ports.lock().state[port as usize];
-
-        if let PendingHubConfiguration { is_super_speed } = port_state {
-            if req.is_none() {
-                kprintln!(Error, "[xHCI] [SLOT {}] Cannot complete evaluate context command for USB hub - no pending request.", slot_id);
-                self.disable_slot(port); //this locks ports
-                return;
-            }
-
-            kprintln!(Debug, "[xHCI] [SLOT {}] Successfully completed evaluate context command for usb hub.", slot_id);
-            self.ports.lock().state[port as usize] = Configured;
-            complete_request(req.unwrap(), UsbTransferStatus::Completed, 0);
-
-            return;
-        }
-
-
         self.register_with_usb_core(slot_id);
     }
 
@@ -2543,12 +2547,8 @@ impl XHCI {
         slot_context.set_context_entries(max_dci);
         input_context.control().add_context(0);
 
-        let mut cmd = ConfigureEndpointCommandTrb::new();
-        cmd.set_input_context_pointer(dev.input_context_dma.phys.as_u64());
-        cmd.set_slot_id(dev.slot_id);
-        cmd.set_deconfigure(false);
-
-        let phys = self.send_command(*cmd.raw(), CommandContext::Empty)
+        let deconfigure = false;
+        let phys = self.issue_configure_endpoint_command(dev.slot_id, dev.input_context_dma.phys.as_u64(), deconfigure)
             .expect("Sending configure endpoint command failed");
 
         kprintln!(Debug, "[xHCI] Sent configure endpoint command.");
@@ -2562,8 +2562,13 @@ impl XHCI {
 
 
     unsafe fn configure_usb_hub(self: &Arc<Self>, device: &Arc<IrqMutex<XhciDevice>>, is_super_speed: bool, pending: Option<Arc<IrqMutex<UsbTransferRequest>>>) {
+        let Some(pending) = pending else {
+            kprintln!(Error, "[xHCI] No pending hub descriptor request to configure the hub with.");
+            return;
+        };
+
         let (number_of_ports, is_multi_tt) = {
-            let lock = pending.as_ref().unwrap().lock();
+            let lock = pending.lock();
             let dma = lock.dma_buffer.as_ref().unwrap();
 
             let num_ports = if is_super_speed {
@@ -2585,24 +2590,35 @@ impl XHCI {
             //if b_device_protocol is 2, it means that hub is multi-tt
             (num_ports, protocol == 0x02)
         };
-        let (slot_id, input_context_phys) = {
-            let mut dev = device.lock();
-            let input_context = dev.input_context_dma.as_mut::<InputContext>();
-            let slot_context = input_context.slot::<SlotContext>(self.regs.context_size);
-            let slot_id = dev.slot_id;
+        let mut dev = device.lock();
+        let slot_id = dev.slot_id;
+        let input_context_phys = dev.input_context_dma.phys.as_u64();
 
-            slot_context.set_hub(true);
-            slot_context.set_num_ports(number_of_ports);
-            slot_context.set_multi_tt(is_multi_tt);
+        let input_context = dev.input_context_dma.as_mut::<InputContext>();
 
-            //ugly hacky way to save the pending request again
-            //if the trb address was used, it would've created a race condition
-            dev.insert_pending(TrbPhysAddr(0), pending.unwrap());
+        //endpoints were already added by the SET_CONFIGURATION Configure Endpoint,
+        //this one only updates the hub fields of the slot context
+        input_context.control().reset_flags();
+        input_context.control().add_context(0);
 
-            (slot_id, dev.input_context_dma.phys.as_u64())
-        };
+        let slot_context = input_context.slot::<SlotContext>(self.regs.context_size);
+        slot_context.set_hub(true);
+        slot_context.set_num_ports(number_of_ports);
+        slot_context.set_multi_tt(is_multi_tt);
 
-        self.issue_evaluate_context_command(slot_id, input_context_phys);
+        //sent while holding the device lock, so the completion handler cannot look the
+        //request up before it is inserted
+        let deconfigure = false;
+        match self.issue_configure_endpoint_command(slot_id, input_context_phys, deconfigure) {
+            Ok(command_trb) => {
+                dev.insert_pending(TrbPhysAddr(command_trb.as_u64()), pending);
+            }
+            Err(error) => {
+                drop(dev);
+                kprintln!(Error, "[xHCI] [SLOT {}] Issuing configure endpoint command for hub failed: {:?}.", slot_id, error);
+                complete_request(pending, UsbTransferStatus::Error, 0);
+            }
+        }
     }
 
     /// Handles the end of a control transfer, which the controller reports against the Status
@@ -2615,7 +2631,7 @@ impl XHCI {
         status: UsbTransferStatus,
         residual: usize,
     ) {
-        let (pending, is_descriptor_probe, port) = {
+        let (pending, is_descriptor_probe, configuration_state) = {
             let mut dev = device.lock();
             let dci = EP0_DCI;
 
@@ -2627,22 +2643,19 @@ impl XHCI {
                 }
             }
 
+            let configuration_state = dev.configuration_state;
+            if configuration_state == PendingSetConfiguration {
+                dev.configuration_state = Configured;
+            }
+
             (
                 dev.take_pending(event_trb),
                 dev.take_descriptor_probe(event_trb),
-                dev.port
+                configuration_state
             )
         };
 
-        let port_state = {
-            self.ports.lock().state[port as usize]
-        };
-
-        if port_state == PendingSetConfiguration {
-            self.ports.lock().state[port as usize] = Configured;
-        }
-
-        if let PendingHubConfiguration { is_super_speed } = port_state {
+        if let PendingHubConfiguration { is_super_speed } = configuration_state {
             self.configure_usb_hub(device, is_super_speed, pending);
             return;
         }
@@ -2766,6 +2779,31 @@ impl XHCI {
 
 
         self.issue_evaluate_context_command(slot_id, input_context_phys);
+    }
+
+    fn issue_configure_endpoint_command(
+        &self,
+        slot_id: u8,
+        input_context_phys: u64,
+        deconfigure: bool,
+    ) -> Result<PhysAddr, RingError> {
+        let mut configure_endpoint_trb = ConfigureEndpointCommandTrb::new();
+        configure_endpoint_trb.set_slot_id(slot_id);
+        configure_endpoint_trb.set_input_context_pointer(input_context_phys);
+        configure_endpoint_trb.set_deconfigure(deconfigure);
+
+        let result = self.send_command(*configure_endpoint_trb.raw(), CommandContext::Empty);
+
+        if let Err(error) = &result {
+            kprintln!(
+                Error,
+                "[xHCI] [SLOT {}] Sending configure endpoint command failed: {:?}",
+                slot_id,
+                error
+            );
+        }
+
+        result
     }
 
     unsafe fn issue_evaluate_context_command(self: &Arc<Self>, slot_id: u8, input_context_phys: u64) -> Option<PhysAddr> {
@@ -3308,29 +3346,27 @@ impl UsbHostController for XHCI {
         {
             let issued = match setup_packet {
                 Some(setup) => unsafe {
-
-                    let port = {
-                        dev.lock().port
-                    };
+                    //a SET_CONFIGURATION that is already pending is a retry of its TD (e.g. after
+                    //babble), its configure endpoint command was already done
+                    let is_set_configuration_retry =
+                        dev.lock().configuration_state == PendingSetConfiguration;
 
                     //for the SET_CONFIGURATION request, first we need to send a configure endpoint
                     //trb before we issue the request
-                    if setup.b_request == 0x09 {
-                        {
-                            self.ports.lock().state[port as usize] = PendingSetConfiguration;
-                        }
-                        kprintln!(Debug, "[xHCI] Set port to pending set configuration.");
+                    if setup.b_request == 0x09 && !is_set_configuration_retry {
+                        dev.lock().configuration_state = PendingSetConfiguration;
+                        kprintln!(Debug, "[xHCI] Set device to pending set configuration.");
 
                         self.on_pending_set_configuration(request, &dev);
                         return Ok(());
                     } else if (setup.w_value >> 8) == 0x2A {
                         //usb3 hub
                         let is_super_speed = true;
-                        self.ports.lock().state[port as usize] = PendingHubConfiguration {is_super_speed};
+                        dev.lock().configuration_state = PendingHubConfiguration {is_super_speed};
                     } else if (setup.w_value >> 8) == 0x29 {
                         //usb2 hub
                         let is_super_speed = false;
-                        self.ports.lock().state[port as usize] = PendingHubConfiguration {is_super_speed};
+                        dev.lock().configuration_state = PendingHubConfiguration {is_super_speed};
                     }
 
                     let mut dev_lock = dev.lock();
