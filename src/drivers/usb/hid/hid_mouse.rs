@@ -103,12 +103,12 @@ impl HidDriver for HidMouse {
             }
         }
 
-        if data[1] != 0 && data[2] != 0 {
+        if data[1] != 0 || data[2] != 0 {
             let x_raw = (data[1] as i8) as isize;
             let y_raw = (data[2] as i8) as isize;
 
-            let sign_x = if x_raw & 0x80 == 1 { -1 } else { 1 };
-            let sign_y = if y_raw & 0x80 == 1 { -1 } else { 1 };
+            let sign_x = if x_raw == 1 { -1 } else { 1 };
+            let sign_y = if y_raw == 1 { -1 } else { 1 };
 
             let move_x = x_raw * sign_x;
             let move_y = y_raw * sign_y;
