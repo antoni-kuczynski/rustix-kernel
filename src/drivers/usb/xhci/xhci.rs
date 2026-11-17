@@ -459,6 +459,32 @@ pub struct XhciRegs {
 }
 
 impl XhciRegs {
+    fn usb_status(&self) -> u32 {
+        unsafe { mmio_read::<u32>(self.operational_base, OP_REG_USBSTS as u64) }
+    }
+
+    fn is_halted(&self) -> bool {
+        self.usb_status() & XHCI_STATUS_HALTED != 0
+    }
+
+    fn has_host_system_error(&self) -> bool {
+        self.usb_status() & XHCI_STATUS_HOST_SYSTEM_ERROR != 0
+    }
+
+    fn has_host_controller_error(&self) -> bool {
+        self.usb_status() & XHCI_STATUS_HOST_CONTROLLER_ERROR != 0
+    }
+
+    fn has_save_restore_error(&self) -> bool {
+        self.usb_status() & XHCI_STATUS_SAVE_RESTORE_ERROR != 0
+    }
+
+    fn has_any_error(&self) -> bool {
+        self.usb_status()
+            & (XHCI_STATUS_HOST_SYSTEM_ERROR | XHCI_STATUS_HOST_CONTROLLER_ERROR | XHCI_STATUS_SAVE_RESTORE_ERROR)
+            != 0
+    }
+
     fn is_valid_port(&self, port: u8) -> bool {
         port != 0 && (port as usize) <= self.max_ports
     }
@@ -671,7 +697,8 @@ enum XhciHaltReason {
     Babble = 1,
     Stall = 2,
     TransactionError = 3,
-    TransactionErrorExhausted = 4
+    TransactionErrorExhausted = 4,
+    SplitTransactionError = 5,
 }
 
 pub struct XhciDevice {
@@ -1006,29 +1033,41 @@ impl XhciInterrupter {
     unsafe fn handle(&self) {
         self.acknowledge_interrupt();
 
-        let controller = self.controller();
-        let mut batch = [Trb::new(); EVENT_BATCH_TRBS];
-
-        loop {
-            let count = self.drain_batch(&mut batch);
-
-            if let Some(xhci) = &controller {
-                for trb in &batch[..count] {
-                    xhci.dispatch_event(*trb);
-                }
-            }
-
-            if count < EVENT_BATCH_TRBS {
-                break;
-            }
-        }
-
-        if controller.is_none() {
+        let Some(xhci) = self.controller() else {
             kprintln!(
                 Warn,
                 "[xHCI] {} interrupter fired with no controller present in software.",
                 self.name
             );
+            return;
+        };
+
+        let hce = xhci.regs.has_host_controller_error();
+        let hse = xhci.regs.has_host_system_error();
+
+        if hce {
+            kprintln!(Error, "[xHCI] Host controller error detected!");
+        }
+
+        if hse {
+            kprintln!(Error, "[xHCI] Host system error detected!");
+        }
+
+        if hce || hse {
+            return;
+        }
+
+        let mut batch = [Trb::new(); EVENT_BATCH_TRBS];
+
+        loop {
+            let count = self.drain_batch(&mut batch);
+            for trb in &batch[..count] {
+                xhci.dispatch_event(*trb);
+            }
+
+            if count < EVENT_BATCH_TRBS {
+                break;
+            }
         }
     }
 }
@@ -1927,6 +1966,21 @@ impl XHCI {
         );
     }
 
+    fn take_halted_request_and_submit_error(&self, slot_id: u8, dci: u8) -> Result<(), ()> {
+        let Some(dev) = self.device_from_slot_id(slot_id) else {
+            kprintln!(Error, "[xHCI] No device with slot={} exists to take halted request from.", slot_id);
+            return Err(());
+        };
+
+        let Some(req) = dev.lock().take_halted_request(dci) else {
+            kprintln!(Debug, "[xHCI] No halted request exists for device slot={}, dci={}.", slot_id, dci);
+            return Err(());
+        };
+
+        complete_request(req, UsbTransferStatus::Error, 0);
+        Ok(())
+    }
+
     /// Drops all state belonging to a slot the controller has finished disabling.
     fn release_slot(&self, port: u8, slot_id: u8) {
         self.dcbaa.lock().clear_context(slot_id as usize);
@@ -1973,17 +2027,7 @@ impl XHCI {
             CommandContext::Empty
         ) {
             kprintln!(Error, "[xHCI] [DCI={}] Failed to issue SET_TR_DEQUEUE_POINTER command for endpoint.", dci);
-            let dev = self.device_from_slot_id(slot_id)
-                .unwrap();
-            let req = dev.lock().take_halted_request(dci);
-
-            if req.is_none() {
-                return;
-            }
-
-            complete_request(req.unwrap(), UsbTransferStatus::Error, 0);
-
-            kprintln!(Error, "[xHCI] [DCI={}] Submitting halted request failed.", dci);
+            let _ = self.take_halted_request_and_submit_error(slot_id, dci);
         }
     }
 
@@ -2017,22 +2061,13 @@ impl XHCI {
         }
 
         if code != TrbCompletionCode::SUCCESS {
-            let dev_lock = match self.device_from_slot_id(slot_id) {
-                None => {
-                    kprintln!(Error, "[xHCI] No device present at slot {}.", slot_id);
-                    return;
-                },
-                Some(x) => x
-            };
-            let mut dev = dev_lock.lock();
-            let ring = dev.transfer_rings[dci as usize].as_mut().unwrap();
-            ring.halt_reason = XhciHaltReason::None;
+            if let Some(dev_lock) = self.device_from_slot_id(slot_id) {
+                if let Some(ring) = dev_lock.lock().transfer_rings[dci as usize].as_mut() {
+                    ring.halt_reason = XhciHaltReason::None;
+                }
+            }
 
-            let req = match dev.take_halted_request(dci) {
-                None => { return; },
-                Some(x) => x
-            };
-            complete_request(req, UsbTransferStatus::Error, 0);
+            let _ = self.take_halted_request_and_submit_error(slot_id, dci);
             return;
         }
 
@@ -2050,7 +2085,12 @@ impl XHCI {
 
             let ring = dev.transfer_rings[dci as usize].as_mut().unwrap();
 
-            if matches!(ring.halt_reason, XhciHaltReason::Stall | XhciHaltReason::TransactionErrorExhausted) {
+            if matches!(
+                ring.halt_reason,
+                XhciHaltReason::Stall |
+                XhciHaltReason::TransactionErrorExhausted |
+                XhciHaltReason::SplitTransactionError
+            ) {
                 kprintln!(Debug, "[xHCI] Skipping retrying the request - halt reason was {:?}.", ring.halt_reason);
                 let status = if ring.halt_reason == XhciHaltReason::Stall {
                     UsbTransferStatus::Stalled
@@ -2109,28 +2149,23 @@ impl XHCI {
             CommandContext::Empty
         ) {
            kprintln!(Error, "[xHCI] [SLOT{}] Failed to send reset endpoint command with dci={}.", slot_id, endpoint_dci);
-
-            let dev = self.device_from_slot_id(slot_id)
-                .unwrap();
-            let req = dev.lock().take_halted_request(endpoint_dci);
-
-            if req.is_none() {
-                return;
-            }
-
-            complete_request(req.unwrap(), UsbTransferStatus::Error, 0);
+            let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
         }
     }
 
     fn on_endpoint_reset_completion(&self, command_completion_trb: CommandCompletionEventTrb, command_trb: Trb) {
-        let command = ResetEndpointCommandTrb::from_raw(command_trb)
-                .expect("[xHCI] Failed to parse reset endpoint TRB.");
+        let Ok(command) = ResetEndpointCommandTrb::from_raw(command_trb) else {
+            kprintln!("[xHCI] Failed to parse reset endpoint TRB.");
+            return;
+        };
         let slot_id = command_completion_trb.slot_id();
         let endpoint_dci = command.endpoint_id();
 
         let (slot_state, ep_state, halt_reason) = {
-            let dev_lock = self.device_from_slot_id(slot_id)
-                .expect("[xHCI] No device present at slot - on_endpoint_reset.");
+            let Some(dev_lock) = self.device_from_slot_id(slot_id) else {
+                kprintln!("[xHCI] No device present at slot - on_endpoint_reset.");
+                return;
+            };
             let mut dev = dev_lock.lock();
 
             let halt_reason = dev.
@@ -2146,9 +2181,9 @@ impl XHCI {
             (slot_context.get_slot_state(), ep_state, halt_reason)
         };
 
-        //TODO: remove malformed request on failure
         if slot_state == SlotState::DISABLED {
             kprintln!(Error, "[xHCI] [SLOT {}] Tried executing reset endpoint command on invalid slot state={}.", slot_id, slot_state);
+            let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
             return;
         }
 
@@ -2156,11 +2191,13 @@ impl XHCI {
             if ep_state != EndpointState::HALTED {
                 kprintln!(Error, "[xHCI] [SLOT {}] Tried executing reset endpoint command on endpoint not in halted state (state={}).", slot_id, slot_state);
             }
+            let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
             return;
         }
 
         if command_completion_trb.completion_code() != TrbCompletionCode::SUCCESS {
             kprintln!(Error, "[xHCI] [SLOT {}] Endpoint reset command failed with status {}", slot_id, command_completion_trb.completion_code());
+            let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
             return;
         }
 
@@ -2294,7 +2331,9 @@ impl XHCI {
 
                 return;
             },
-            TrbCompletionCode::BABBLE_DETECTED_ERROR | TrbCompletionCode::STALL_ERROR => {
+            TrbCompletionCode::BABBLE_DETECTED_ERROR |
+            TrbCompletionCode::STALL_ERROR |
+            TrbCompletionCode::SPLIT_TRANSACTION_ERROR => {
                 //here, we need to reset the endpoint to revive it
                 {
                     let mut dev = device.lock();
@@ -2311,6 +2350,8 @@ impl XHCI {
                         XhciHaltReason::Babble
                     } else if completion_code == TrbCompletionCode::STALL_ERROR {
                         XhciHaltReason::Stall
+                    } else if completion_code == TrbCompletionCode::SPLIT_TRANSACTION_ERROR {
+                        XhciHaltReason::SplitTransactionError
                     } else {
                         kprintln!(Error, "[xHCI] Unhandled error type.");
                         XhciHaltReason::None
