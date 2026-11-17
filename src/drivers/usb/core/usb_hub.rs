@@ -6,21 +6,16 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use core::cmp::{max, min};
-use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::drivers::apic::apic::set_timeout;
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
-use crate::drivers::usb::core::usb_core::on_set_configuration_complete;
-use crate::drivers::usb::core::usb_descriptors::UsbConfigurationTree;
 use crate::drivers::usb::core::usb_requests::{usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_set_hub_port_feature};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
-use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{DeviceToHost, HostToDevice};
-use crate::drivers::usb::{UsbBRequest, UsbBmRequestType, WValue};
+use crate::drivers::usb::{WValue};
 use crate::drivers::usb::core::UsbSpeed;
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error};
-use crate::drivers::usb::hid::hid_core::{HidCore, HidDriver};
-use crate::kprintln;
-use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
+use crate::{kprintln_hub_core};
+use crate::memory::dma::{DmaAlloc};
 
 //the device removable mask only covers 31 ports
 const HUB_MAX_PORTS: u16 = 31;
@@ -116,25 +111,26 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let dev = req.target_device.clone();
 
         if req.status != Completed {
-            kprintln!(Error, "[xHCI] Get hub descriptor request failed with status {:?}.", req.status);
+            kprintln_hub_core!(Error, "Get hub descriptor request failed with status {:?}.", req.status);
             return;
         }
 
-        let speed_type = req
-            .setup_packet
-            .unwrap()
-            .w_value >> 8;
+        let Some(setup_packet) = req.setup_packet else {
+            kprintln_hub_core!(Error, "Hub descriptor request has no setup packet.");
+            return;
+        };
+        let speed_type = setup_packet.w_value >> 8;
 
         let is_super_speed_hub = (speed_type & 0xFF) as u8 == WValue::DESC_SUPERSPEED_HUB;
-        let descriptor_dma = req
-            .dma_buffer
-            .take()
-            .unwrap();
+        let Some(descriptor_dma) = req.dma_buffer.take() else {
+            kprintln_hub_core!(Error, "Hub descriptor request has no dma buffer.");
+            return;
+        };
 
         let Some(amount_of_ports) = usb_hub_get_number_of_ports(
             is_super_speed_hub, &descriptor_dma, req.bytes_transferred
         ) else {
-            kprintln!(Error, "[USB_HUB] Malformed hub descriptor ({} bytes received).", req.bytes_transferred);
+            kprintln_hub_core!(Error, "Malformed hub descriptor ({} bytes received).", req.bytes_transferred);
             return;
         };
 
@@ -157,7 +153,7 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     USB_HUB_CORE.lock().devices.insert(device.system_id, Arc::new(IrqMutex::new(Box::new(hub_device))));
 
     let Some(port_power_req) = port_power_req else {
-        kprintln!(Error, "[USB_HUB] Hub reported 0 ports, nothing to power.");
+        kprintln_hub_core!(Error, "Hub reported 0 ports, nothing to power.");
         return;
     };
 
@@ -171,7 +167,7 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (req, device) = {
         let req1 = request.lock();
         if req1.status != Completed {
-            kprintln!(Error, "[xHCI] Setting port power on hub failed with status {:?}.", req1.status);
+            kprintln_hub_core!(Error, "Setting port power on hub failed with status {:?}.", req1.status);
             return;
         }
         let device = req1.target_device.clone();
@@ -179,7 +175,7 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     };
 
     let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(device.system_id) else {
-        kprintln!(Error, "[USB_HUB] PORT_POWER completed for a device that is not a registered hub.");
+        kprintln_hub_core!(Error, "PORT_POWER completed for a device that is not a registered hub.");
         return;
     };
 
@@ -188,10 +184,13 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let Some(port_power_req) = port_power_req else {
         let (b_pwr_on_to_pwr_good_ms, system_id) = {
             let hub_locked = hub.lock();
-            let desc = UsbHubDescriptor::from_dma(
+            let Some(desc) = UsbHubDescriptor::from_dma(
                 hub_locked.is_super_speed,
                 &hub_locked.hub_descriptor
-            ).unwrap();
+            ) else {
+                kprintln_hub_core!(Error, "Stored hub descriptor of hub {} is malformed.", hub_locked.system_id);
+                return;
+            };
             (desc.power_on_to_power_good_in_ms(), hub_locked.system_id)
         };
 
@@ -215,7 +214,7 @@ fn on_all_ports_powered(device_system_id: UsbDeviceId) {
         .lock()
         .find_by_system_id(device_system_id)
         else {
-            kprintln!("[USB_HUB] Hub with system ID={} disappeared.", device_system_id);
+            kprintln_hub_core!(Info, "Hub with system ID={} disappeared.", device_system_id);
             return;
         };
 
@@ -229,13 +228,13 @@ fn on_all_ports_powered(device_system_id: UsbDeviceId) {
        (lock.next_get_port_status_request(), device)
    };
 
-    if get_port_power_req.is_none() {
-        kprintln!(Error, "[USB_HUB] USB hub reports 0 ports on checking port power.");
+    let Some(get_port_power_req) = get_port_power_req else {
+        kprintln_hub_core!(Error, "USB hub reports 0 ports on checking port power.");
         return;
-    }
+    };
 
     if let Some(controller) = usb_device.host_controller.upgrade() {
-        let _ = controller.submit_request(get_port_power_req.unwrap());
+        let _ = controller.submit_request(get_port_power_req);
     }
 }
 
@@ -244,7 +243,7 @@ fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let device = request.lock().target_device.clone();
         let system_id = device.system_id;
         let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(system_id) else {
-            kprintln!("[USB_HUB] Hub with system id {} disappeared.", system_id);
+            kprintln_hub_core!(Info, "Hub with system id {} disappeared.", system_id);
             return;
         };
 
@@ -253,14 +252,14 @@ fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
     //TODO: check port status and check if port needs to be reset
 
-    if get_port_pwr_request.is_none() {
+    let Some(get_port_pwr_request) = get_port_pwr_request else {
         //no more ports to check, so we finished
         on_all_ports_status_checked();
         return;
-    }
+    };
 
     if let Some(controller) = device.host_controller.upgrade() {
-        let _ = controller.submit_request(get_port_pwr_request.unwrap());
+        let _ = controller.submit_request(get_port_pwr_request);
     }
 }
 
@@ -357,9 +356,7 @@ impl UsbHubDescriptor {
     pub fn from_dma(is_super_speed: bool, dma: &DmaAlloc) -> Option<Self> {
         //the buffer is zeroed, so reading past what the hub actually sent would look like valid data
         let received_length = dma.layout.size();
-        let buffer = unsafe {
-            core::slice::from_raw_parts(dma.virt.as_ptr::<u8>(), received_length)
-        };
+        let buffer = &dma.as_bytes()[..received_length];
 
         let b_length = *buffer.first()? as usize;
         if b_length > buffer.len() {

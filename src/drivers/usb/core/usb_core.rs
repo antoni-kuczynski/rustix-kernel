@@ -15,7 +15,7 @@ use crate::drivers::usb::core::usb_requests::{
 use crate::drivers::usb::core::usb_transfers::*;
 use crate::drivers::usb::core::UsbSpeed;
 use crate::drivers::usb::hid::hid_core::hid_register_usb_device;
-use crate::kprintln;
+use crate::{kprintln_usb_core, kprintln_usb_core_debug};
 
 const USB_CLASS_HID: u8 = 0x03;
 const USB_CLASS_HUB: u8 = 0x09;
@@ -97,7 +97,7 @@ pub fn usb_clear_endpoint_halt(
         let is_behind_tt = matches!(device.speed, UsbSpeed::Low | UsbSpeed::Full)
             && hub.speed == UsbSpeed::High;
 
-        if is_behind_tt && is_control_or_bulk {
+        if let Some(endpoint_transfer_type) = endpoint_transfer_type.filter(|_| is_behind_tt && is_control_or_bulk) {
             let is_multi_tt = hub
                 .device_descriptor
                 .get()
@@ -111,15 +111,15 @@ pub fn usb_clear_endpoint_halt(
                         tt_port_number,
                         device_address,
                         endpoint_address,
-                        endpoint_transfer_type.unwrap(),
+                        endpoint_transfer_type,
                         on_clear_tt_buffer_complete,
                     );
                     if let Err(error) = controller.submit_request(clear_tt_request) {
-                        kprintln!(Error, "[USB CORE] Failed to submit CLEAR_TT_BUFFER: {}", error);
+                        kprintln_usb_core!(Error, "Failed to submit CLEAR_TT_BUFFER: {}", error);
                     }
                 }
                 None => {
-                    kprintln!(Error, "[USB CORE] No USB address for device {}, skipping CLEAR_TT_BUFFER.", device.system_id);
+                    kprintln_usb_core!(Error, "No USB address for device {}, skipping CLEAR_TT_BUFFER.", device.system_id);
                 }
             }
         }
@@ -132,7 +132,7 @@ pub fn usb_clear_endpoint_halt(
 fn on_clear_tt_buffer_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let status = request.lock().status;
     if status != UsbTransferStatus::Completed {
-        kprintln!(Error, "[USB CORE] CLEAR_TT_BUFFER failed with status {:?}.", status);
+        kprintln_usb_core!(Error, "CLEAR_TT_BUFFER failed with status {:?}.", status);
     }
 }
 
@@ -146,12 +146,12 @@ pub fn usb_register_device(
     };
 
     let Some(controller) = device.host_controller.upgrade() else {
-        kprintln!(Warn, "[USB CORE] Host controller went away before the device could be registered.");
+        kprintln_usb_core!(Warn, "Host controller went away before the device could be registered.");
         return;
     };
 
     if let Err(error) = controller.submit_request(request) {
-        kprintln!(Error, "[USB CORE] Failed to request the device descriptor: {}", error);
+        kprintln_usb_core!(Error, "Failed to request the device descriptor: {}", error);
         return;
     }
 }
@@ -159,27 +159,25 @@ pub fn usb_register_device(
 
 fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status != UsbTransferStatus::Completed {
-        kprintln!(Error, "[USB CORE] Failed to complete GET_DESCRIPTOR request for device descriptor.");
+        kprintln_usb_core!(Error, "Failed to complete GET_DESCRIPTOR request for device descriptor.");
         return;
     }
 
     let (dev, next_request) = {
         let req = request.lock();
-        kprintln!(
-            Debug,
-            "[USB CORE] Got device descriptor: ({:?}, {} bytes).",
+        kprintln_usb_core_debug!(
+            "Got device descriptor: ({:?}, {} bytes).",
             req.status,
             req.bytes_transferred
         );
 
-        let desc = unsafe { &*req.dma_buffer
-            .as_ref()
-            .expect("No dma buffer found for configuration descriptor header.")
-            .virt.as_ptr::<UsbDeviceDescriptor>()
+        let Some(desc) = req.read_received::<UsbDeviceDescriptor>() else {
+            kprintln_usb_core!(Error, "No full device descriptor received ({} bytes).", req.bytes_transferred);
+            return;
         };
 
         let dev = req.target_device.clone();
-        dev.device_descriptor.call_once(|| *desc);
+        dev.device_descriptor.call_once(|| desc);
 
         let config_req = usb_request_get_configuration_descriptor(
             dev.clone(), CONFIGURATION_DESCRIPTOR_TOTAL_LENGTH_PREFIX, on_config_header_received
@@ -194,7 +192,7 @@ fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
 pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status != UsbTransferStatus::Completed {
-        kprintln!(Error, "[USB CORE] Failed to complete GET_DESCRIPTOR request for configuration descriptor header.");
+        kprintln_usb_core!(Error, "Failed to complete GET_DESCRIPTOR request for configuration descriptor header.");
         return;
     }
 
@@ -202,18 +200,13 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let req = request.lock();
         let dev = req.target_device.clone();
 
-        let dma_ptr = req.dma_buffer
-            .as_ref()
-            .expect("No dma buffer found for configuration descriptor header.")
-            .virt
-            .as_ptr::<u64>();
+        let Some(header) = req.received_bytes().and_then(|bytes| bytes.get(2..4)) else {
+            kprintln_usb_core!(Error, "Configuration descriptor header too short ({} bytes).", req.bytes_transferred);
+            return;
+        };
+        let w_total_length = u16::from_le_bytes([header[0], header[1]]);
 
-        let first_8_bytes = unsafe { core::ptr::read(dma_ptr) };
-
-        let bytes = first_8_bytes.to_le_bytes();
-        let w_total_length = u16::from_le_bytes([bytes[2], bytes[3]]);
-
-        kprintln!(Debug, "[USB CORE] Detected Configuration Descriptor size: {} bytes.", w_total_length);
+        kprintln_usb_core_debug!( "Detected Configuration Descriptor size: {} bytes.", w_total_length);
 
         //now, it's time for the full configuration descriptor
         let full_req = usb_request_get_configuration_descriptor(dev.clone(), w_total_length, on_full_config_received);
@@ -228,7 +221,7 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
 pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status != UsbTransferStatus::Completed {
-        kprintln!(Error, "[USB CORE] Failed to complete GET_DESCRIPTOR request for configuration descriptor.");
+        kprintln_usb_core!(Error, "Failed to complete GET_DESCRIPTOR request for configuration descriptor.");
         return;
     }
 
@@ -236,16 +229,17 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let req = request.lock();
         let dev = req.target_device.clone();
 
-        let ptr = req.dma_buffer
-            .as_ref()
-            .expect("No dma buffer found for full configuration descriptor.")
-            .virt.as_ptr::<u8>();
+        let Some(received_bytes) = req.received_bytes() else {
+            kprintln_usb_core!(Error, "No dma buffer found for full configuration descriptor.");
+            return;
+        };
 
-        let config_tree = unsafe {
-            UsbConfigurationTree::from_ptr(ptr, req.data_buffer_length)
-        }.expect("Failed to parse full USB configuration tree!");
+        let Some(config_tree) = UsbConfigurationTree::parse(received_bytes) else {
+            kprintln_usb_core!(Error, "Failed to parse full USB configuration tree of device {}.", dev.system_id);
+            return;
+        };
 
-        kprintln!(Debug, "[USB CORE] Successfully fully enumerated device ID {}!", dev.system_id);
+        kprintln_usb_core_debug!( "Successfully fully enumerated device ID {}!", dev.system_id);
 
         let config_value = config_tree.configuration.b_configuration_value;
 
@@ -262,11 +256,11 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
 pub fn on_set_configuration_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status != UsbTransferStatus::Completed {
-        kprintln!(Error, "[USB CORE] Failed to complete SET_CONFIGURATION request.");
+        kprintln_usb_core!(Error, "Failed to complete SET_CONFIGURATION request.");
         return;
     }
 
-    kprintln!(Debug, "[USB CORE] Completed SET_CONFIGURATION request.");
+    kprintln_usb_core_debug!( "Completed SET_CONFIGURATION request.");
 
     let dev = {
         let req = request.lock();
@@ -274,13 +268,18 @@ pub fn on_set_configuration_complete(request: Arc<IrqMutex<UsbTransferRequest>>)
         dev
     };
 
-    if dev.device_descriptor.get().unwrap().b_device_class() == USB_CLASS_HUB {
+    let (Some(device_descriptor), Some(configuration_tree)) =
+        (dev.device_descriptor.get(), dev.configuration_tree.get()) else {
+        kprintln_usb_core!(Error, "Device {} configured without its descriptors.", dev.system_id);
+        return;
+    };
+
+    if device_descriptor.b_device_class() == USB_CLASS_HUB {
         usb_issue_hub_descriptor(dev);
         return;
     }
-    
-    let a = dev.configuration_tree.get().unwrap();
-    for interface_tree in  &a.interfaces {
+
+    for interface_tree in &configuration_tree.interfaces {
         if interface_tree.interface.b_interface_class == USB_CLASS_HID {
             hid_register_usb_device(dev.clone(), interface_tree);
         }

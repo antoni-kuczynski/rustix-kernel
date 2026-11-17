@@ -9,6 +9,46 @@ pub mod ehci;
 pub mod core;
 mod hid;
 
+#[macro_export]
+macro_rules! kprintln_xhci {
+    ($level:ident, $($arg:tt)*) => { $crate::__kprintln_deferred_with_prefix!("[xHCI]", $level, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_xhci_debug {
+    ($($arg:tt)*) => { $crate::__kprintln_debug_with_prefix!("[xHCI]", $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_usb_core {
+    ($level:ident, $($arg:tt)*) => { $crate::__kprintln_deferred_with_prefix!("[USB CORE]", $level, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_usb_core_debug {
+    ($($arg:tt)*) => { $crate::__kprintln_debug_with_prefix!("[USB CORE]", $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_hub_core {
+    ($level:ident, $($arg:tt)*) => { $crate::__kprintln_deferred_with_prefix!("[USB HUB]", $level, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_hub_core_debug {
+    ($($arg:tt)*) => { $crate::__kprintln_debug_with_prefix!("[USB HUB]", $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_hid_core {
+    ($level:ident, $($arg:tt)*) => { $crate::__kprintln_deferred_with_prefix!("[HID CORE]", $level, $($arg)*) };
+}
+
+#[macro_export]
+macro_rules! kprintln_hid_core_debug {
+    ($($arg:tt)*) => { $crate::__kprintln_debug_with_prefix!("[HID CORE]", $($arg)*) };
+}
+
 const PIF_UHCI_CONTROLLER: u8 = 0x00;
 const PIF_OHCI_CONTROLLER: u8 = 0x10;
 pub(crate) const PIF_EHCI_CONTROLLER: u8 = 0x20;
@@ -36,9 +76,13 @@ pub fn init_usb_controller(pci_dev: PciDevice) {
         },
         PIF_XHCI_CONTROLLER => {
             kprintln!(Info, "Found xHCI controller with id {:#06x}.", dev_id);
-            XHCI::initialize(pci_dev).expect("xHCI init failed!");
+            if let Err(error) = XHCI::initialize(pci_dev) {
+                kprintln!(Error, "xHCI controller with id {:#06x} failed to initialize: {:?}.", dev_id, error);
+            }
         },
-        _ => todo!()
+        other => {
+            kprintln!(Warn, "Unknown USB controller programming interface {:#04x}, skipping.", other);
+        }
     }
 }
 

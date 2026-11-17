@@ -8,10 +8,10 @@ use crate::drivers::input::kbd::KeyCode;
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_requests::usb_request_interrupt_in;
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
-use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::DeviceToHost;
 use crate::drivers::usb::hid::hid_core::{on_interrupt_in, HidDriver, RawHidReport};
-use crate::kprintln;
-use crate::memory::dma::{dma_alloc_zeroed};
+use crate::{kprintln_hid_core, kprintln_hid_core_debug};
+
+const BOOT_KEYBOARD_REPORT_LENGTH: usize = 8;
 
 //TODO: typematic support
 pub struct HidKeyboard {
@@ -34,8 +34,8 @@ impl HidKeyboard {
 
 impl HidDriver for HidKeyboard {
     fn handle_hid_report(&mut self, report: RawHidReport) {
-        if report.data.len() == 0 {
-            kprintln!(Debug, "[HID KBD] Received HID report size=0, skipping.");
+        if report.data.len() < BOOT_KEYBOARD_REPORT_LENGTH {
+            kprintln_hid_core_debug!( "[HID KBD] Received HID report size={} < {}, skipping.", report.data.len(), BOOT_KEYBOARD_REPORT_LENGTH);
             return;
         }
 
@@ -88,23 +88,26 @@ impl HidDriver for HidKeyboard {
             }
         }
 
-        self.previous_key_state = <[u8; 8]>::try_from(new_keys).expect("invalid hid packet");
+        if let Ok(new_key_state) = <[u8; BOOT_KEYBOARD_REPORT_LENGTH]>::try_from(&new_keys[..BOOT_KEYBOARD_REPORT_LENGTH]) {
+            self.previous_key_state = new_key_state;
+        }
     }
 
     fn start_listening(&mut self) {
         let device = self.device.clone();
 
-        let endpoint = device
+        let Some(endpoint) = device
             .configuration_tree
             .get()
-            .unwrap()
-            .find_endpoint(self.in_endpoint_address)
-            .unwrap();
+            .and_then(|tree| tree.find_endpoint(self.in_endpoint_address)) else {
+            kprintln_hid_core!(Error, "[HID KBD] IN endpoint {:#x} not found in the configuration tree.", self.in_endpoint_address);
+            return;
+        };
         
         let max_packet_size = endpoint.w_max_packet_size as usize;
         
-        kprintln!(Debug, "[HID KBD] Allocating buffer with size w_max_packet_size={}.", max_packet_size);
-        kprintln!(Info, "Press Caps Lock to restart the PC.");
+        kprintln_hid_core_debug!( "[HID KBD] Allocating buffer with size w_max_packet_size={}.", max_packet_size);
+        kprintln_hid_core!(Info, "Press Caps Lock to restart the PC.");
 
         let request = usb_request_interrupt_in(device.clone(), self.in_endpoint_address, max_packet_size, on_interrupt_in);
 

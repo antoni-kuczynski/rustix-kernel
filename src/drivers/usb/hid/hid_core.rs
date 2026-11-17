@@ -16,7 +16,7 @@ use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{HostToDevic
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error, Stalled};
 use crate::drivers::usb::hid::hid_keyboard::{HidKeyboard};
 use crate::drivers::usb::hid::hid_mouse::HidMouse;
-use crate::kprintln;
+use crate::{kprintln_hid_core, kprintln_hid_core_debug};
 
 pub const HID_SUBCLASS_NONE: u8 = 0x00;
 pub const HID_SUBCLASS_BOOT: u8 = 0x01;
@@ -59,12 +59,16 @@ impl HidCore {
 pub fn hid_on_cleared_endpoint_halt(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (status, system_id, endpoint_address) = {
         let req = request.lock();
+        let Some(setup_packet) = req.setup_packet else {
+            kprintln_hid_core!(Error, "ClearFeature request has no setup packet.");
+            return;
+        };
 
-        (req.status, req.target_device.system_id, req.setup_packet.unwrap().w_index)
+        (req.status, req.target_device.system_id, setup_packet.w_index)
     };
 
     if status != Completed {
-        kprintln!(Error, "[HID CORE] Cannot execute ClearFeature, the device is probably broken.");
+        kprintln_hid_core!(Error, "Cannot execute ClearFeature, the device is probably broken.");
         return;
     }
 
@@ -86,29 +90,26 @@ pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
             let dev = req.target_device.clone();
 
             if usb_clear_endpoint_halt(dev, endpoint, hid_on_cleared_endpoint_halt).is_err() {
-                kprintln!(Error, "[xHCI] Clearing halted endpoint failed.");
+                kprintln_hid_core!(Error, "Clearing halted endpoint failed.");
             }
             return;
         }
 
         if req.status != Completed {
-            kprintln!(Error, "[HID CORE] Transfer request failed to complete - status {:?}", req.status);
+            kprintln_hid_core!(Error, "Transfer request failed to complete - status {:?}", req.status);
             return;
         }
 
         let endpoint_address = req.endpoint_address;
 
-        if let Some(buffer) = &req.dma_buffer {
-            let data = unsafe { core::slice::from_raw_parts(buffer.virt.as_ptr::<u8>(), req.bytes_transferred) };
-
+        if let Some(data) = req.received_bytes() {
             let mut hid = HID_CORE.lock();
-            let mut dev = hid.devices
-                .get_mut(&(req.target_device.system_id, endpoint_address))
-                .expect("HID device present inside hid core to handle data packet.")
-                .lock();
+            let Some(hid_device) = hid.devices.get_mut(&(req.target_device.system_id, endpoint_address)) else {
+                kprintln_hid_core!(Error, "Report for HID device {} that is not registered.", req.target_device.system_id);
+                return;
+            };
 
-            
-            dev.handle_hid_report(RawHidReport::new(data));
+            hid_device.lock().handle_hid_report(RawHidReport::new(data));
         }
 
         req.status = UsbTransferStatus::Pending;
@@ -146,11 +147,10 @@ fn find_in_endpoint_address(interface_tree: &UsbInterfaceTree) -> Option<u8> {
 }
 
 pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInterfaceTree) {
-    let a = dev.configuration_tree.get().unwrap();
     let interface = &usb_interface_tree.interface;
     let endpoint_in_address = match find_in_endpoint_address(usb_interface_tree) {
         None => {
-            kprintln!(Error, "[HID CORE] IN endpoint for HID device was not found.");
+            kprintln_hid_core!(Error, "IN endpoint for HID device was not found.");
             return;
         },
         Some(x) => x
@@ -159,7 +159,7 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
 
     match (interface.b_interface_sub_class, interface.b_interface_protocol) {
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_KEYBOARD) => {
-            kprintln!(Debug, "[HID CORE] Found USB keyboard with boot mode support.");
+            kprintln_hid_core_debug!( "Found USB keyboard with boot mode support.");
 
             if GLOBAL_KEYBOARD.get().is_none() {
                 GlobalKeyboard::init();
@@ -169,7 +169,7 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
             HID_CORE.lock().devices.insert((system_id, endpoint_in_address), Arc::new(IrqMutex::new(Box::new(hid_kbd))));
         },
         (HID_SUBCLASS_BOOT, HID_PROTOCOL_MOUSE) => {
-            kprintln!(Debug, "[HID CORE] Found USB mouse with boot mode support.");
+            kprintln_hid_core_debug!( "Found USB mouse with boot mode support.");
 
             if GLOBAL_MOUSE.get().is_none() {
                 GlobalMouse::init();
@@ -179,11 +179,11 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
             HID_CORE.lock().devices.insert((system_id, endpoint_in_address), Arc::new(IrqMutex::new(Box::new(hid_mouse))));
         },
         (HID_SUBCLASS_NONE, _) => {
-            kprintln!(Debug, "[HID CORE] Usb HID interfaces without boot mode are currently not supported!");
+            kprintln_hid_core_debug!( "Usb HID interfaces without boot mode are currently not supported!");
             return;
         },
         _ => {
-            kprintln!(Error, "[HID CORE] Invalid HID interface found.");
+            kprintln_hid_core!(Error, "Invalid HID interface found.");
             return;
         }
     }
@@ -197,20 +197,23 @@ fn hid_set_protocol(device: Arc<UsbDevice>, interface_num: u16) {
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_protocol_request);
     }
-    kprintln!(Debug, "[HID CORE] Issued SET_PROTOCOL request for HID.");
+    kprintln_hid_core_debug!( "Issued SET_PROTOCOL request for HID.");
 }
 
 pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (status, device, interface_number) = {
         let req = request.lock();
-        let setup_packet = req.setup_packet.unwrap();
+        let Some(setup_packet) = req.setup_packet else {
+            kprintln_hid_core!(Error, "SET_PROTOCOL request has no setup packet.");
+            return;
+        };
 
         //interface number is w_index
         (req.status, req.target_device.clone(), setup_packet.w_index)
     };
 
     if status != Completed {
-        kprintln!(Error, "[HID CORE] SET_PROTOCOL request failed for HID.");
+        kprintln_hid_core!(Error, "SET_PROTOCOL request failed for HID.");
         return;
     }
 
@@ -219,13 +222,17 @@ pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_idle_request);
     }
-    kprintln!(Debug, "[HID CORE] Issued SET_IDLE request for HID.");
+    kprintln_hid_core_debug!( "Issued SET_IDLE request for HID.");
 }
 
 pub fn hid_on_set_idle_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let (usb_device, interface_number) = {
         let req = request.lock();
-        (req.target_device.clone(), req.setup_packet.unwrap().w_index as u8)
+        let Some(setup_packet) = req.setup_packet else {
+            kprintln_hid_core!(Error, "SET_IDLE request has no setup packet.");
+            return;
+        };
+        (req.target_device.clone(), setup_packet.w_index as u8)
     };
 
     //find enpoint address in config tree
@@ -240,7 +247,7 @@ pub fn hid_on_set_idle_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
         .and_then(find_in_endpoint_address);
 
     let Some(endpoint_address) = endpoint_address else {
-        kprintln!(Error, "[HID CORE] No IN endpoint for interface {} after SET_IDLE.", interface_number);
+        kprintln_hid_core!(Error, "No IN endpoint for interface {} after SET_IDLE.", interface_number);
         return;
     };
 

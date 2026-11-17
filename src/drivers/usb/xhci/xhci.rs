@@ -42,7 +42,6 @@ use core::fmt::Error;
 use core::mem::size_of;
 use core::ops::Add;
 use core::ptr;
-use core::ptr::slice_from_raw_parts;
 use core::sync::atomic::{compiler_fence, AtomicUsize, Ordering};
 use spin::once::Once;
 use x86_64::structures::idt::InterruptStackFrame;
@@ -82,13 +81,12 @@ use crate::drivers::usb::{UsbBmRequestType, UsbBRequest, WValue};
 use crate::drivers::usb::xhci::xhci::XhciDeviceConfigurationState::{Configured, PendingHubConfiguration, PendingSetConfiguration};
 use crate::interrupts::router::register_handler_with_context;
 use crate::interrupts::vector::InterruptVector;
-use crate::{kprintln, kprintln_ok};
+use crate::{kprintln_ok, kprintln_xhci, kprintln_xhci_debug};
 use crate::drivers::usb::core::usb_hub::{Usb2HubDescriptor, Usb3HubDescriptor};
 use crate::drivers::usb::core::UsbSpeed;
 use crate::memory::dir_mapping::physical_to_virtual;
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use crate::memory::page_tables::PageSize;
-use crate::video::kprint::LogLevel::Debug;
 
 const PCI_STATUS_REGISTER: u32 = 0x06;
 const PCI_STATUS_CAPABILITIES_LIST: u16 = 1 << 4;
@@ -239,7 +237,7 @@ unsafe fn xhci_legacy_handoff(first_ext_cap_addr: Option<VirtAddr>) {
                     if timer_lapic_uptime_ms().wrapping_sub(start_ms)
                         >= XHCI_LEGACY_HANDOFF_TIMEOUT_MS
                     {
-                        kprintln!(Warn, "[xHCI] xHCI legacy handoff timeout: USBLEGSUP={:#010x}", current);
+                        kprintln_xhci!(Warn, "xHCI legacy handoff timeout: USBLEGSUP={:#010x}", current);
                         break;
                     }
                 }
@@ -260,7 +258,7 @@ unsafe fn xhci_legacy_handoff(first_ext_cap_addr: Option<VirtAddr>) {
         cap_addr += (next as u64) * 4;
     }
 
-    kprintln!(Warn, "[xHCI] xHCI legacy handoff: extended capability chain too long");
+    kprintln_xhci!(Warn, "xHCI legacy handoff: extended capability chain too long");
 }
 
 fn xhci_enable_usb3_port_power(operational_base: VirtAddr, supported_protocols: &[XhciPortInfo]) {
@@ -283,7 +281,7 @@ fn xhci_enable_usb3_port_power(operational_base: VirtAddr, supported_protocols: 
     }
 
     if powered_ports != 0 {
-        kprintln!(Info, "[xHCI] Powered {} USB3 root hub ports", powered_ports);
+        kprintln_xhci!(Info, "Powered {} USB3 root hub ports", powered_ports);
     }
 }
 
@@ -309,7 +307,7 @@ fn find_pci_capability(dev: &PciDevice, capability_id: u8) -> Option<u8> {
 fn xhci_configure_interrupts(dev: &PciDevice) -> Result<XhciInterruptConfig, PciDeviceInitError> {
     if let Some(msix_cap_ptr) = find_pci_capability(dev, PCI_CAPABILITY_ID_MSIX) {
         //msix capability found, so configure msix
-        let config = dev.configure_msix(msix_cap_ptr, 2).expect("XHCI msi-x configuration failed");
+        let config = dev.configure_msix(msix_cap_ptr, 2)?;
 
         return Ok(XhciInterruptConfig::Msix {
             capability: config.capability,
@@ -321,7 +319,7 @@ fn xhci_configure_interrupts(dev: &PciDevice) -> Result<XhciInterruptConfig, Pci
 
     //msi-x was not found so use msi instead
     let msi_cap_ptr = find_pci_capability(dev, PCI_CAPABILITY_ID_MSI).ok_or(XhciMsiCapabilityNotFound)?;
-    let msi_config = dev.configure_msi(msi_cap_ptr, 1).expect("XHCI msi configuration failed");
+    let msi_config = dev.configure_msi(msi_cap_ptr, 1)?;
     Ok(
         XhciInterruptConfig::Msi {
             capability: msi_config.capability,
@@ -336,7 +334,7 @@ unsafe fn xhci_alloc_scratchpad(cap_base: VirtAddr, dcbaa: &mut DcbaaOwner) -> S
     let hi = (hcsparams2 >> 21) & 0x1F;
     let lo = (hcsparams2 >> 27) & 0x1F;
     let count = ((hi << 5) | lo) as usize;
-    kprintln!(Debug, "[xHCI] Scratchpad buffers required: {}", count);
+    kprintln_xhci_debug!( "Scratchpad buffers required: {}", count);
 
     if count == 0 {
         return ScratchpadArea {
@@ -346,12 +344,12 @@ unsafe fn xhci_alloc_scratchpad(cap_base: VirtAddr, dcbaa: &mut DcbaaOwner) -> S
     }
 
     let array = dma_alloc_zeroed(count * 8, 4096).expect("scratchpad array");
-    let entries = array.virt.as_mut_ptr::<u64>();
+    let entries = array.as_slice_mut::<u64>(count);
     let mut buffers = Vec::with_capacity(count);
 
     for index in 0..count {
         let buffer = dma_alloc_zeroed(4096, 4096).expect("scratchpad buffer");
-        ptr::write_volatile(entries.add(index), buffer.phys.as_u64());
+        ptr::write_volatile(&mut entries[index], buffer.phys.as_u64());
         buffers.push(buffer);
     }
 
@@ -376,13 +374,13 @@ unsafe fn xhci_setup_interrupter(
     let (ring_dma, ring_trbs) =
         TrbRing::dma_alloc(EVENT_RING_TRBS).expect("Failed to allocate dma for an event ring.");
 
-    kprintln!(Debug, "[xHCI] Allocated DMA for the {} event ring at phys{:#011x}; virt: {:#011x} with align {}",
+    kprintln_xhci_debug!( "Allocated DMA for the {} event ring at phys{:#011x}; virt: {:#011x} with align {}",
         name, ring_dma.phys, ring_dma.virt, ring_dma.layout.align());
 
     let erst_dma = xhci_alloc_dma_erst(ring_dma.phys, EVENT_RING_TRBS as u32)
         .expect("Failed to allocate dma for an erst.");
 
-    kprintln!(Debug, "[xHCI] Allocated DMA for the {} erst at phys{:#011x}; virt: {:#011x} with align {}",
+    kprintln_xhci_debug!( "Allocated DMA for the {} erst at phys{:#011x}; virt: {:#011x} with align {}",
         name, erst_dma.phys, erst_dma.virt, erst_dma.layout.align());
 
     mmio_write::<u32>(
@@ -622,16 +620,24 @@ impl DcbaaOwner {
         self.dma.phys
     }
 
+    fn table(&self) -> &Dcbaa {
+        unsafe { self.dma.as_ref::<Dcbaa>() }
+    }
+
+    fn table_mut(&mut self) -> &mut Dcbaa {
+        unsafe { &mut *self.dma.virt.as_mut_ptr::<Dcbaa>() }
+    }
+
     fn set_context(&mut self, slot_id: usize, addr: u64) {
-        unsafe { (*self.dma.virt.as_mut_ptr::<Dcbaa>()).set_context(slot_id, addr) }
+        self.table_mut().set_context(slot_id, addr)
     }
 
     fn clear_context(&mut self, slot_id: usize) {
-        unsafe { (*self.dma.virt.as_mut_ptr::<Dcbaa>()).clear_context(slot_id) }
+        self.table_mut().clear_context(slot_id)
     }
 
     fn context_virt(&self, slot_id: usize) -> VirtAddr {
-        unsafe { (*self.dma.virt.as_ptr::<Dcbaa>()).get_context_virt(slot_id) }
+        self.table().get_context_virt(slot_id)
     }
 }
 
@@ -759,6 +765,22 @@ impl XhciDevice {
         }
     }
 
+    fn output_context(&self) -> &DeviceContext {
+        unsafe { self.device_context_dma.as_ref::<DeviceContext>() }
+    }
+
+    fn output_context_mut(&mut self) -> &mut DeviceContext {
+        unsafe { &mut *self.device_context_dma.virt.as_mut_ptr::<DeviceContext>() }
+    }
+
+    fn input_context(&self) -> &InputContext {
+        unsafe { self.input_context_dma.as_ref::<InputContext>() }
+    }
+
+    fn input_context_mut(&mut self) -> &mut InputContext {
+        unsafe { &mut *self.input_context_dma.virt.as_mut_ptr::<InputContext>() }
+    }
+
     fn transfer_ring_mut(&mut self, dci: u8) -> Option<&mut TransferRing> {
         self.transfer_rings
             .get_mut(dci as usize)?
@@ -775,9 +797,7 @@ impl XhciDevice {
     }
 
     fn take_halted_request(&mut self, dci: u8) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
-        let ring = self.transfer_rings[dci as usize]
-            .as_mut()
-            .unwrap();
+        let ring = self.transfer_rings.get_mut(dci as usize)?.as_mut()?;
 
         if ring.halted_request.is_none() {
             return None;
@@ -807,7 +827,7 @@ impl XhciDevice {
     fn reported_max_packet_size_0(&self) -> Option<u8> {
         let buffer = self.first_8_bytes_of_device_descriptor.as_ref()?;
         // Byte 7 of the device descriptor, the last one of the eight that were requested.
-        Some(unsafe { ptr::read_volatile(buffer.virt.as_ptr::<u8>().add(7)) })
+        unsafe { buffer.read_unaligned::<u8>(7) }
     }
 
     /// Queues a control transfer on EP0 and returns the address of the Status Stage TRB,
@@ -901,11 +921,7 @@ impl XhciDevice {
             None => return Err(RingError::Unsupported),
         };
 
-        let buf_addr = if dma_buf.is_none() {
-            0
-        } else {
-            dma_buf.unwrap()
-        };
+        let buf_addr = dma_buf.unwrap_or(0);
 
         let mut normal_trb = NormalTrb::new();
         normal_trb.set_data_buffer(buf_addr);
@@ -1025,7 +1041,7 @@ impl XhciInterrupter {
                     }
                     Err(RingError::Empty) => break,
                     Err(x) => {
-                        kprintln!(Error, "[xHCI] Malformed TRB detected on Event Ring. RingError: {:?}", x);
+                        kprintln_xhci!(Error, "Malformed TRB detected on Event Ring. RingError: {:?}", x);
                     }
                 }
             }
@@ -1044,9 +1060,9 @@ impl XhciInterrupter {
         self.acknowledge_interrupt();
 
         let Some(xhci) = self.controller() else {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] {} interrupter fired with no controller present in software.",
+                "{} interrupter fired with no controller present in software.",
                 self.name
             );
             return;
@@ -1056,11 +1072,11 @@ impl XhciInterrupter {
         let hse = xhci.regs.has_host_system_error();
 
         if hce {
-            kprintln!(Error, "[xHCI] Host controller error detected!");
+            kprintln_xhci!(Error, "Host controller error detected!");
         }
 
         if hse {
-            kprintln!(Error, "[xHCI] Host system error detected!");
+            kprintln_xhci!(Error, "Host system error detected!");
         }
 
         if hce || hse {
@@ -1084,7 +1100,7 @@ impl XhciInterrupter {
 
 fn xhci_irq_handler(_: InterruptVector, _: InterruptStackFrame, context: usize) {
     if context == 0 {
-        kprintln!(Warn, "[xHCI] IRQ without interrupter context.");
+        kprintln_xhci!(Warn, "IRQ without interrupter context.");
         unsafe {
             if let Some(lapic) = LAPIC.get() {
                 lapic.eoi();
@@ -1141,9 +1157,9 @@ impl XHCI {
     /// Requests slot teardown for `port`. Expects the caller to already hold the port table.
     unsafe fn disable_slot_locked(&self, ports: &mut PortTable, port: u8) {
         let Some(slot_id) = ports.slot(port) else {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [PORT {}] Tried detaching device with no slot assigned (or not present in software)!",
+                "[PORT {}] Tried detaching device with no slot assigned (or not present in software)!",
                 port
             );
             ports.set_state(port, PortState::Idle);
@@ -1158,9 +1174,9 @@ impl XHCI {
                 slot_id,
             },
         ) {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] [PORT {}] Sending disable slot command failed: {:?}.",
+                "[SLOT {}] [PORT {}] Sending disable slot command failed: {:?}.",
                 slot_id,
                 port,
                 error
@@ -1177,7 +1193,7 @@ impl XHCI {
 
     unsafe fn resume_port(&self, ports: &mut PortTable, port: u8) {
         self.regs.portsc_set_link_state(port, PortLinkState::Resume);
-        kprintln!(Debug, "[xHCI] [PORT {}] Transitioning port to Resume state.", port);
+        kprintln_xhci_debug!( "[PORT {}] Transitioning port to Resume state.", port);
         ports.set_state(
             port,
             PortState::Resuming {
@@ -1195,9 +1211,8 @@ impl XHCI {
         portsc: PortStatusControl,
     ) {
         if !portsc.ccs_read() {
-            kprintln!(
-                Debug,
-                "[xHCI] [PORT {}] Device was disconnected before reset could be completed.",
+            kprintln_xhci_debug!(
+                "[PORT {}] Device was disconnected before reset could be completed.",
                 port
             );
             ports.set_state(port, PortState::Idle);
@@ -1205,14 +1220,14 @@ impl XHCI {
         }
 
         if portsc.ped_read() && !portsc.pr_read() && portsc.pls_read() == U0 {
-            kprintln!(Debug, "[xHCI] [PORT {}] Successfully reset port.", port);
+            kprintln_xhci_debug!( "[PORT {}] Successfully reset port.", port);
             ports.set_state(port, PortState::Enabled);
         } else {
             if let PortState::ResetInProgress { attempts } = ports.state(port) {
                 if attempts < PORT_RESET_MAX_ATTEMPTS && portsc.ccs_read() {
-                    kprintln!(
+                    kprintln_xhci!(
                         Warn,
-                        "[xHCI] [PORT {}] Port reset was incomplete, retry {}.",
+                        "[PORT {}] Port reset was incomplete, retry {}.",
                         port,
                         attempts + 1
                     );
@@ -1228,9 +1243,9 @@ impl XHCI {
                 }
             }
 
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [PORT {}] Port reset timed out, PORTSC={:#010x} (PED={} PLS={:?} PRC={} CCS={}.)",
+                "[PORT {}] Port reset timed out, PORTSC={:#010x} (PED={} PLS={:?} PRC={} CCS={}.)",
                 port,
                 portsc.raw(),
                 portsc.ped_read(),
@@ -1243,7 +1258,7 @@ impl XHCI {
         }
 
         //we did reset the slot, so now we're in enabled state
-        kprintln!(Debug, "[xHCI] [PORT {}] Sending enable slot command for port.", port);
+        kprintln_xhci_debug!( "[PORT {}] Sending enable slot command for port.", port);
 
         self.issue_enable_slot_command(port, ports);
     }
@@ -1254,9 +1269,9 @@ impl XHCI {
         if let Err(error) =
             self.send_command(*trb.raw(), CommandContext::EnableSlot { port_id: port })
         {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [PORT {}] Sending enable slot command failed: {:?}.",
+                "[PORT {}] Sending enable slot command failed: {:?}.",
                 port,
                 error
             );
@@ -1272,42 +1287,42 @@ impl XHCI {
             match trb.try_as_port_status_change_event() {
                 Ok(event) => self.on_port_status_change(event),
                 Err(error) => {
-                    kprintln!(Error, "[xHCI] Cannot parse port status change TRB: {:?}.", error);
+                    kprintln_xhci!(Error, "Cannot parse port status change TRB: {:?}.", error);
                 }
             }
         } else if trb_type == Trb::TRB_COMMAND_COMPLETION_EVENT {
             match trb.try_as_command_completion_event() {
                 Ok(event) => self.on_command_completion(event),
                 Err(error) => {
-                    kprintln!(Error, "[xHCI] Cannot parse command completion TRB: {:?}.", error);
+                    kprintln_xhci!(Error, "Cannot parse command completion TRB: {:?}.", error);
                 }
             }
         } else if trb_type == Trb::TRB_TRANSFER_EVENT {
             match trb.try_as_transfer_event() {
                 Ok(event) => self.on_transfer_event(event),
                 Err(error) => {
-                    kprintln!(Error, "[xHCI] Cannot parse transfer event TRB: {:?}.", error);
+                    kprintln_xhci!(Error, "Cannot parse transfer event TRB: {:?}.", error);
                 }
             }
         } else if trb_type == Trb::TRB_HOST_CONTROLLER_EVENT {
             match trb.try_as_host_controller_event() {
                 Ok(event) => self.on_host_controller_event(event),
                 Err(error) => {
-                    kprintln!(Error, "[xHCI] Cannot parse host controller event TRB: {:?}.", error);
+                    kprintln_xhci!(Error, "Cannot parse host controller event TRB: {:?}.", error);
                 }
             }
         } else {
-            kprintln!(Warn, "[xHCI] Unhandled TRB type {} received.", trb_type);
+            kprintln_xhci!(Warn, "Unhandled TRB type {} received.", trb_type);
         }
     }
 
     unsafe fn on_host_controller_event(self: &Arc<Self>, trb: HostControllerEventTrb) {
         match trb.completion_code() {
             TrbCompletionCode::EVENT_RING_FULL_ERROR => {
-                kprintln!(Warn, "[xHCI] Event ring is full - events are handled to slowly.");
+                kprintln_xhci!(Warn, "Event ring is full - events are handled to slowly.");
             },
             code => {
-                kprintln!(Error, "[xHCI] Host controller event with completion code {}.", code);
+                kprintln_xhci!(Error, "Host controller event with completion code {}.", code);
             },
         }
     }
@@ -1316,9 +1331,9 @@ impl XHCI {
         let port = trb.port_id();
 
         if !self.regs.is_valid_port(port) {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [INVALID PORT {}] Ignoring port status change for this invalid port.",
+                "[INVALID PORT {}] Ignoring port status change for this invalid port.",
                 port
             );
             return;
@@ -1327,8 +1342,8 @@ impl XHCI {
         let portsc = self.regs.portsc(port);
         let mut ports = self.ports.lock();
 
-        kprintln!(Debug,
-            "[xHCI] [PORT {}] PSC event for port: PORTSC={:#010x} [CSC={} PEC={} PRC={} PLC={} WRC={} OCC={}] CCS={} PED={} PLS={:?} state={:?}",
+        kprintln_xhci_debug!(
+            "[PORT {}] PSC event for port: PORTSC={:#010x} [CSC={} PEC={} PRC={} PLC={} WRC={} OCC={}] CCS={} PED={} PLS={:?} state={:?}",
             port, portsc.raw(),
             portsc.csc_read(), portsc.pec_read(), portsc.prc_read(),
             portsc.plc_read(), portsc.wrc_read(), portsc.occ_read(),
@@ -1337,12 +1352,12 @@ impl XHCI {
         );
 
         self.regs.portsc_ack_changes(port, portsc);
-        kprintln!(Debug, "[xHCI] [PORT {}] Cleared port status change event.", port);
+        kprintln_xhci_debug!( "[PORT {}] Cleared port status change event.", port);
 
         let speed = portsc.ps_read();
         let is_usb3 = speed == XhciPortSpeed::SUPER_SPEED || speed == XhciPortSpeed::SUPER_SPEED_PLUS;
         if is_usb3 && portsc.prc_read() {
-            kprintln!(Debug, "[xHCI] [PORT {}] USB3 device performed hardware reset successfully.", port);
+            kprintln_xhci_debug!( "[PORT {}] USB3 device performed hardware reset successfully.", port);
             self.issue_enable_slot_command(port, &mut *ports);
             return;
         }
@@ -1354,9 +1369,9 @@ impl XHCI {
                 self.complete_port_reset(&mut ports, port, portsc);
                 reset_completed = true;
             } else {
-                kprintln!(
+                kprintln_xhci!(
                     Warn,
-                    "[xHCI] [PORT {}] Unexpected PRC in state {:?}.",
+                    "[PORT {}] Unexpected PRC in state {:?}.",
                     port,
                     ports.state(port)
                 );
@@ -1374,9 +1389,9 @@ impl XHCI {
             .unwrap_or(XhciPortProtocol::Unknown);
 
         if !portsc.ccs_read() {
-            kprintln!(
+            kprintln_xhci!(
                 Info,
-                "[xHCI] [PORT {}] Detach detected with {} protocol.",
+                "[PORT {}] Detach detected with {} protocol.",
                 port,
                 protocol
             );
@@ -1387,18 +1402,17 @@ impl XHCI {
         if reset_completed || matches!( ports.state(port),
                 PortState::Debounce { .. } | PortState::ResetInProgress { .. }
             ) {
-            kprintln!(
-                Debug,
-                "[xHCI] [PORT {}] Connect status change belongs to the connection already being enumerated.",
+            kprintln_xhci_debug!(
+                "[PORT {}] Connect status change belongs to the connection already being enumerated.",
                 port
             );
             return;
         }
 
         if matches!(ports.state(port), PortState::Enabled) {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [PORT {}] Device on addressed port disconnected/bounced.",
+                "[PORT {}] Device on addressed port disconnected/bounced.",
                 port
             );
 
@@ -1410,9 +1424,9 @@ impl XHCI {
         ports.set_state(port, PortState::Debounce { generation: 0 });
         schedule_debounce(self, port, 0);
 
-        kprintln!(
+        kprintln_xhci!(
             Info,
-            "[xHCI] [PORT {}] Attach detected with {} protocol.",
+            "[PORT {}] Attach detected with {} protocol.",
             port,
             protocol
         );
@@ -1421,12 +1435,17 @@ impl XHCI {
     unsafe fn on_endpoint_configured(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
         let phys_addr = TrbPhysAddr(trb.command_trb_pointer());
         let (configuration_state, req) = {
-            let dev_lock = self.device_from_slot_id(trb.slot_id());
-            let mut dev = dev_lock.as_ref().unwrap().lock();
+            let Some(dev_lock) = self.device_from_slot_id(trb.slot_id()) else {
+                kprintln_xhci!(Error, "[SLOT {}] Configure endpoint completed for a device not present in software.", trb.slot_id());
+                return;
+            };
+            let mut dev = dev_lock.lock();
 
             //we already inserted the request to the map with the key of command trb
-            let req = dev.pending_requests.remove(&phys_addr)
-                .expect("No pending request present for configure event");
+            let Some(req) = dev.pending_requests.remove(&phys_addr) else {
+                kprintln_xhci!(Error, "[SLOT {}] No pending request present for configure endpoint event.", trb.slot_id());
+                return;
+            };
 
             let configuration_state = dev.configuration_state;
             if trb.completion_code() != TrbCompletionCode::SUCCESS {
@@ -1440,36 +1459,40 @@ impl XHCI {
         };
 
         if trb.completion_code() != TrbCompletionCode::SUCCESS {
-            kprintln!(Error, "[xHCI] [SLOT {}] Configure endpoint command failed with code {}.", trb.slot_id(), trb.completion_code());
+            kprintln_xhci!(Error, "[SLOT {}] Configure endpoint command failed with code {}.", trb.slot_id(), trb.completion_code());
             complete_request(req, UsbTransferStatus::Error, 0);
             return;
         }
 
         if let PendingHubConfiguration { .. } = configuration_state {
-            kprintln!(Debug, "[xHCI] [SLOT {}] Hub fields of the slot context configured.", trb.slot_id());
+            kprintln_xhci_debug!( "[SLOT {}] Hub fields of the slot context configured.", trb.slot_id());
             complete_request(req, UsbTransferStatus::Completed, 0);
             return;
         }
 
         if !matches!(configuration_state, PendingSetConfiguration) {
-            kprintln!(Warn, "[xHCI] Tried sending SET_CONFIGURATION while not in pending set configuration state.");
+            kprintln_xhci!(Warn, "Tried sending SET_CONFIGURATION while not in pending set configuration state.");
             return;
         }
 
         defer_with_xhci(self.id, 10, move |xhci1| {
             let xhci = xhci1.clone();
 
-            kprintln!(Debug, "[xHCI] Endpoint configured, sending SET_CONFIGURATION request.");
-            let dev_lock = xhci.device_from_slot_id(trb.slot_id());
-            let mut dev = dev_lock.as_ref().unwrap().lock();
-
-            let setup = {
-                let req_lock = req.lock();
-                req_lock.setup_packet
-                    .expect("no setup packet in set configuration request")
+            kprintln_xhci_debug!( "Endpoint configured, sending SET_CONFIGURATION request.");
+            let Some(dev_lock) = xhci.device_from_slot_id(trb.slot_id()) else {
+                kprintln_xhci!(Error, "[SLOT {}] Device disappeared before SET_CONFIGURATION.", trb.slot_id());
+                complete_request(req, UsbTransferStatus::Error, 0);
+                return;
             };
 
-            let phys_address_new = dev.ep0_issue_request(
+            let Some(setup) = req.lock().setup_packet else {
+                kprintln_xhci!(Error, "[SLOT {}] No setup packet in set configuration request.", trb.slot_id());
+                complete_request(req, UsbTransferStatus::Error, 0);
+                return;
+            };
+
+            let mut dev = dev_lock.lock();
+            let issued = dev.ep0_issue_request(
                 xhci.transfer_interrupter_target,
                 setup.bm_request_type,
                 setup.b_request,
@@ -1477,10 +1500,16 @@ impl XHCI {
                 setup.w_value,
                 setup.w_index,
                 None, //you stupid idiot there's no dma buffer inside set configuration
-            )
-                .expect("Failed to issue set configuration request after configure endpoint command.");
+            );
 
-            kprintln!(Debug, "[xHCI] Issued ep0 set configuration request.");
+            let Ok(phys_address_new) = issued else {
+                drop(dev);
+                kprintln_xhci!(Error, "[SLOT {}] Failed to issue set configuration request after configure endpoint command.", trb.slot_id());
+                complete_request(req, UsbTransferStatus::Error, 0);
+                return;
+            };
+
+            kprintln_xhci_debug!( "Issued ep0 set configuration request.");
 
             //this allocates memory, so it could've cause deadlocks if called from IRQ context
             dev.pending_requests.insert(
@@ -1498,9 +1527,9 @@ impl XHCI {
         let context = {
             let mut commands = self.commands.lock();
             if !commands.contains(command_trb_phys) {
-                kprintln!(
+                kprintln_xhci!(
                     Error,
-                    "[xHCI] Command completion points at {:#x}, which is outside the command ring.",
+                    "Command completion points at {:#x}, which is outside the command ring.",
                     command_trb_phys.as_u64()
                 );
                 return;
@@ -1516,9 +1545,9 @@ impl XHCI {
         }
 
         if !command_trb.is_command_trb() {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] Command completion points at a non-command TRB (type {}) at {:#x}.",
+                "Command completion points at a non-command TRB (type {}) at {:#x}.",
                 command_trb.trb_type(),
                 command_trb_phys.as_u64()
             );
@@ -1536,9 +1565,9 @@ impl XHCI {
             Trb::TRB_RESET_ENDPOINT_COMMAND => self.on_endpoint_reset_completion(trb, command_trb),
             Trb::TRB_SET_DEQUEUE_PTR_COMMAND => self.on_set_dequeue_ptr_completion(trb, command_trb),
             other => {
-                kprintln!(
+                kprintln_xhci!(
                     Warn,
-                    "[xHCI] [SLOT {}] Received unhandled command completion event with type {}.",
+                    "[SLOT {}] Received unhandled command completion event with type {}.",
                     trb.slot_id(),
                     other
                 );
@@ -1553,9 +1582,9 @@ impl XHCI {
     ) {
         let slot_id = trb.slot_id();
         let CommandContext::EnableSlot { port_id: port } = context else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Invalid command context type! Expected enable slot, found {:?}.",
+                "[SLOT {}] Invalid command context type! Expected enable slot, found {:?}.",
                 slot_id,
                 context
             );
@@ -1566,9 +1595,9 @@ impl XHCI {
             let mut ports = self.ports.lock();
 
             if trb.completion_code() != TrbCompletionCode::SUCCESS || slot_id == 0 {
-                kprintln!(
+                kprintln_xhci!(
                     Warn,
-                    "[xHCI] [SLOT {}][PORT {}] Handling enable slot command resulted in non successful exit code {}.",
+                    "[SLOT {}][PORT {}] Handling enable slot command resulted in non successful exit code {}.",
                     slot_id, port, trb.completion_code()
                 );
                 self.disable_slot_locked(&mut ports, port);
@@ -1577,9 +1606,9 @@ impl XHCI {
 
             //check if the port has a slot bound to it already to prevent weird stuff
             if let Some(existing) = ports.slot(port) {
-                kprintln!(
+                kprintln_xhci!(
                     Warn,
-                    "[xHCI] [SLOT {}][PORT {}] Port already owns slot {}, giving the duplicate slot back.",
+                    "[SLOT {}][PORT {}] Port already owns slot {}, giving the duplicate slot back.",
                     slot_id,
                     port,
                     existing
@@ -1593,9 +1622,9 @@ impl XHCI {
                         slot_id,
                     },
                 ) {
-                    kprintln!(
+                    kprintln_xhci!(
                         Error,
-                        "[xHCI] [SLOT {}][PORT {}] Sending disable slot command failed: {:?}.",
+                        "[SLOT {}][PORT {}] Sending disable slot command failed: {:?}.",
                         slot_id,
                         port,
                         error
@@ -1605,9 +1634,8 @@ impl XHCI {
                 return;
             }
 
-            kprintln!(
-                Debug,
-                "[xHCI] [PORT {}] Successfully assigned slot {}.",
+            kprintln_xhci_debug!(
+                "[PORT {}] Successfully assigned slot {}.",
                 port,
                 slot_id
             );
@@ -1624,9 +1652,9 @@ impl XHCI {
     unsafe fn allocate_device(self: &Arc<Self>, port: u8, slot_id: u8) {
         let ports = self.ports.lock();
         if ports.slot(port) != Some(slot_id) {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}][PORT {}] Aborting allocation - port state changed.",
+                "[SLOT {}][PORT {}] Aborting allocation - port state changed.",
                 slot_id,
                 port
             );
@@ -1634,9 +1662,8 @@ impl XHCI {
         }
         drop(ports);
 
-        kprintln!(
-            Debug,
-            "[xHCI] [SLOT {}][PORT {}] Began allocating data structures for device.",
+        kprintln_xhci_debug!(
+            "[SLOT {}][PORT {}] Began allocating data structures for device.",
             slot_id,
             port
         );
@@ -1644,9 +1671,9 @@ impl XHCI {
         let port_speed = self.regs.portsc(port).ps_read();
 
         let Some(input_context_dma) = dma_alloc_zeroed(size_of::<InputContext>(), 4096) else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}][PORT {}] Failed to allocate input context.",
+                "[SLOT {}][PORT {}] Failed to allocate input context.",
                 slot_id,
                 port
             );
@@ -1655,9 +1682,9 @@ impl XHCI {
         };
 
         let Some((transfer_ring_dma, transfer_trbs)) = TrbRing::dma_alloc(TRANSFER_RING_TRBS) else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}][PORT {}] Failed to allocate transfer ring for device.",
+                "[SLOT {}][PORT {}] Failed to allocate transfer ring for device.",
                 slot_id,
                 port
             );
@@ -1666,9 +1693,9 @@ impl XHCI {
         };
 
         let Some(device_context_dma) = dma_alloc_zeroed(size_of::<DeviceContext>(), 4096) else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}][PORT {}] Failed to allocate device context for device.",
+                "[SLOT {}][PORT {}] Failed to allocate device context for device.",
                 slot_id,
                 port
             );
@@ -1676,7 +1703,7 @@ impl XHCI {
             return;
         };
 
-        let input_context = &mut *(input_context_dma.virt.as_mut_ptr::<InputContext>());
+        let input_context = input_context_dma.as_mut::<InputContext>();
         let ic_control = input_context.control();
         ic_control.add_context(0);
         ic_control.add_context(1);
@@ -1733,9 +1760,8 @@ impl XHCI {
             .lock()
             .set_context(slot_id as usize, device_context_phys);
 
-        kprintln!(
-            Debug,
-            "[xHCI] [SLOT {}][PORT {}] Successfully allocated required data structures for device.",
+        kprintln_xhci_debug!(
+            "[SLOT {}][PORT {}] Successfully allocated required data structures for device.",
             slot_id,
             port
         );
@@ -1744,9 +1770,9 @@ impl XHCI {
             *address_command_trb.raw(),
             CommandContext::AddressDevice { slot_id },
         ) {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}][PORT {}] Failed to send address device command: {:?}.",
+                "[SLOT {}][PORT {}] Failed to send address device command: {:?}.",
                 slot_id,
                 port,
                 error
@@ -1762,23 +1788,23 @@ impl XHCI {
         command_trb: Trb,
     ) {
         let CommandContext::AddressDevice { slot_id } = context else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] Invalid command context type! Expected AddressDevice found {:?}.",
+                "Invalid command context type! Expected AddressDevice found {:?}.",
                 context
             );
             return;
         };
 
         if slot_id == 0 {
-            kprintln!(Error, "[xHCI] [SLOT 0] 0 is not a valid slot ID inside command context!");
+            kprintln_xhci!(Error, "[SLOT 0] 0 is not a valid slot ID inside command context!");
             return;
         }
 
         let Some(device) = self.device_from_slot_id(slot_id) else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Tried handling address device completion when device is not present in software!",
+                "[SLOT {}] Tried handling address device completion when device is not present in software!",
                 slot_id
             );
             return;
@@ -1789,30 +1815,28 @@ impl XHCI {
         match trb.completion_code() {
             TrbCompletionCode::SUCCESS => {}
             TrbCompletionCode::CONTEXT_STATE_ERROR => {
-                kprintln!(Error, "[xHCI] [SLOT {}] [PORT {}] Not in enabled state!", slot_id, port);
+                kprintln_xhci!(Error, "[SLOT {}] [PORT {}] Not in enabled state!", slot_id, port);
                 return;
             }
             TrbCompletionCode::USB_TRANSACTION_ERROR => {
-                kprintln!(
-                    Debug,
-                    "[xHCI] [SLOT {}] [PORT {}] SET_ADDRESS request was not successful. The device was likely removed.",
+                kprintln_xhci_debug!(
+                    "[SLOT {}] [PORT {}] SET_ADDRESS request was not successful. The device was likely removed.",
                     slot_id, port
                 );
                 self.disable_slot(port);
                 return;
             }
             TrbCompletionCode::SLOT_NOT_ENABLED_ERROR => {
-                kprintln!(
-                    Debug,
-                    "[xHCI] [SLOT {}] [PORT {}] Was not enabled by enable slot command. The device was likely removed.",
+                kprintln_xhci_debug!(
+                    "[SLOT {}] [PORT {}] Was not enabled by enable slot command. The device was likely removed.",
                     slot_id, port
                 );
                 return;
             }
             code => {
-                kprintln!(
+                kprintln_xhci!(
                     Error,
-                    "[xHCI] [SLOT {}] [PORT {}] Address Device Command FAILED with code: {}.",
+                    "[SLOT {}] [PORT {}] Address Device Command FAILED with code: {}.",
                     slot_id,
                     port,
                     code
@@ -1825,9 +1849,9 @@ impl XHCI {
         let bsr = match AddressDeviceCommandTrb::from_raw(command_trb) {
             Ok(command) => command.bsr(),
             Err(error) => {
-                kprintln!(
+                kprintln_xhci!(
                     Error,
-                    "[xHCI] [SLOT {}] Cannot parse the completed address device command: {:?}.",
+                    "[SLOT {}] Cannot parse the completed address device command: {:?}.",
                     slot_id,
                     error
                 );
@@ -1840,18 +1864,17 @@ impl XHCI {
             return;
         }
 
-        kprintln!(
-            Debug,
-            "[xHCI] [SLOT {}] Successfully handled address device command.",
+        kprintln_xhci_debug!(
+            "[SLOT {}] Successfully handled address device command.",
             slot_id
         );
 
         //now, we need to obtain the max packet size. for all the speeds except for full speed
         //this is already known and set before
         let Some(device_descriptor_8b) = dma_alloc_zeroed(8, 8) else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Failed to allocate memory for 8bytes of usb descriptor.",
+                "[SLOT {}] Failed to allocate memory for 8bytes of usb descriptor.",
                 slot_id
             );
             return;
@@ -1888,9 +1911,9 @@ impl XHCI {
         match issued {
             Ok(_) => self.regs.ring_doorbell(slot_id, EP0_DCI, 0),
             Err(error) => {
-                kprintln!(
+                kprintln_xhci!(
                     Error,
-                    "[xHCI] [SLOT {}] Failed to request the device descriptor: {:?}.",
+                    "[SLOT {}] Failed to request the device descriptor: {:?}.",
                     slot_id,
                     error
                 );
@@ -1907,9 +1930,9 @@ impl XHCI {
 
         let ep0_state = output_ep0.get_ep_state();
         if ep0_state != EndpointState::RUNNING {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] EP0 is in state {:?} after Address Device, expected RUNNING.",
+                "[SLOT {}] EP0 is in state {:?} after Address Device, expected RUNNING.",
                 slot_id,
                 ep0_state
             );
@@ -1921,9 +1944,9 @@ impl XHCI {
 
         if bsr {
             if slot_state != SlotState::DEFAULT || usb_address != 0 {
-                kprintln!(
+                kprintln_xhci!(
                     Error,
-                    "[xHCI] [SLOT {}] Expected DEFAULT state with address 0 after BSR Address Device, got {:?}/{}.",
+                    "[SLOT {}] Expected DEFAULT state with address 0 after BSR Address Device, got {:?}/{}.",
                     slot_id, slot_state, usb_address
                 );
                 return false;
@@ -1932,9 +1955,9 @@ impl XHCI {
         }
 
         if slot_state != SlotState::ADDRESSED || usb_address == 0 {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Expected ADDRESSED state with a non-zero address, got {:?}/{}.",
+                "[SLOT {}] Expected ADDRESSED state with a non-zero address, got {:?}/{}.",
                 slot_id,
                 slot_state,
                 usb_address
@@ -1942,9 +1965,8 @@ impl XHCI {
             return false;
         }
 
-        kprintln!(
-            Debug,
-            "[xHCI] [SLOT {}] SET_ADDRESS request completed successfully.",
+        kprintln_xhci_debug!(
+            "[SLOT {}] SET_ADDRESS request completed successfully.",
             slot_id
         );
         true
@@ -1960,24 +1982,24 @@ impl XHCI {
             slot_id,
         } = context
         else {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] Invalid command context type! Expected SlotDisable found {:?}.",
+                "Invalid command context type! Expected SlotDisable found {:?}.",
                 context
             );
             return;
         };
 
         if trb.completion_code() == TrbCompletionCode::SLOT_NOT_ENABLED_ERROR {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [SLOT {}] [PORT {}] Disabling slot failed! Slot has not been enabled by an Enable Slot command.",
+                "[SLOT {}] [PORT {}] Disabling slot failed! Slot has not been enabled by an Enable Slot command.",
                 slot_id, port
             );
         } else if trb.completion_code() != TrbCompletionCode::SUCCESS {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] [PORT {}]  Disabling slot failed! Unexpected trb completion code {}.",
+                "[SLOT {}] [PORT {}]  Disabling slot failed! Unexpected trb completion code {}.",
                 slot_id,
                 port,
                 trb.completion_code()
@@ -1985,18 +2007,16 @@ impl XHCI {
             return;
         }
 
-        kprintln!(
-            Debug,
-            "[xHCI] [SLOT {}] [PORT {}]  Received successful Disable Slot command trb completion code.",
+        kprintln_xhci_debug!(
+            "[SLOT {}] [PORT {}]  Received successful Disable Slot command trb completion code.",
             slot_id,
             port
         );
 
         self.release_slot(port, slot_id);
 
-        kprintln!(
-            Debug,
-            "[xHCI] [SLOT {}] [PORT {}]  Finished deallocating slot's memory.",
+        kprintln_xhci_debug!(
+            "[SLOT {}] [PORT {}]  Finished deallocating slot's memory.",
             slot_id,
             port
         );
@@ -2004,7 +2024,7 @@ impl XHCI {
 
     fn take_halted_request_and_submit_error(&self, slot_id: u8, dci: u8) -> Result<(), ()> {
         let Some(dev) = self.device_from_slot_id(slot_id) else {
-            kprintln!(Error, "[xHCI] No device with slot={} exists to take halted request from.", slot_id);
+            kprintln_xhci!(Error, "No device with slot={} exists to take halted request from.", slot_id);
             return Err(());
         };
 
@@ -2024,7 +2044,7 @@ impl XHCI {
         };
 
         let Some(req) = req else {
-            kprintln!(Debug, "[xHCI] No halted request exists for device slot={}, dci={}.", slot_id, dci);
+            kprintln_xhci_debug!( "No halted request exists for device slot={}, dci={}.", slot_id, dci);
             return Err(());
         };
 
@@ -2072,12 +2092,12 @@ impl XHCI {
         trb.set_stream_id(0); //thats for bulk USB3 transfers only, so i dont care about that for now
         trb.set_dequeue_cycle_state(dequeue_cycle_state);
 
-        kprintln!(Debug, "[xHCI] [DCI={}] Setting TR dequeue pointer for EP to {:#011x}", dci, address.as_u64());
+        kprintln_xhci_debug!( "[DCI={}] Setting TR dequeue pointer for EP to {:#011x}", dci, address.as_u64());
         if let Err(error) = self.send_command(
             *trb.raw(),
             CommandContext::Empty
         ) {
-            kprintln!(Error, "[xHCI] [DCI={}] Failed to issue SET_TR_DEQUEUE_POINTER command for endpoint.", dci);
+            kprintln_xhci!(Error, "[DCI={}] Failed to issue SET_TR_DEQUEUE_POINTER command for endpoint.", dci);
             let _ = self.take_halted_request_and_submit_error(slot_id, dci);
         }
     }
@@ -2086,7 +2106,7 @@ impl XHCI {
         let command = match SetTrDequeuePointerCommandTrb::from_raw(command_trb) {
             Ok(cmd) => cmd,
             Err(err) => {
-                kprintln!(Error, "[xHCI] SetTrDequeuePointer parse error: {:?}", err);
+                kprintln_xhci!(Error, "SetTrDequeuePointer parse error: {:?}", err);
                 return;
             }
         };
@@ -2097,17 +2117,17 @@ impl XHCI {
 
         match code {
             TrbCompletionCode::TRB_ERROR => {
-                kprintln!(Error, "[xHCI] [DCI={}] Invalid MaxPStreams value (> 0) - TRB_ERROR.", dci);
+                kprintln_xhci!(Error, "[DCI={}] Invalid MaxPStreams value (> 0) - TRB_ERROR.", dci);
             },
             TrbCompletionCode::CONTEXT_STATE_ERROR => {
-                kprintln!(Error, "[xHCI] [DCI={}] EP state != Stopped or Error or slot={} not configured - CONTEXT_STATE_ERROR.", dci, slot_id);
+                kprintln_xhci!(Error, "[DCI={}] EP state != Stopped or Error or slot={} not configured - CONTEXT_STATE_ERROR.", dci, slot_id);
             },
             TrbCompletionCode::SLOT_NOT_ENABLED_ERROR => {
-                kprintln!(Error, "[xHCI] [DCI={}] Slot {} not was not enabled.", dci, slot_id);
+                kprintln_xhci!(Error, "[DCI={}] Slot {} not was not enabled.", dci, slot_id);
             },
             TrbCompletionCode::SUCCESS => {},
             _ => {
-                kprintln!(Error, "[xHCI] [DCI={}] Unhandled error in set_dequeue_ptr command.", dci);
+                kprintln_xhci!(Error, "[DCI={}] Unhandled error in set_dequeue_ptr command.", dci);
             }
         }
 
@@ -2122,19 +2142,22 @@ impl XHCI {
             return;
         }
 
-        kprintln!(Debug, "[xHCI] Completed SET_DEQUEUE_PTR command for EP with DCI={}", dci);
+        kprintln_xhci_debug!( "Completed SET_DEQUEUE_PTR command for EP with DCI={}", dci);
 
         let (request, is_within_attempts) = {
             let dev_lock = match self.device_from_slot_id(slot_id) {
                 None => {
-                    kprintln!(Error, "[xHCI] No device present at slot {}.", slot_id);
+                    kprintln_xhci!(Error, "No device present at slot {}.", slot_id);
                     return;
                 },
                 Some(x) => x
             };
             let mut dev = dev_lock.lock();
 
-            let ring = dev.transfer_rings[dci as usize].as_mut().unwrap();
+            let Some(ring) = dev.transfer_rings.get_mut(dci as usize).and_then(|ring| ring.as_mut()) else {
+                kprintln_xhci!(Error, "[SLOT {}] No transfer ring at DCI={} for SET_DEQUEUE_PTR completion.", slot_id, dci);
+                return;
+            };
 
             if matches!(
                 ring.halt_reason,
@@ -2143,20 +2166,18 @@ impl XHCI {
                 XhciHaltReason::SplitTransactionError |
                 XhciHaltReason::UnknownError
             ) {
-                kprintln!(Debug, "[xHCI] Skipping retrying the request - halt reason was {:?}.", ring.halt_reason);
+                kprintln_xhci_debug!( "Skipping retrying the request - halt reason was {:?}.", ring.halt_reason);
                 let status = if ring.halt_reason == XhciHaltReason::Stall {
                     UsbTransferStatus::Stalled
                 } else {
                     UsbTransferStatus::Error
                 };
                 ring.halt_reason = XhciHaltReason::None;
-                let req = dev.take_halted_request(dci);
-
-                if req.is_none() {
+                let Some(req) = dev.take_halted_request(dci) else {
                     return;
-                }
+                };
 
-                complete_request(req.unwrap(), status, 0);
+                complete_request(req, status, 0);
                 return;
             }
 
@@ -2171,22 +2192,19 @@ impl XHCI {
             (dev.take_halted_request(dci), within_attempts)
         };
 
-        if request.is_none() {
+        let Some(request) = request else {
             return;
-        }
+        };
 
         //the request has been failing for too many times, so just error it
         if !is_within_attempts {
-            complete_request(request.unwrap(), UsbTransferStatus::Error, 0);
+            complete_request(request, UsbTransferStatus::Error, 0);
             return;
         }
 
-        let submitted = self.submit_request(request.unwrap());
-        if submitted.is_ok() {
-            return;
+        if let Err(error) = self.submit_request(request) {
+            kprintln_xhci!(Error, "[DCI={}] Submitting halted request failed: \"{}\".", dci, error);
         }
-
-        kprintln!(Error, "[xHCI] [DCI={}] Submitting halted request failed: \"{}\".", dci, submitted.unwrap_err());
     }
 
     fn reset_endpoint(&self, slot_id: u8, endpoint_dci: u8, transfer_state_preserve: bool) {
@@ -2195,19 +2213,19 @@ impl XHCI {
         reset_endpoint_trb.set_slot_id(slot_id);
         reset_endpoint_trb.set_tsp(transfer_state_preserve);
 
-        kprintln!(Debug, "[xHCI] [SLOT{}] Resetting endpoint with dci={}.", slot_id, endpoint_dci);
+        kprintln_xhci_debug!( "[SLOT{}] Resetting endpoint with dci={}.", slot_id, endpoint_dci);
         if let Err(error) = self.send_command(
             *reset_endpoint_trb.raw(),
             CommandContext::Empty
         ) {
-           kprintln!(Error, "[xHCI] [SLOT{}] Failed to send reset endpoint command with dci={}.", slot_id, endpoint_dci);
+           kprintln_xhci!(Error, "[SLOT{}] Failed to send reset endpoint command with dci={}.", slot_id, endpoint_dci);
             let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
         }
     }
 
     fn on_endpoint_reset_completion(&self, command_completion_trb: CommandCompletionEventTrb, command_trb: Trb) {
         let Ok(command) = ResetEndpointCommandTrb::from_raw(command_trb) else {
-            kprintln!("[xHCI] Failed to parse reset endpoint TRB.");
+            kprintln_xhci!(Info, "Failed to parse reset endpoint TRB.");
             return;
         };
         let slot_id = command_completion_trb.slot_id();
@@ -2215,40 +2233,40 @@ impl XHCI {
 
         let (slot_state, ep_state, halt_reason) = {
             let Some(dev_lock) = self.device_from_slot_id(slot_id) else {
-                kprintln!("[xHCI] No device present at slot - on_endpoint_reset.");
+                kprintln_xhci!(Info, "No device present at slot - on_endpoint_reset.");
                 return;
             };
-            let mut dev = dev_lock.lock();
+            let dev = dev_lock.lock();
 
-            let halt_reason = dev.
-                transfer_rings[endpoint_dci as usize]
-                .as_ref()
-                .unwrap()
-                .halt_reason;
+            let Some(ring) = dev.transfer_rings.get(endpoint_dci as usize).and_then(|ring| ring.as_ref()) else {
+                kprintln_xhci!(Error, "[SLOT {}] No transfer ring at DCI={} for reset endpoint completion.", slot_id, endpoint_dci);
+                return;
+            };
+            let halt_reason = ring.halt_reason;
 
-            let slot_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<SlotContext>() };
-            let device_context = unsafe { &*(dev.device_context_dma.virt.as_ptr::<DeviceContext>()) };
+            let device_context = dev.output_context();
+            let slot_context = device_context.slot();
             let ep_state = device_context.endpoint(endpoint_dci as usize, self.regs.context_size).get_ep_state();
 
             (slot_context.get_slot_state(), ep_state, halt_reason)
         };
 
         if slot_state == SlotState::DISABLED {
-            kprintln!(Error, "[xHCI] [SLOT {}] Tried executing reset endpoint command on invalid slot state={}.", slot_id, slot_state);
+            kprintln_xhci!(Error, "[SLOT {}] Tried executing reset endpoint command on invalid slot state={}.", slot_id, slot_state);
             let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
             return;
         }
 
         if command_completion_trb.completion_code() == TrbCompletionCode::CONTEXT_STATE_ERROR {
             if ep_state != EndpointState::HALTED {
-                kprintln!(Error, "[xHCI] [SLOT {}] Tried executing reset endpoint command on endpoint not in halted state (state={}).", slot_id, slot_state);
+                kprintln_xhci!(Error, "[SLOT {}] Tried executing reset endpoint command on endpoint not in halted state (state={}).", slot_id, slot_state);
             }
             let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
             return;
         }
 
         if command_completion_trb.completion_code() != TrbCompletionCode::SUCCESS {
-            kprintln!(Error, "[xHCI] [SLOT {}] Endpoint reset command failed with status {}", slot_id, command_completion_trb.completion_code());
+            kprintln_xhci!(Error, "[SLOT {}] Endpoint reset command failed with status {}", slot_id, command_completion_trb.completion_code());
             let _ = self.take_halted_request_and_submit_error(slot_id, endpoint_dci);
             return;
         }
@@ -2263,12 +2281,20 @@ impl XHCI {
         //the next step is sending a set tr dequeue pointer, to skip past the trb that points to
         //the broken transfer
         let (new_addr, dequeue_cycle_state) = {
-            let dev_lock = self.device_from_slot_id(slot_id)
-                .expect("[xHCI] No device present at slot - on_endpoint_reset.");
+            let Some(dev_lock) = self.device_from_slot_id(slot_id) else {
+                kprintln_xhci!(Error, "[SLOT {}] No device present at slot - on_endpoint_reset.", slot_id);
+                return;
+            };
             let dev = dev_lock.lock();
-            let ring = dev.transfer_rings[endpoint_dci as usize].as_ref().unwrap();
+            let Some(ring) = dev.transfer_rings.get(endpoint_dci as usize).and_then(|ring| ring.as_ref()) else {
+                kprintln_xhci!(Error, "[SLOT {}] No transfer ring at DCI={} to skip the broken TD on.", slot_id, endpoint_dci);
+                return;
+            };
 
-            let new_addr = ring.ring.get_enqueue_phys().unwrap(); //always valid for this ring
+            let Ok(new_addr) = ring.ring.get_enqueue_phys() else {
+                kprintln_xhci!(Error, "[SLOT {}] Cannot read enqueue pointer of DCI={}.", slot_id, endpoint_dci);
+                return;
+            };
             let dequeue_cycle_state = ring.ring.cycle_state();
             (new_addr, dequeue_cycle_state)
         };
@@ -2280,9 +2306,9 @@ impl XHCI {
         let slot_id = trb.slot_id();
 
         if trb.completion_code() != TrbCompletionCode::SUCCESS {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Evaluate context command completed with completion code {}.",
+                "[SLOT {}] Evaluate context command completed with completion code {}.",
                 slot_id,
                 trb.completion_code()
             );
@@ -2300,9 +2326,9 @@ impl XHCI {
         let endpoint_dci = trb.endpoint_id();
 
         let Some(device) = self.device_from_slot_id(slot_id) else {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [SLOT {}] Transfer event for a device not present in software.",
+                "[SLOT {}] Transfer event for a device not present in software.",
                 slot_id
             );
             return;
@@ -2327,9 +2353,9 @@ impl XHCI {
             }
 
             code => {
-                kprintln!(
+                kprintln_xhci!(
                     Error,
-                    "[xHCI] [SLOT {}] Transfer failed with completion code {}.",
+                    "[SLOT {}] Transfer failed with completion code {}.",
                     slot_id,
                     code
                 );
@@ -2338,8 +2364,7 @@ impl XHCI {
                 //just check the endpoint state and determine if soft or hard reset it
                 let endpoint_state = {
                     let dev = device.lock();
-                    let device_context = &*(dev.device_context_dma.virt.as_ptr::<DeviceContext>());
-                    device_context.endpoint(endpoint_dci as usize, self.regs.context_size).get_ep_state()
+                    dev.output_context().endpoint(endpoint_dci as usize, self.regs.context_size).get_ep_state()
                 };
 
                 if endpoint_state == EndpointState::HALTED {
@@ -2351,9 +2376,9 @@ impl XHCI {
                 //ERROR state means TRB_ERROR, which is an invalid trb constructed by the software
                 if endpoint_state == EndpointState::ERROR {
                     let failed_trb = Trb::from_trb_phys_addr(event_trb);
-                    kprintln!(
+                    kprintln_xhci!(
                         Error,
-                        "[xHCI] [SLOT {}] [DCI={}] Endpoint entered the Error state - malformed TRB. \
+                        "[SLOT {}] [DCI={}] Endpoint entered the Error state - malformed TRB. \
                         completion code={}, TRB at {:#011x}: type={} parameter={:#018x} status={:#010x} control={:#010x}, residual={}.",
                         slot_id,
                         endpoint_dci,
@@ -2374,7 +2399,7 @@ impl XHCI {
                             Some(ring) => {
                                 ring.halted_request = request;
                                 ring.halt_reason = XhciHaltReason::UnknownError;
-                                Some((ring.ring.get_enqueue_phys().unwrap(), ring.ring.cycle_state()))
+                                ring.ring.get_enqueue_phys().ok().map(|address| (address, ring.ring.cycle_state()))
                             }
                             None => None,
                         }
@@ -2402,9 +2427,8 @@ impl XHCI {
                 self.on_data_transfer_completion(&device, slot_id, event_trb, status, residual, endpoint_dci)
             }
             other => {
-                kprintln!(
-                    Debug,
-                    "[xHCI] [SLOT {}] Transfer event for unhandled TRB type {} with completion code {}.",
+                kprintln_xhci_debug!(
+                    "[SLOT {}] Transfer event for unhandled TRB type {} with completion code {}.",
                     slot_id,
                     other,
                     completion_code
@@ -2425,8 +2449,8 @@ impl XHCI {
         //soft retry isnt allowed behind a HS hub TT and isoch endpoints
         let soft_reset_requested = soft_reset_requested && {
             let dev = device.lock();
-            let slot_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<SlotContext>() };
-            let device_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<DeviceContext>() };
+            let device_context = dev.output_context();
+            let slot_context = device_context.slot();
             let ep_type = device_context.endpoint(dci as usize, self.regs.context_size).get_ep_type();
 
             let is_behind_tt = slot_context.get_parent_hub_slot() != 0;
@@ -2434,8 +2458,8 @@ impl XHCI {
                 || ep_type == EndpointContext::EP_TYPE_ISOCH_OUT;
 
             if is_behind_tt || is_isoch {
-                kprintln!(Debug,
-                    "[xHCI] [SLOT {}] [DCI={}] Soft retry not allowed (behind TT={}, isoch={}), doing a hard reset.",
+                kprintln_xhci_debug!(
+                    "[SLOT {}] [DCI={}] Soft retry not allowed (behind TT={}, isoch={}), doing a hard reset.",
                     slot_id, dci, is_behind_tt, is_isoch
                 );
             }
@@ -2448,7 +2472,7 @@ impl XHCI {
 
             let (is_soft_reset, halt_reason) = {
                 let Some(endpoint) = dev.transfer_rings[dci as usize].as_mut() else {
-                    kprintln!(Error, "[xHCI] No endpoint found at DCI={}.", dci);
+                    kprintln_xhci!(Error, "No endpoint found at DCI={}.", dci);
                     return;
                 };
 
@@ -2460,8 +2484,8 @@ impl XHCI {
                 };
 
                 if soft_reset_requested && !is_soft_reset {
-                    kprintln!(Error,
-                        "[xHCI] Failed to soft reset the endpoint dci={} after {} tries.",
+                    kprintln_xhci!(Error,
+                        "Failed to soft reset the endpoint dci={} after {} tries.",
                         dci,
                         MAX_EP_HALT_ATTEMPTS
                     );
@@ -2475,7 +2499,7 @@ impl XHCI {
                     TrbCompletionCode::STALL_ERROR => XhciHaltReason::Stall,
                     TrbCompletionCode::SPLIT_TRANSACTION_ERROR => XhciHaltReason::SplitTransactionError,
                     _ => {
-                        kprintln!(Error, "[xHCI] Unhandled error type.");
+                        kprintln_xhci!(Error, "Unhandled error type.");
                         XhciHaltReason::UnknownError
                     }
                 };
@@ -2491,8 +2515,8 @@ impl XHCI {
             } else {
                 let request = dev.take_pending(event_trb);
                 match request {
-                    None => { kprintln!(Debug, "[xHCI] Transfer TRB didn't point to a request at DCI={}.", dci); }
-                    Some(_) => { kprintln!(Debug, "[xHCI] Took pending request from endpoint DCI={} and halted it.", dci); }
+                    None => { kprintln_xhci_debug!( "Transfer TRB didn't point to a request at DCI={}.", dci); }
+                    Some(_) => { kprintln_xhci_debug!( "Took pending request from endpoint DCI={} and halted it.", dci); }
                 }
                 request
             };
@@ -2524,27 +2548,26 @@ impl XHCI {
     }
 
     unsafe fn on_pending_set_configuration(&self, pending: Arc<IrqMutex<UsbTransferRequest>>, xhci_device: &Arc<IrqMutex<XhciDevice>>) {
-        kprintln!(Debug, "[xHCI] Began endpoint configuration for device.");
+        kprintln_xhci_debug!( "Began endpoint configuration for device.");
 
         let target_dev = {
             let req = pending.lock();
             req.target_device.clone()
         };
 
-        if target_dev.configuration_tree.get().is_none() {
-            kprintln!(Error, "[xHCI] Device has no interfaces present inside configuration descriptor.");
+        let Some(configuration_tree) = target_dev.configuration_tree.get() else {
+            kprintln_xhci!(Error, "Device has no interfaces present inside configuration descriptor.");
             return;
-        }
+        };
 
         let context_size = self.regs.context_size;
 
         let mut dev = xhci_device.lock();
-        let input_context = &mut *dev.input_context_dma.virt.as_mut_ptr::<InputContext>();
+        let input_context = dev.input_context_dma.as_mut::<InputContext>();
 
         input_context.control().reset_flags();
 
-        let output_context = &mut *dev.device_context_dma.virt.as_mut_ptr::<DeviceContext>();
-        let output_slot_context = output_context.slot();
+        let output_slot_context = dev.output_context().slot();
         let input_slot_context = input_context.slot::<SlotContext>(context_size);
 
 
@@ -2556,7 +2579,7 @@ impl XHCI {
         let slot_context = input_context.slot::<SlotContext>(context_size);
         let mut max_dci = slot_context.get_context_entries();
 
-        for interface in &target_dev.configuration_tree.get().unwrap().interfaces {
+        for interface in &configuration_tree.interfaces {
             for ep in &interface.endpoints {
                 let (transfer_ring_dma, trbs) = TrbRing::dma_alloc(TRANSFER_RING_TRBS)
                     .expect("Dma alloc for transfer ring for new endpoint failed.");
@@ -2622,7 +2645,7 @@ impl XHCI {
                     2 => if is_in { 6 } else { 2 }, // bulk
                     3 => if is_in { 7 } else { 3 }, // interrupt
                     a => {
-                        kprintln!(Error, "[xHCI] Invalid ep type {}.", a);
+                        kprintln_xhci!(Error, "Invalid ep type {}.", a);
                         continue;
                     },
                 };
@@ -2648,10 +2671,14 @@ impl XHCI {
         input_context.control().add_context(0);
 
         let deconfigure = false;
-        let phys = self.issue_configure_endpoint_command(dev.slot_id, dev.input_context_dma.phys.as_u64(), deconfigure)
-            .expect("Sending configure endpoint command failed");
+        let Ok(phys) = self.issue_configure_endpoint_command(dev.slot_id, dev.input_context_dma.phys.as_u64(), deconfigure) else {
+            dev.configuration_state = XhciDeviceConfigurationState::Unconfigured;
+            drop(dev);
+            complete_request(pending, UsbTransferStatus::Error, 0);
+            return;
+        };
 
-        kprintln!(Debug, "[xHCI] Sent configure endpoint command.");
+        kprintln_xhci_debug!( "Sent configure endpoint command.");
 
         //insert that to device's pending requets, so that we can use it inside command completion handler
         dev.pending_requests.insert(
@@ -2663,32 +2690,42 @@ impl XHCI {
 
     unsafe fn configure_usb_hub(self: &Arc<Self>, device: &Arc<IrqMutex<XhciDevice>>, is_super_speed: bool, pending: Option<Arc<IrqMutex<UsbTransferRequest>>>) {
         let Some(pending) = pending else {
-            kprintln!(Error, "[xHCI] No pending hub descriptor request to configure the hub with.");
+            kprintln_xhci!(Error, "No pending hub descriptor request to configure the hub with.");
             return;
         };
 
-        let (number_of_ports, is_multi_tt) = {
+        //the pending request stays locked inside, so a failure is only completed after the block
+        let parsed_hub_fields = 'parse: {
             let lock = pending.lock();
-            let dma = lock.dma_buffer.as_ref().unwrap();
+            let Some(dma) = lock.dma_buffer.as_ref() else {
+                kprintln_xhci!(Error, "Hub descriptor request has no dma buffer.");
+                break 'parse None;
+            };
 
             let num_ports = if is_super_speed {
-                let desc = dma.as_mut::<Usb3HubDescriptor>();
+                let desc = dma.as_ref::<Usb3HubDescriptor>();
                 desc.b_nbr_ports
             } else {
-                let slice = &*slice_from_raw_parts(
-                    dma.virt.as_mut_ptr::<u8>(), dma.layout.size()
-                );
-
-               let desc = Usb2HubDescriptor::parse_from_dma(slice)
-                   .expect("Failed to parse usb2 hub descriptor.");
+                let Some(desc) = Usb2HubDescriptor::parse_from_dma(dma.as_bytes()) else {
+                    kprintln_xhci!(Error, "Failed to parse usb2 hub descriptor.");
+                    break 'parse None;
+                };
                 desc.b_nbr_ports
             };
 
             let usb_dev = lock.target_device.clone();
-            let protocol = usb_dev.device_descriptor.get().unwrap().b_device_protocol();
+            let Some(device_descriptor) = usb_dev.device_descriptor.get() else {
+                kprintln_xhci!(Error, "Hub has no device descriptor.");
+                break 'parse None;
+            };
 
             //if b_device_protocol is 2, it means that hub is multi-tt
-            (num_ports, protocol == 0x02)
+            Some((num_ports, device_descriptor.b_device_protocol() == 0x02))
+        };
+
+        let Some((number_of_ports, is_multi_tt)) = parsed_hub_fields else {
+            complete_request(pending, UsbTransferStatus::Error, 0);
+            return;
         };
         let mut dev = device.lock();
         let slot_id = dev.slot_id;
@@ -2715,7 +2752,7 @@ impl XHCI {
             }
             Err(error) => {
                 drop(dev);
-                kprintln!(Error, "[xHCI] [SLOT {}] Issuing configure endpoint command for hub failed: {:?}.", slot_id, error);
+                kprintln_xhci!(Error, "[SLOT {}] Issuing configure endpoint command for hub failed: {:?}.", slot_id, error);
                 complete_request(pending, UsbTransferStatus::Error, 0);
             }
         }
@@ -2771,9 +2808,9 @@ impl XHCI {
             return;
         }
 
-        kprintln!(
+        kprintln_xhci!(
             Warn,
-            "[xHCI] [SLOT {}] Control transfer finished with nothing waiting for it.",
+            "[SLOT {}] Control transfer finished with nothing waiting for it.",
             slot_id
         );
     }
@@ -2801,9 +2838,9 @@ impl XHCI {
             }
 
             let Some(request) = dev.take_pending(event_trb) else {
-                kprintln!(
+                kprintln_xhci!(
                 Warn,
-                "[xHCI] [SLOT {}] Data transfer finished with nothing waiting for it.",
+                "[SLOT {}] Data transfer finished with nothing waiting for it.",
                 slot_id
             );
                 return;
@@ -2824,9 +2861,9 @@ impl XHCI {
         let port = device.lock().port;
 
         if status != UsbTransferStatus::Completed {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] [PORT {}] Reading the device descriptor for the max packet size failed.",
+                "[SLOT {}] [PORT {}] Reading the device descriptor for the max packet size failed.",
                 slot_id,
                 port
             );
@@ -2839,9 +2876,9 @@ impl XHCI {
 
         let Some(max_packet_size) = reported.and_then(|value| max_packet_size_0(port_speed, value))
         else {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] [SLOT {}] Device reported an unusable EP0 max packet size, keeping the programmed one.",
+                "[SLOT {}] Device reported an unusable EP0 max packet size, keeping the programmed one.",
                 slot_id
             );
             self.register_with_usb_core(slot_id);
@@ -2849,17 +2886,16 @@ impl XHCI {
         };
 
         let input_context_phys = {
-            let dev = device.lock();
-            let input_context = &mut *(dev.input_context_dma.virt.as_mut_ptr::<InputContext>());
+            let mut dev = device.lock();
+            let input_context = dev.input_context_mut();
             let ep_0 = input_context.endpoint::<EndpointContext>(2, self.regs.context_size);
             let programmed = ep_0.get_max_packet_size();
 
             if programmed == max_packet_size {
                 None
             } else {
-                kprintln!(
-                    Debug,
-                    "[xHCI] [SLOT {}] Correcting EP0 max packet size from {} to {}.",
+                kprintln_xhci_debug!(
+                    "[SLOT {}] Correcting EP0 max packet size from {} to {}.",
                     slot_id,
                     programmed,
                     max_packet_size
@@ -2897,9 +2933,9 @@ impl XHCI {
         let result = self.send_command(*configure_endpoint_trb.raw(), CommandContext::Empty);
 
         if let Err(error) = &result {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Sending configure endpoint command failed: {:?}",
+                "[SLOT {}] Sending configure endpoint command failed: {:?}",
                 slot_id,
                 error
             );
@@ -2916,18 +2952,20 @@ impl XHCI {
         let addr = self.send_command(*evaluate_context_trb.raw(), CommandContext::Empty);
 
         if let Err(error) = addr {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [SLOT {}] Sending evaluate context command failed: {:?}",
+                "[SLOT {}] Sending evaluate context command failed: {:?}",
                 slot_id,
                 error
             );
 
-            let port = { self.devices.lock().get(&slot_id).unwrap().lock().port };
-            self.disable_slot(port);
+            let port = self.devices.lock().get(&slot_id).map(|device| device.lock().port);
+            if let Some(port) = port {
+                self.disable_slot(port);
+            }
             None
         } else {
-            Some(addr.unwrap())
+            addr.ok()
         }
     }
 
@@ -2937,11 +2975,11 @@ impl XHCI {
 
         let (port_speed, port) = {
             let dev_list = self.devices.lock();
-            let port = dev_list.get(&slot_id)
-                .as_mut()
-                .expect("No device found to register in usb core.")
-                .lock()
-                .port;
+            let Some(device) = dev_list.get(&slot_id) else {
+                kprintln_xhci!(Error, "[SLOT {}] No device found to register in usb core.", slot_id);
+                return;
+            };
+            let port = device.lock().port;
 
             let ps = PortStatusControl::from_port(self.regs.operational_base, port).ps_read();
             (UsbSpeed::from_xhci_port_speed(ps), port)
@@ -3072,7 +3110,7 @@ fn schedule_debounce(xhci: &XHCI, port: u8, generation: usize) {
         } else if portsc.pls_read() == U3 {
             unsafe { xhci.resume_port(&mut ports, port) };
         } else {
-            kprintln!(Debug, "[xHCI] [PORT {}] Debounce elapsed, resetting port.", port);
+            kprintln_xhci_debug!( "[PORT {}] Debounce elapsed, resetting port.", port);
             ports.set_state(port, PortState::ResetInProgress { attempts: 1 });
             schedule_reset_timeout(xhci, port, 1);
             xhci.regs.portsc_issue_reset(port);
@@ -3096,7 +3134,7 @@ fn schedule_reset_timeout(xhci: &XHCI, port: u8, current_attempt: u8) {
         let portsc = xhci.regs.portsc(port);
 
         if portsc.ccs_read() && attempts < PORT_RESET_MAX_ATTEMPTS {
-            kprintln!(Warn, "[xHCI] Port {} reset timed out, retry {}", port, attempts + 1);
+            kprintln_xhci!(Warn, "Port {} reset timed out, retry {}", port, attempts + 1);
             ports.set_state(
                 port,
                 PortState::ResetInProgress {
@@ -3106,9 +3144,9 @@ fn schedule_reset_timeout(xhci: &XHCI, port: u8, current_attempt: u8) {
             schedule_reset_timeout(xhci, port, attempts + 1);
             xhci.regs.portsc_issue_reset(port);
         } else {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] Port {} reset timed out fatally. PORTSC={:#010x}",
+                "Port {} reset timed out fatally. PORTSC={:#010x}",
                 port,
                 portsc.raw()
             );
@@ -3131,7 +3169,7 @@ fn schedule_resume_to_rexit(xhci: &XHCI, port: u8) {
         }
 
         xhci.regs.portsc_set_link_state(port, U0);
-        kprintln!(Debug, "[xHCI] [PORT {}] Transitioning port to RExit state.", port);
+        kprintln_xhci_debug!( "[PORT {}] Transitioning port to RExit state.", port);
 
         ports.set_state(
             port,
@@ -3154,9 +3192,9 @@ fn schedule_rexit_poll(xhci: &XHCI, port: u8, rexit_start_ms: u64) {
                 phase: ResumePhase::RExit
             }
         ) {
-            kprintln!(
+            kprintln_xhci!(
                 Error,
-                "[xHCI] [PORT {}] Invalid port state {:?} inside rexit poll scheduler.",
+                "[PORT {}] Invalid port state {:?} inside rexit poll scheduler.",
                 port,
                 ports.state(port)
             );
@@ -3171,9 +3209,9 @@ fn schedule_rexit_poll(xhci: &XHCI, port: u8, rexit_start_ms: u64) {
             schedule_reset_timeout(xhci, port, 1);
             xhci.regs.portsc_issue_reset(port);
         } else if now.wrapping_sub(rexit_start_ms) >= PORT_RESUME_TIMEOUT_MS {
-            kprintln!(
+            kprintln_xhci!(
                 Warn,
-                "[xHCI] Port {} stuck leaving resume (PLS={:?})",
+                "Port {} stuck leaving resume (PLS={:?})",
                 port,
                 portsc.pls_read()
             );
@@ -3198,9 +3236,9 @@ fn xhci_init_port_states(xhci: &Arc<XHCI>) {
         };
 
         if port_info.protocol == Usb2 {
-            kprintln!(
+            kprintln_xhci!(
                 Info,
-                "[xHCI] Startup: Initializing USB2 device already present on port {} (PLS={:?}).",
+                "Startup: Initializing USB2 device already present on port {} (PLS={:?}).",
                 port,
                 portsc.pls_read()
             );
@@ -3210,9 +3248,9 @@ fn xhci_init_port_states(xhci: &Arc<XHCI>) {
             ports.set_state(port, PortState::Debounce { generation: 0 });
             schedule_debounce(xhci, port, 0);
         } else {
-            kprintln!(
+            kprintln_xhci!(
                 Info,
-                "[xHCI] Startup: Initializing USB3 device already present on port {} (PLS={:?}).",
+                "Startup: Initializing USB3 device already present on port {} (PLS={:?}).",
                 port,
                 portsc.pls_read()
             );
@@ -3225,7 +3263,7 @@ fn xhci_init_port_states(xhci: &Arc<XHCI>) {
                 //on usb3 reset is skipped, so enable slot already
                 xhci.issue_enable_slot_command(port, &mut *ports);
             } else {
-                kprintln!(Error, "[xHCI] Startup: USB3 device on port {} failed to perform hardware initialization.", port);
+                kprintln_xhci!(Error, "Startup: USB3 device on port {} failed to perform hardware initialization.", port);
                 ports.set_state(port, PortState::Idle);
                 return;
             }
@@ -3286,8 +3324,8 @@ impl PciDeviceInitializer for XHCI {
             };
 
             let dcbaa_dma = dma_alloc_zeroed(size_of::<Dcbaa>(), PageSize::SIZE_4KB as usize)
-                .expect("Failed to allocate dma for dcbaa.");
-            kprintln!(Debug, "[xHCI] Allocated DMA for dcbaa at phys{:#011x}; virt: {:#011x} with align {}",
+                .ok_or(PciDeviceInitError::DmaAllocationFailure)?;
+            kprintln_xhci_debug!( "Allocated DMA for dcbaa at phys{:#011x}; virt: {:#011x} with align {}",
                 dcbaa_dma.phys, dcbaa_dma.virt, dcbaa_dma.layout.align());
 
             let mut dcbaa = DcbaaOwner::new(dcbaa_dma);
@@ -3300,9 +3338,9 @@ impl PciDeviceInitializer for XHCI {
             let scratchpad = xhci_alloc_scratchpad(cap_base, &mut dcbaa);
 
             let (command_ring_dma, command_ring_trbs) = TrbRing::dma_alloc(COMMAND_RING_TRBS)
-                .expect("Failed to allocate DMA for command ring.");
+                .ok_or(PciDeviceInitError::DmaAllocationFailure)?;
 
-            kprintln!(Debug, "[xHCI] Allocated DMA for command ring at phys{:#011x}; virt: {:#011x} with align {}",
+            kprintln_xhci_debug!( "Allocated DMA for command ring at phys{:#011x}; virt: {:#011x} with align {}",
                 command_ring_dma.phys,
                 command_ring_dma.virt,
                 command_ring_dma.layout.align()
@@ -3457,7 +3495,7 @@ impl UsbHostController for XHCI {
                     //trb before we issue the request
                     if setup.b_request == 0x09 && !is_set_configuration_retry {
                         dev.lock().configuration_state = PendingSetConfiguration;
-                        kprintln!(Debug, "[xHCI] Set device to pending set configuration.");
+                        kprintln_xhci_debug!( "Set device to pending set configuration.");
 
                         self.on_pending_set_configuration(request, &dev);
                         return Ok(());
@@ -3517,7 +3555,6 @@ impl UsbHostController for XHCI {
         let dev = device.lock();
 
         //the address assigned by Address Device lives in the output slot context
-        let slot_context = unsafe { &*dev.device_context_dma.virt.as_ptr::<SlotContext>() };
-        Some(slot_context.get_usb_address())
+        Some(dev.output_context().slot().get_usb_address())
     }
 }

@@ -50,7 +50,7 @@ use core::sync::atomic::{compiler_fence, fence, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
 use crate::drivers::usb::xhci::xhci_trb::Trb;
 use crate::drivers::usb::xhci::xhci_trb_ring::RingError::Unsupported;
-use crate::kprintln;
+use crate::{kprintln_xhci, kprintln_xhci_debug};
 use crate::memory::dma::{dma_alloc_zeroed, DmaAlloc};
 use crate::memory::page_tables::PageSize;
 
@@ -161,7 +161,7 @@ impl TrbRing {
         }
 
         if dequeue_index_check && next_index == self.dequeue_index {
-            kprintln!(Error, "[xHCI] Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
+            kprintln_xhci!(Error, "Ring full, dequeue index={}, enqueue index={}", self.dequeue_index, self.enqueue_index);
             return Err(RingError::Full);
         }
 
@@ -219,7 +219,7 @@ impl TrbRing {
 
         let trb = unsafe { read_volatile(trb_ptr) };
 
-        // kprintln!("Dequeue index: {}, Cycle bit: {}, Trb type: {}",self.dequeue_index, trb.cycle(), trb.trb_type());
+        // kprintln_xhci!(Info, "Dequeue index: {}, Cycle bit: {}, Trb type: {}",self.dequeue_index, trb.cycle(), trb.trb_type());
         self.dequeue_index += 1;
 
         if self.dequeue_index == self.trbs.len() {
@@ -316,7 +316,7 @@ impl Ring for CommandRing {
     }
 
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
-        // kprintln!(Debug, "Command ring enqueue index {}.", self.enqueue_index());
+        // kprintln_xhci_debug!( "Command ring enqueue index {}.", self.enqueue_index());
         if trb.is_command_trb() {
             unsafe { self.ring.enqueue(trb, true) }
         } else {

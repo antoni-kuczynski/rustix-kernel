@@ -170,6 +170,37 @@ macro_rules! kprintln {
     };
 }
 
+#[doc(hidden)]
+pub fn _kprintln_deferred(level: LogLevel, args: Arguments) {
+    let message = alloc::format!("{}", args);
+    crate::drivers::apic::apic::set_timeout(0, move || {
+        _kprintln(level, format_args!("{}", message));
+    });
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __kprintln_deferred_with_prefix {
+    ($prefix:literal, $level:ident, $($arg:tt)*) => {
+        $crate::video::kprint::_kprintln_deferred(
+            $crate::video::kprint::LogLevel::$level,
+            format_args!("{} {}", $prefix, format_args!($($arg)*))
+        )
+    };
+}
+
+/// Synchronous with interrupts disabled
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __kprintln_debug_with_prefix {
+    ($prefix:literal, $($arg:tt)*) => {
+        $crate::video::kprint::_kprintln(
+            $crate::video::kprint::LogLevel::Debug,
+            format_args!("{} {}", $prefix, format_args!($($arg)*))
+        )
+    };
+}
+
 #[macro_export]
 macro_rules! kprintln_ok {
     ($($arg:tt)*) => {

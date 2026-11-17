@@ -92,7 +92,7 @@ impl UsbDeviceDescriptor {
     }
 
     pub fn print(&self) {
-        kprintln!(Debug,
+        kprintln_usb_core_debug!(
         "UsbDeviceDescriptor {{
             b_length: {},
             b_descriptor_type: {},
@@ -134,7 +134,7 @@ impl UsbDeviceDescriptor {
 
 
 use core::{slice};
-use crate::kprintln;
+use crate::{kprintln_usb_core_debug};
 
 pub struct DescriptorType;
 

@@ -148,6 +148,19 @@ unsafe impl Send for UsbTransferRequest {}
 unsafe impl Sync for UsbTransferRequest {}
 
 impl UsbTransferRequest {
+    /// Only the bytes the device actually sent, not the whole buffer.
+    pub fn received_bytes(&self) -> Option<&[u8]> {
+        self.dma_buffer.as_ref()?.as_bytes().get(..self.bytes_transferred)
+    }
+
+    pub fn read_received<T: Copy>(&self) -> Option<T> {
+        let bytes = self.received_bytes()?;
+        if bytes.len() < size_of::<T>() {
+            return None;
+        }
+        Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const T) })
+    }
+
     pub fn new_interrupt_in(
         device: Arc<UsbDevice>,
         endpoint_num: u8,

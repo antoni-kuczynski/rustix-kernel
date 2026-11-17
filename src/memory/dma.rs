@@ -112,6 +112,23 @@ impl DmaAlloc {
         Self { virt, phys, layout, zone }
     }
 
+    pub unsafe fn as_ref<T>(&self) -> &T {
+        debug_assert!(size_of::<T>() <= self.layout.size());
+        unsafe { &*self.virt.as_ptr::<T>() }
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.virt.as_ptr::<u8>(), self.layout.size()) }
+    }
+
+    /// Copies a `T` out of the buffer, `None` if it does not fit.
+    pub unsafe fn read_unaligned<T: Copy>(&self, offset_bytes: usize) -> Option<T> {
+        if offset_bytes.checked_add(size_of::<T>())? > self.layout.size() {
+            return None;
+        }
+        Some(unsafe { ptr::read_unaligned(self.virt.as_ptr::<u8>().add(offset_bytes) as *const T) })
+    }
+
     pub unsafe fn as_mut<T>(&self) -> &'static mut T {
         unsafe { &mut *self.virt.as_mut_ptr::<T>() }
     }
