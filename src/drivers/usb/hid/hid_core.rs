@@ -12,8 +12,7 @@ use crate::drivers::usb::core::usb_core::usb_clear_endpoint_halt;
 use crate::drivers::usb::core::usb_descriptors::{UsbInterfaceTree};
 use crate::drivers::usb::core::usb_requests::{hid_request_set_boot_protocol, hid_request_set_idle_indefinitely};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
-use crate::drivers::usb::core::usb_transfers::UsbTransferDirection::{HostToDevice};
-use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error, Stalled};
+use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Disconnected, Error, Stalled};
 use crate::drivers::usb::hid::hid_keyboard::{HidKeyboard};
 use crate::drivers::usb::hid::hid_mouse::HidMouse;
 use crate::{kprintln_hid_core, kprintln_hid_core_debug};
@@ -81,7 +80,32 @@ pub fn hid_on_cleared_endpoint_halt(request: Arc<IrqMutex<UsbTransferRequest>>) 
     hid_device.lock().start_listening();
 }
 
+fn hid_handle_device_disconnect(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let (system_id, endpoint_address) = {
+        let req = request.lock();
+        let dev = req.target_device.clone();
+        (dev.system_id, req.endpoint_address)
+    };
+
+    let mut hid_core = HID_CORE.lock();
+
+    let _ = match hid_core.devices.remove(&(system_id, endpoint_address)) {
+        None => {
+            kprintln_hid_core_debug!("Device with system_id {} was already unregistered from HID.", system_id);
+        },
+        Some(x) => {
+            kprintln_hid_core!(Info, "Device with system_id {} was successfully unregistered from HID.", system_id);
+        }
+    };
+}
+
 pub fn on_interrupt_in(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    //the condition temporary drops the request lock before the call
+    if request.lock().status == Disconnected {
+        hid_handle_device_disconnect(request);
+        return;
+    }
+
     let (device, endpoint_address) = {
         let mut req = request.lock();
 

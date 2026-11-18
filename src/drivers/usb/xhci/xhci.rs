@@ -58,7 +58,7 @@ use crate::drivers::pci::pci_device::{PciDevice, PciDeviceInitError, PciDeviceIn
 use crate::drivers::pci::pci_io::PciVendor;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::pci::*;
-use crate::drivers::usb::core::irq_mutex::IrqMutex;
+use crate::drivers::usb::core::irq_mutex::{IrqGuard, IrqMutex};
 use crate::drivers::usb::core::usb_core::usb_register_device;
 use crate::drivers::usb::core::usb_transfers::{
     UsbHostController, UsbTransferRequest, UsbTransferStatus,
@@ -796,6 +796,27 @@ impl XhciDevice {
         self.pending_requests.remove(&trb)
     }
 
+    /// Control transfers are keyed by their Status Stage TRB, but an error in the Data Stage
+    /// reports the Data Stage TRB, the status stage is the next TRB on the ring
+    unsafe fn take_pending_for_event(&mut self, dci: u8, event_trb: TrbPhysAddr) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
+        if let Some(request) = self.take_pending(event_trb) {
+            return Some(request);
+        }
+
+        if dci != EP0_DCI || event_trb.0 == 0 || Trb::from_trb_phys_addr(event_trb).trb_type() != Trb::TRB_DATA_STAGE {
+            return None;
+        }
+
+        let mut status_stage_trb = TrbPhysAddr(event_trb.0 + size_of::<Trb>() as u64);
+        let next_trb = Trb::from_trb_phys_addr(status_stage_trb);
+        if next_trb.trb_type() == Trb::TRB_LINK {
+            //ring segment pointer, the low 4 bits are reserved
+            status_stage_trb = TrbPhysAddr(next_trb.parameter() & !0xF);
+        }
+
+        self.take_pending(status_stage_trb)
+    }
+
     fn take_halted_request(&mut self, dci: u8) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
         let ring = self.transfer_rings.get_mut(dci as usize)?.as_mut()?;
 
@@ -1389,13 +1410,7 @@ impl XHCI {
             .unwrap_or(XhciPortProtocol::Unknown);
 
         if !portsc.ccs_read() {
-            kprintln_xhci!(
-                Info,
-                "[PORT {}] Detach detected with {} protocol.",
-                port,
-                protocol
-            );
-            self.disable_slot_locked(&mut ports, port);
+            self.hadle_device_detach_locked(port, protocol, ports);
             return;
         }
 
@@ -1430,6 +1445,47 @@ impl XHCI {
             port,
             protocol
         );
+    }
+
+    /// Called with PortsTable mutex locked
+    unsafe fn hadle_device_detach_locked(&self, port: u8, protocol: XhciPortProtocol, mut ports: IrqGuard<PortTable>) {
+        kprintln_xhci!(
+                Info,
+                "[PORT {}] Detach detected with {} protocol.",
+                port,
+                protocol
+            );
+
+        let Some(slot_id) = ports.slot[port as usize] else {
+            kprintln_xhci_debug!("No slot_id for port {} was found on detach.", port);
+            return;
+        };
+
+        let Some(device) = self.device_from_slot_id(slot_id) else {
+            kprintln_xhci!(Error, "No device found for slot {} on detach.", slot_id);
+            self.disable_slot_locked(&mut ports, port);
+            return;
+        };
+
+        let (requests, halted_requests) = {
+            let mut dev = device.lock();
+
+            //requests in the middle of an endpoint reset are no longer in pending_requests
+            let halted_requests: Vec<_> = dev.transfer_rings
+                .iter_mut()
+                .flatten()
+                .filter_map(|ring| ring.halted_request.take())
+                .collect();
+
+            (core::mem::take(&mut dev.pending_requests), halted_requests)
+        };
+
+        //complete all requests as the device was disconnected
+        for request in requests.into_values().chain(halted_requests) {
+            complete_request(request, UsbTransferStatus::Disconnected, 0);
+        }
+
+        self.disable_slot_locked(&mut ports, port);
     }
 
     unsafe fn on_endpoint_configured(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
@@ -2038,7 +2094,7 @@ impl XHCI {
                         .as_mut()
                         .and_then(|ring| ring.soft_retry_trb.take());
 
-                    soft_retry_trb.and_then(|trb| dev.take_pending(trb))
+                    soft_retry_trb.and_then(|trb| unsafe { dev.take_pending_for_event(dci, trb) })
                 }
             }
         };
@@ -2393,7 +2449,7 @@ impl XHCI {
 
                     let dequeue_target = {
                         let mut dev = device.lock();
-                        let request = dev.take_pending(event_trb);
+                        let request = dev.take_pending_for_event(endpoint_dci, event_trb);
 
                         match dev.transfer_rings[endpoint_dci as usize].as_mut() {
                             Some(ring) => {
@@ -2507,13 +2563,10 @@ impl XHCI {
                 (is_soft_reset, halt_reason)
             };
 
-            //TODO: for requests that use more than one trb, it can fail during a different
-            //stage trb rather than the one that is used as a key in pending_requests,
-            //so the pending request wont be found and wont be resumed.
             let halted_request = if is_soft_reset {
                 None
             } else {
-                let request = dev.take_pending(event_trb);
+                let request = unsafe { dev.take_pending_for_event(dci, event_trb) };
                 match request {
                     None => { kprintln_xhci_debug!( "Transfer TRB didn't point to a request at DCI={}.", dci); }
                     Some(_) => { kprintln_xhci_debug!( "Took pending request from endpoint DCI={} and halted it.", dci); }

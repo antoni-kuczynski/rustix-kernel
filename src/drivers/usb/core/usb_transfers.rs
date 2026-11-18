@@ -25,6 +25,7 @@ pub enum UsbTransferStatus {
     Completed = 1,
     Stalled = 2,
     Error = 3,
+    Disconnected = 4
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

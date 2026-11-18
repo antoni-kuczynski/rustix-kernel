@@ -13,8 +13,8 @@ use crate::drivers::usb::core::usb_requests::{usb_request_get_hub_descriptor, us
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::{WValue};
 use crate::drivers::usb::core::UsbSpeed;
-use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Error};
-use crate::{kprintln_hub_core};
+use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Disconnected, Error};
+use crate::{kprintln_hub_core, kprintln_hub_core_debug};
 use crate::memory::dma::{DmaAlloc};
 
 //the device removable mask only covers 31 ports
@@ -105,7 +105,27 @@ pub fn usb_issue_hub_descriptor(dev: Arc<UsbDevice>) {
     }
 }
 
+fn usb_hub_handle_device_disconnect(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let system_id = request.lock().target_device.system_id;
+
+    let mut hub_core = USB_HUB_CORE.lock();
+
+    match hub_core.devices.remove(&system_id) {
+        None => {
+            kprintln_hub_core_debug!("Device with system_id {} was already unregistered from hub core.", system_id);
+        },
+        Some(_) => {
+            kprintln_hub_core!(Info, "Device with system_id {} was successfully unregistered from hub core.", system_id);
+        }
+    };
+}
+
 fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
     let (hub_descriptor, is_super_speed, amount_of_ports, device) = {
         let mut req = request.lock();
         let dev = req.target_device.clone();
@@ -164,6 +184,11 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
 //callback is called for each port completion
 fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
     let (req, device) = {
         let req1 = request.lock();
         if req1.status != Completed {
@@ -239,6 +264,11 @@ fn on_all_ports_powered(device_system_id: UsbDeviceId) {
 }
 
 fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
     let (get_port_pwr_request, device) = {
         let device = request.lock().target_device.clone();
         let system_id = device.system_id;
