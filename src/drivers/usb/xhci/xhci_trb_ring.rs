@@ -68,7 +68,7 @@ pub enum RingError {
 }
 
 pub trait Ring {
-    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self;
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Option<Self> where Self: Sized;
 
     /// Enqueues a TRB and returns the physical address of the slot it was written to.
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError>;
@@ -123,7 +123,11 @@ pub struct TrbRing {
 
 impl TrbRing {
     pub unsafe fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Result<TrbRing, TrbCreationError> {
+        //one usable TRB plus the Link TRB
         let len = trbs.len();
+        if len < 2 {
+            return Err(TrbCreationError());
+        }
         let last_index = len - 1;
 
         //set the last TRB in ring to LINK type
@@ -256,7 +260,7 @@ pub struct EventRing {
 }
 
 impl Ring for EventRing {
-    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Option<Self> {
         let ring = TrbRing {
             trbs,
             ring_phys,
@@ -265,10 +269,10 @@ impl Ring for EventRing {
             cycle_state: true,
         };
 
-        Self {
+        Some(Self {
             ring,
             erdp_offset: None
-        }
+        })
     }
 
     fn enqueue(&mut self, _: Trb) -> Result<PhysAddr, RingError> {
@@ -309,10 +313,9 @@ pub struct CommandRing {
 }
 
 impl Ring for CommandRing {
-    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
-        let ring = unsafe { TrbRing::new(trbs, ring_phys) }
-            .expect("Ring creation for command ring failed.");
-        Self { ring }
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Option<Self> {
+        let ring = unsafe { TrbRing::new(trbs, ring_phys) }.ok()?;
+        Some(Self { ring })
     }
 
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {
@@ -352,10 +355,9 @@ pub struct TransferRing {
 }
 
 impl Ring for TransferRing {
-    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Self {
-        let ring = unsafe { TrbRing::new(trbs, ring_phys) }
-            .expect("Ring creation for transfer ring failed.");
-        Self { ring }
+    fn new(trbs: *mut [Trb], ring_phys: PhysAddr) -> Option<Self> {
+        let ring = unsafe { TrbRing::new(trbs, ring_phys) }.ok()?;
+        Some(Self { ring })
     }
 
     fn enqueue(&mut self, trb: Trb) -> Result<PhysAddr, RingError> {

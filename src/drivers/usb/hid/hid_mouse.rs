@@ -167,7 +167,10 @@ impl HidDriver for HidMouse {
 
         kprintln_hid_core_debug!( "[HID MOUSE] Allocating buffer with size w_max_packet_size={}.", max_packet_size);
 
-        let request = usb_request_interrupt_in(device.clone(), self.in_endpoint_address, max_packet_size, on_interrupt_in);
+        let Some(request) = usb_request_interrupt_in(device.clone(), self.in_endpoint_address, max_packet_size, on_interrupt_in) else {
+            kprintln_hid_core!(Error, "[HID MOUSE] Failed to allocate interrupt IN request.");
+            return;
+        };
 
         self.pending_request = Some(request.clone());
 

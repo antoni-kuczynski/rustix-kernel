@@ -33,16 +33,17 @@ fn control_request(
     device: Arc<UsbDevice>,
     setup_packet: UsbSetupPacket,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let data_length = setup_packet.w_length as usize;
     let is_device_to_host = setup_packet.bm_request_type & UsbBmRequestType::DIR_DEVICE_TO_HOST != 0;
 
-    let dma_buffer = (data_length > 0).then(|| {
-        dma_alloc_zeroed(data_length, DMA_BUFFER_ALIGNMENT)
-            .expect("[USB] DMA allocation for control request data stage failed.")
-    });
+    let dma_buffer = if data_length > 0 {
+        Some(dma_alloc_zeroed(data_length, DMA_BUFFER_ALIGNMENT)?)
+    } else {
+        None
+    };
 
-    Arc::new(IrqMutex::new(UsbTransferRequest {
+    Some(Arc::new(IrqMutex::new(UsbTransferRequest {
         target_device: device,
         endpoint_address: DEFAULT_CONTROL_ENDPOINT_ADDRESS,
         transfer_direction: if is_device_to_host {
@@ -57,13 +58,13 @@ fn control_request(
         status: UsbTransferStatus::Pending,
         bytes_transferred: 0,
         completion_callback: Some(callback),
-    }))
+    })))
 }
 
 pub fn usb_request_get_device_descriptor(
     device: Arc<UsbDevice>,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_DEVICE_TO_HOST,
@@ -83,7 +84,7 @@ pub fn usb_request_get_configuration_descriptor(
     device: Arc<UsbDevice>,
     length: u16,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_DEVICE_TO_HOST,
@@ -103,7 +104,7 @@ pub fn usb_request_set_configuration(
     device: Arc<UsbDevice>,
     configuration_value: u8,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_HOST_TO_DEVICE,
@@ -123,7 +124,7 @@ pub fn usb_request_get_hub_descriptor(
     device: Arc<UsbDevice>,
     is_super_speed_hub: bool,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let descriptor_type = if is_super_speed_hub {
         WValue::DESC_SUPERSPEED_HUB
     } else {
@@ -150,7 +151,7 @@ pub fn usb_request_set_hub_port_feature(
     port_number: u16,
     feature_selector: u16,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_HOST_TO_DEVICE,
@@ -170,7 +171,7 @@ pub fn usb_request_get_hub_port_status(
     device: Arc<UsbDevice>,
     port_number: u16,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_DEVICE_TO_HOST,
@@ -190,7 +191,7 @@ pub fn usb_request_clear_endpoint_halt(
     device: Arc<UsbDevice>,
     endpoint_address: u8,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_HOST_TO_DEVICE,
@@ -213,7 +214,7 @@ pub fn usb_request_clear_tt_buffer(
     endpoint_address: u8,
     endpoint_transfer_type: u8,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let endpoint_number = (endpoint_address & ENDPOINT_NUMBER_MASK) as u16;
     let is_direction_in = endpoint_address & ENDPOINT_DIRECTION_IN != 0;
 
@@ -241,7 +242,7 @@ pub fn hid_request_set_boot_protocol(
     device: Arc<UsbDevice>,
     interface_number: u16,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_HOST_TO_DEVICE,
@@ -261,7 +262,7 @@ pub fn hid_request_set_idle_indefinitely(
     device: Arc<UsbDevice>,
     interface_number: u16,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
+) -> Option<UsbRequestHandle> {
     let setup_packet = UsbSetupPacket::new(
         UsbBmRequestType::new(
             UsbBmRequestType::DIR_HOST_TO_DEVICE,
@@ -282,11 +283,10 @@ pub fn usb_request_interrupt_in(
     endpoint_address: u8,
     buffer_length: usize,
     callback: UsbTransferCallback,
-) -> UsbRequestHandle {
-    let dma_buffer = dma_alloc_zeroed(buffer_length, DMA_BUFFER_ALIGNMENT)
-        .expect("[USB] DMA allocation for interrupt IN buffer failed.");
+) -> Option<UsbRequestHandle> {
+    let dma_buffer = dma_alloc_zeroed(buffer_length, DMA_BUFFER_ALIGNMENT)?;
 
-    Arc::new(IrqMutex::new(UsbTransferRequest {
+    Some(Arc::new(IrqMutex::new(UsbTransferRequest {
         target_device: device,
         endpoint_address,
         transfer_direction: UsbTransferDirection::DeviceToHost,
@@ -297,5 +297,5 @@ pub fn usb_request_interrupt_in(
         status: UsbTransferStatus::Pending,
         bytes_transferred: 0,
         completion_callback: Some(callback),
-    }))
+    })))
 }

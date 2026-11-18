@@ -51,7 +51,7 @@ impl UsbCore {
         port_on_parent: u8,
         speed: UsbSpeed,
         parent_hub: Option<Arc<UsbDevice>>
-    ) -> (Arc<UsbDevice>, Arc<IrqMutex<UsbTransferRequest>>) {
+    ) -> (Arc<UsbDevice>, Option<Arc<IrqMutex<UsbTransferRequest>>>) {
         let device = Arc::new(UsbDevice {
             system_id: self.new_system_id(),
             hardware_id,
@@ -114,8 +114,15 @@ pub fn usb_clear_endpoint_halt(
                         endpoint_transfer_type,
                         on_clear_tt_buffer_complete,
                     );
-                    if let Err(error) = controller.submit_request(clear_tt_request) {
-                        kprintln_usb_core!(Error, "Failed to submit CLEAR_TT_BUFFER: {}", error);
+                    match clear_tt_request {
+                        Some(clear_tt_request) => {
+                            if let Err(error) = controller.submit_request(clear_tt_request) {
+                                kprintln_usb_core!(Error, "Failed to submit CLEAR_TT_BUFFER: {}", error);
+                            }
+                        }
+                        None => {
+                            kprintln_usb_core!(Error, "Failed to allocate CLEAR_TT_BUFFER request.");
+                        }
                     }
                 }
                 None => {
@@ -125,7 +132,8 @@ pub fn usb_clear_endpoint_halt(
         }
     }
 
-    let request = usb_request_clear_endpoint_halt(device, endpoint_address, callback);
+    let request = usb_request_clear_endpoint_halt(device, endpoint_address, callback)
+        .ok_or("Failed to allocate ClearFeature(ENDPOINT_HALT) request.")?;
     controller.submit_request(request)
 }
 
@@ -143,6 +151,11 @@ pub fn usb_register_device(
     let (device, request) = {
         let mut usb_core = USB_CORE.lock();
         usb_core.add_device(hardware_id, host_controller, parent_port, speed, parent_hub)
+    };
+
+    let Some(request) = request else {
+        kprintln_usb_core!(Error, "Failed to allocate GET_DESCRIPTOR request for device {}.", device.system_id);
+        return;
     };
 
     let Some(controller) = device.host_controller.upgrade() else {
@@ -179,9 +192,12 @@ fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let dev = req.target_device.clone();
         dev.device_descriptor.call_once(|| desc);
 
-        let config_req = usb_request_get_configuration_descriptor(
+        let Some(config_req) = usb_request_get_configuration_descriptor(
             dev.clone(), CONFIGURATION_DESCRIPTOR_TOTAL_LENGTH_PREFIX, on_config_header_received
-        );
+        ) else {
+            kprintln_usb_core!(Error, "Failed to allocate configuration descriptor header request.");
+            return;
+        };
         (dev, config_req)
     };
 
@@ -209,7 +225,10 @@ pub fn on_config_header_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
         kprintln_usb_core_debug!( "Detected Configuration Descriptor size: {} bytes.", w_total_length);
 
         //now, it's time for the full configuration descriptor
-        let full_req = usb_request_get_configuration_descriptor(dev.clone(), w_total_length, on_full_config_received);
+        let Some(full_req) = usb_request_get_configuration_descriptor(dev.clone(), w_total_length, on_full_config_received) else {
+            kprintln_usb_core!(Error, "Failed to allocate full configuration descriptor request ({} bytes).", w_total_length);
+            return;
+        };
 
         (dev, full_req)
     };
@@ -245,7 +264,10 @@ pub fn on_full_config_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
         dev.configuration_tree.call_once(|| config_tree);
 
-        let full_req = usb_request_set_configuration(dev.clone(), config_value, on_set_configuration_complete);
+        let Some(full_req) = usb_request_set_configuration(dev.clone(), config_value, on_set_configuration_complete) else {
+            kprintln_usb_core!(Error, "Failed to allocate SET_CONFIGURATION request.");
+            return;
+        };
         (dev, full_req)
     };
 

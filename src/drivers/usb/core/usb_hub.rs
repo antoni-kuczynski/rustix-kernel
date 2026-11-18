@@ -40,22 +40,37 @@ pub struct UsbHub {
 
 impl UsbHub {
     /// Builds SET_FEATURE(PORT_POWER) for the next unpowered port and advances
-    /// `current_port_index`. Returns `None` once every port has been covered.
-    fn next_set_port_power_request(&mut self) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
-        let port_number = self.validate_and_set_next_port()?;
+    /// `current_port_index`. Returns `Ok(None)` once every port has been covered,
+    /// `Err` if the request could not be allocated.
+    fn next_set_port_power_request(&mut self) -> Result<Option<Arc<IrqMutex<UsbTransferRequest>>>, ()> {
+        let Some(port_number) = self.validate_and_set_next_port() else {
+            return Ok(None);
+        };
 
-        Some(usb_request_set_hub_port_feature(
+        let Some(request) = usb_request_set_hub_port_feature(
             self.device.clone(), port_number, WValue::PORT_POWER, on_set_port_power_complete
-        ))
+        ) else {
+            kprintln_hub_core!(Error, "Failed to allocate PORT_POWER request for port {} of hub {}.", port_number, self.system_id);
+            return Err(());
+        };
+
+        Ok(Some(request))
     }
 
     /// Builds GET_HUB_PORT_STATUS for next hub port
-    fn next_get_port_status_request(&mut self) -> Option<Arc<IrqMutex<UsbTransferRequest>>> {
-        let port_number = self.validate_and_set_next_port()?;
+    fn next_get_port_status_request(&mut self) -> Result<Option<Arc<IrqMutex<UsbTransferRequest>>>, ()> {
+        let Some(port_number) = self.validate_and_set_next_port() else {
+            return Ok(None);
+        };
 
-        Some(usb_request_get_hub_port_status(
+        let Some(request) = usb_request_get_hub_port_status(
             self.device.clone(), port_number, on_get_port_status
-        ))
+        ) else {
+            kprintln_hub_core!(Error, "Failed to allocate GetPortStatus request for port {} of hub {}.", port_number, self.system_id);
+            return Err(());
+        };
+
+        Ok(Some(request))
     }
 
     /// Returns current port
@@ -98,7 +113,10 @@ fn usb_hub_get_number_of_ports(is_super_speed: bool, dma: &DmaAlloc, bytes_trans
 
 pub fn usb_issue_hub_descriptor(dev: Arc<UsbDevice>) {
     let is_superspeed = dev.speed.is_superspeed_or_higher();
-    let full_req = usb_request_get_hub_descriptor(dev.clone(), is_superspeed, on_get_hub_descriptor_complete);
+    let Some(full_req) = usb_request_get_hub_descriptor(dev.clone(), is_superspeed, on_get_hub_descriptor_complete) else {
+        kprintln_hub_core!(Error, "Failed to allocate hub descriptor request for device {}.", dev.system_id);
+        return;
+    };
 
     if let Some(controller) = dev.host_controller.upgrade() {
         let _ = controller.submit_request(full_req);
@@ -172,6 +190,10 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
     USB_HUB_CORE.lock().devices.insert(device.system_id, Arc::new(IrqMutex::new(Box::new(hub_device))));
 
+    let Ok(port_power_req) = port_power_req else {
+        return;
+    };
+
     let Some(port_power_req) = port_power_req else {
         kprintln_hub_core!(Error, "Hub reported 0 ports, nothing to power.");
         return;
@@ -204,7 +226,9 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         return;
     };
 
-    let port_power_req = hub.lock().next_set_port_power_request();
+    let Ok(port_power_req) = hub.lock().next_set_port_power_request() else {
+        return;
+    };
 
     let Some(port_power_req) = port_power_req else {
         let (b_pwr_on_to_pwr_good_ms, system_id) = {
@@ -253,6 +277,10 @@ fn on_all_ports_powered(device_system_id: UsbDeviceId) {
        (lock.next_get_port_status_request(), device)
    };
 
+    let Ok(get_port_power_req) = get_port_power_req else {
+        return;
+    };
+
     let Some(get_port_power_req) = get_port_power_req else {
         kprintln_hub_core!(Error, "USB hub reports 0 ports on checking port power.");
         return;
@@ -281,6 +309,10 @@ fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
     };
 
     //TODO: check port status and check if port needs to be reset
+
+    let Ok(get_port_pwr_request) = get_port_pwr_request else {
+        return;
+    };
 
     let Some(get_port_pwr_request) = get_port_pwr_request else {
         //no more ports to check, so we finished

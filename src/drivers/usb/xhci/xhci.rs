@@ -329,7 +329,7 @@ fn xhci_configure_interrupts(dev: &PciDevice) -> Result<XhciInterruptConfig, Pci
 }
 
 
-unsafe fn xhci_alloc_scratchpad(cap_base: VirtAddr, dcbaa: &mut DcbaaOwner) -> ScratchpadArea {
+unsafe fn xhci_alloc_scratchpad(cap_base: VirtAddr, dcbaa: &mut DcbaaOwner) -> Result<ScratchpadArea, PciDeviceInitError> {
     let hcsparams2 = mmio_read::<u32>(cap_base, 0x08);
     let hi = (hcsparams2 >> 21) & 0x1F;
     let lo = (hcsparams2 >> 27) & 0x1F;
@@ -337,28 +337,29 @@ unsafe fn xhci_alloc_scratchpad(cap_base: VirtAddr, dcbaa: &mut DcbaaOwner) -> S
     kprintln_xhci_debug!( "Scratchpad buffers required: {}", count);
 
     if count == 0 {
-        return ScratchpadArea {
+        return Ok(ScratchpadArea {
             _array: None,
             _buffers: Vec::new(),
-        };
+        });
     }
 
-    let array = dma_alloc_zeroed(count * 8, 4096).expect("scratchpad array");
+    //on failure, buffers already allocated are freed by DmaAlloc's Drop
+    let array = dma_alloc_zeroed(count * 8, 4096).ok_or(PciDeviceInitError::DmaAllocationFailure)?;
     let entries = array.as_slice_mut::<u64>(count);
     let mut buffers = Vec::with_capacity(count);
 
     for index in 0..count {
-        let buffer = dma_alloc_zeroed(4096, 4096).expect("scratchpad buffer");
+        let buffer = dma_alloc_zeroed(4096, 4096).ok_or(PciDeviceInitError::DmaAllocationFailure)?;
         ptr::write_volatile(&mut entries[index], buffer.phys.as_u64());
         buffers.push(buffer);
     }
 
     dcbaa.set_context(0, array.phys.as_u64()); // DCBAA[0] = scratchpad array
 
-    ScratchpadArea {
+    Ok(ScratchpadArea {
         _array: Some(array),
         _buffers: buffers,
-    }
+    })
 }
 
 /// Allocates an event ring plus its segment table and programs the interrupter registers.
@@ -368,17 +369,20 @@ unsafe fn xhci_setup_interrupter(
     index: u8,
     kind: XhciInterrupterKind,
     name: &'static str,
-) -> Arc<XhciInterrupter> {
+) -> Result<Arc<XhciInterrupter>, PciDeviceInitError> {
     let offset = runtime_interrupter_offset(index);
 
     let (ring_dma, ring_trbs) =
-        TrbRing::dma_alloc(EVENT_RING_TRBS).expect("Failed to allocate dma for an event ring.");
+        TrbRing::dma_alloc(EVENT_RING_TRBS).ok_or(PciDeviceInitError::DmaAllocationFailure)?;
 
     kprintln_xhci_debug!( "Allocated DMA for the {} event ring at phys{:#011x}; virt: {:#011x} with align {}",
         name, ring_dma.phys, ring_dma.virt, ring_dma.layout.align());
 
     let erst_dma = xhci_alloc_dma_erst(ring_dma.phys, EVENT_RING_TRBS as u32)
-        .expect("Failed to allocate dma for an erst.");
+        .ok_or(PciDeviceInitError::DmaAllocationFailure)?;
+
+    //created before the registers are programmed, so a failure leaves the interrupter untouched
+    let ring = EventRing::new(ring_trbs, ring_dma.phys).ok_or(PciDeviceInitError::InitializationFailure)?;
 
     kprintln_xhci_debug!( "Allocated DMA for the {} erst at phys{:#011x}; virt: {:#011x} with align {}",
         name, erst_dma.phys, erst_dma.virt, erst_dma.layout.align());
@@ -406,9 +410,7 @@ unsafe fn xhci_setup_interrupter(
         iman | INTERRUPTER_MANAGEMENT_ENABLE,
     );
 
-    let ring = EventRing::new(ring_trbs, ring_dma.phys);
-
-    Arc::new(XhciInterrupter::new(
+    Ok(Arc::new(XhciInterrupter::new(
         operational_base,
         runtime_base,
         offset,
@@ -417,7 +419,7 @@ unsafe fn xhci_setup_interrupter(
         erst_dma,
         kind,
         name,
-    ))
+    )))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1780,7 +1782,16 @@ impl XHCI {
             _ => 8, //fallback
         };
 
-        let transfer_ring = TransferRing::new(transfer_trbs, transfer_ring_dma.phys);
+        let Some(transfer_ring) = TransferRing::new(transfer_trbs, transfer_ring_dma.phys) else {
+            kprintln_xhci!(
+                Error,
+                "[SLOT {}][PORT {}] Failed to create EP0 transfer ring for device.",
+                slot_id,
+                port
+            );
+            self.disable_slot(port);
+            return;
+        };
 
         //ici=2 is the index of ep0
         let ep_0 = input_context.endpoint::<EndpointContext>(2, self.regs.context_size);
@@ -2631,13 +2642,29 @@ impl XHCI {
 
         let slot_context = input_context.slot::<SlotContext>(context_size);
         let mut max_dci = slot_context.get_context_entries();
+        let mut configured_dcis: Vec<u8> = Vec::new();
 
         for interface in &configuration_tree.interfaces {
             for ep in &interface.endpoints {
-                let (transfer_ring_dma, trbs) = TrbRing::dma_alloc(TRANSFER_RING_TRBS)
-                    .expect("Dma alloc for transfer ring for new endpoint failed.");
+                let transfer_ring_allocation = TrbRing::dma_alloc(TRANSFER_RING_TRBS)
+                    .and_then(|(dma, trbs)| TransferRing::new(trbs, dma.phys).map(|ring| (dma, ring)));
 
-                let transfer_ring = TransferRing::new(trbs, transfer_ring_dma.phys);
+                let Some((transfer_ring_dma, transfer_ring)) = transfer_ring_allocation else {
+                    kprintln_xhci!(
+                        Error,
+                        "[SLOT {}] Failed to allocate transfer ring for endpoint {:#x}, rolling back configuration.",
+                        dev.slot_id,
+                        ep.b_endpoint_address
+                    );
+
+                    for dci in configured_dcis {
+                        dev.transfer_rings[dci as usize] = None;
+                    }
+                    dev.configuration_state = XhciDeviceConfigurationState::Unconfigured;
+                    drop(dev);
+                    complete_request(pending, UsbTransferStatus::Error, 0);
+                    return;
+                };
 
                 let dci = xhci_endpoint_address_to_dci(ep.b_endpoint_address);
                 let ici = dci + 1;
@@ -2665,6 +2692,7 @@ impl XHCI {
                     halt_reason: XhciHaltReason::None,
                     soft_retry_trb: None,
                 });
+                configured_dcis.push(dci);
 
 
                 let port_speed = PortStatusControl::from_port(
@@ -3388,7 +3416,7 @@ impl PciDeviceInitializer for XHCI {
                 dcbaa.phys().as_u64(),
             );
 
-            let scratchpad = xhci_alloc_scratchpad(cap_base, &mut dcbaa);
+            let scratchpad = xhci_alloc_scratchpad(cap_base, &mut dcbaa)?;
 
             let (command_ring_dma, command_ring_trbs) = TrbRing::dma_alloc(COMMAND_RING_TRBS)
                 .ok_or(PciDeviceInitError::DmaAllocationFailure)?;
@@ -3399,7 +3427,8 @@ impl PciDeviceInitializer for XHCI {
                 command_ring_dma.layout.align()
             );
 
-            let command_ring = CommandRing::new(command_ring_trbs, command_ring_dma.phys);
+            let command_ring = CommandRing::new(command_ring_trbs, command_ring_dma.phys)
+                .ok_or(PciDeviceInitError::XhciCommandRingInitFailure)?;
             mmio_write::<u64>(
                 operational_base,
                 OP_REG_CRCR as u64,
@@ -3416,7 +3445,7 @@ impl PciDeviceInitializer for XHCI {
                 PRIMARY_INTERRUPTER,
                 XhciInterrupterKind::Primary,
                 "primary",
-            );
+            )?;
 
             //setup secondary interrupter only if msix is found
             let interrupters: Vec<Arc<XhciInterrupter>> = match interrupt_config {
@@ -3428,7 +3457,7 @@ impl PciDeviceInitializer for XHCI {
                         TRANSFER_INTERRUPTER,
                         XhciInterrupterKind::Transfer,
                         "transfer",
-                    ),
+                    )?,
                 ]),
                 XhciInterruptConfig::Msi { .. } => Vec::from([primary]),
             };

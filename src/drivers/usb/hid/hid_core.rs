@@ -216,7 +216,10 @@ pub fn hid_register_usb_device(dev: Arc<UsbDevice>, usb_interface_tree: &UsbInte
 }
 
 fn hid_set_protocol(device: Arc<UsbDevice>, interface_num: u16) {
-    let set_protocol_request = hid_request_set_boot_protocol(device.clone(), interface_num, hid_on_set_protocol_done);
+    let Some(set_protocol_request) = hid_request_set_boot_protocol(device.clone(), interface_num, hid_on_set_protocol_done) else {
+        kprintln_hid_core!(Error, "Failed to allocate SET_PROTOCOL request for HID.");
+        return;
+    };
 
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_protocol_request);
@@ -241,7 +244,10 @@ pub fn hid_on_set_protocol_done(request: Arc<IrqMutex<UsbTransferRequest>>) {
         return;
     }
 
-    let set_idle_request = hid_request_set_idle_indefinitely(device.clone(), interface_number, hid_on_set_idle_done);
+    let Some(set_idle_request) = hid_request_set_idle_indefinitely(device.clone(), interface_number, hid_on_set_idle_done) else {
+        kprintln_hid_core!(Error, "Failed to allocate SET_IDLE request for HID.");
+        return;
+    };
 
     if let Some(controller) = device.host_controller.upgrade() {
         let _ = controller.submit_request(set_idle_request);
