@@ -66,6 +66,12 @@ pub trait UsbHostController: Send + Sync {
 
     /// USB address the controller assigned to the device
     fn device_address(&self, hardware_id: u8) -> Option<u8>;
+
+    /// Enumerates a device on hub_port of hub
+    fn enumerate_device_behind_hub(&self, hub: &Arc<UsbDevice>, hub_port: u8, speed: UsbSpeed) -> Result<(), &'static str>;
+
+    /// Fails every request of the device with `Disconnected` and releases it in the controller
+    fn disconnect_device(&self, hardware_id: u8) -> Result<(), &'static str>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

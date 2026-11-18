@@ -59,9 +59,9 @@ use crate::drivers::pci::pci_io::PciVendor;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::pci::*;
 use crate::drivers::usb::core::irq_mutex::{IrqGuard, IrqMutex};
-use crate::drivers::usb::core::usb_core::usb_register_device;
+use crate::drivers::usb::core::usb_core::{usb_find_device, usb_register_device};
 use crate::drivers::usb::core::usb_transfers::{
-    UsbHostController, UsbTransferRequest, UsbTransferStatus,
+    UsbDevice, UsbHostController, UsbTransferRequest, UsbTransferStatus,
 };
 use crate::drivers::usb::xhci::xhci_context::{Dcbaa, DeviceContext};
 use crate::drivers::usb::xhci::xhci_endpoint_context::*;
@@ -723,6 +723,8 @@ pub struct XhciDeviceLocation {
     route_string: u32,
     speed: u8,
     transaction_translator: Option<XhciTransactionTranslator>,
+    parent_hub_slot_id: Option<u8>,
+    port_on_parent: u8,
 }
 
 impl core::fmt::Display for XhciDeviceLocation {
@@ -752,6 +754,8 @@ impl XhciDeviceLocation {
             route_string: 0,
             speed,
             transaction_translator: None,
+            parent_hub_slot_id: None,
+            port_on_parent: root_port,
         }
     }
 
@@ -782,6 +786,8 @@ impl XhciDeviceLocation {
             route_string,
             speed,
             transaction_translator,
+            parent_hub_slot_id: Some(hub_slot_id),
+            port_on_parent: hub_port,
         })
     }
 
@@ -789,6 +795,7 @@ impl XhciDeviceLocation {
     pub fn route_string(&self) -> u32 { self.route_string }
     pub fn speed(&self) -> u8 { self.speed }
     pub fn is_on_root_port(&self) -> bool { self.route_string == 0 }
+    pub fn parent_hub_slot_id(&self) -> Option<u8> { self.parent_hub_slot_id }
     pub fn is_behind_transaction_translator(&self) -> bool { self.transaction_translator.is_some() }
     pub fn is_high_speed(&self) -> bool { self.speed == XhciPortSpeed::HIGH_SPEED }
     pub fn is_super_speed_or_higher(&self) -> bool { self.speed >= XhciPortSpeed::SUPER_SPEED }
@@ -801,10 +808,7 @@ impl XhciDeviceLocation {
     }
 
     pub fn port_on_parent(&self) -> u8 {
-        match self.hub_depth() {
-            0 => self.root_port,
-            depth => ((self.route_string >> (4 * (depth - 1))) & 0xF) as u8,
-        }
+        self.port_on_parent
     }
 
     pub fn default_max_packet_size_0(&self) -> u32 {
@@ -845,6 +849,7 @@ pub struct XhciDevice {
     descriptor_probe_trb: Option<TrbPhysAddr>,
     pending_requests: BTreeMap<TrbPhysAddr, Arc<IrqMutex<UsbTransferRequest>>>,
     configuration_state: XhciDeviceConfigurationState,
+    is_disconnecting: bool,
 }
 
 unsafe impl Send for XhciDevice {}
@@ -883,7 +888,25 @@ impl XhciDevice {
             descriptor_probe_trb: None,
             pending_requests: BTreeMap::new(),
             configuration_state: XhciDeviceConfigurationState::Unconfigured,
+            is_disconnecting: false,
         }
+    }
+
+    /// Returns `false` if the device was already being disconnected.
+    fn begin_disconnect(&mut self) -> bool {
+        !core::mem::replace(&mut self.is_disconnecting, true)
+    }
+
+    /// Every request of the device, including the ones held in the middle of an endpoint reset.
+    fn take_all_requests(&mut self) -> Vec<Arc<IrqMutex<UsbTransferRequest>>> {
+        let halted_requests = self.transfer_rings
+            .iter_mut()
+            .flatten()
+            .filter_map(|ring| ring.halted_request.take());
+
+        let mut requests: Vec<_> = halted_requests.collect();
+        requests.extend(core::mem::take(&mut self.pending_requests).into_values());
+        requests
     }
 
     fn location(&self) -> XhciDeviceLocation {
@@ -1616,25 +1639,31 @@ impl XHCI {
             return;
         };
 
-        let (requests, halted_requests) = {
-            let mut dev = device.lock();
-
-            //requests in the middle of an endpoint reset are no longer in pending_requests
-            let halted_requests: Vec<_> = dev.transfer_rings
-                .iter_mut()
-                .flatten()
-                .filter_map(|ring| ring.halted_request.take())
-                .collect();
-
-            (core::mem::take(&mut dev.pending_requests), halted_requests)
-        };
-
-        //complete all requests as the device was disconnected
-        for request in requests.into_values().chain(halted_requests) {
-            complete_request(request, UsbTransferStatus::Disconnected, 0);
+        if !device.lock().begin_disconnect() {
+            kprintln_xhci_debug!("[SLOT {}] Detach of a device that is already being disconnected.", slot_id);
+            return;
         }
 
+        complete_all_requests_disconnected(&device);
         self.disable_slot_locked(&mut ports, port);
+    }
+
+    fn disconnect_device_by_slot(&self, slot_id: u8) -> Result<(), &'static str> {
+        let device = self.device_from_slot_id(slot_id).ok_or("No device with this slot.")?;
+
+        let location = {
+            let mut device = device.lock();
+            if !device.begin_disconnect() {
+                return Err("Device is already being disconnected.");
+            }
+            device.location()
+        };
+
+        kprintln_xhci!(Info, "[SLOT {}] [{}] Disconnecting device.", slot_id, location);
+
+        complete_all_requests_disconnected(&device);
+        unsafe { self.disable_device_slot(location, slot_id) };
+        Ok(())
     }
 
     unsafe fn on_endpoint_configured(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
@@ -3205,8 +3234,12 @@ impl XHCI {
         let port_speed = UsbSpeed::from_xhci_port_speed(location.speed());
         let port = location.port_on_parent();
 
-        let parent_hub = None; //TODO
+        let parent_hub_slot_id = location.parent_hub_slot_id();
         set_timeout(10, move || {
+            let parent_hub = parent_hub_slot_id.and_then(|hub_slot_id| usb_find_device(&controller, hub_slot_id));
+            if parent_hub_slot_id.is_some() && parent_hub.is_none() {
+                kprintln_xhci!(Warn, "[SLOT {}] Parent hub slot {:?} is not registered in usb core.", slot_id, parent_hub_slot_id);
+            }
             usb_register_device(slot_id, controller, port, port_speed, parent_hub);
         });
     }
@@ -3257,6 +3290,13 @@ fn max_packet_size_0(port_speed: u8, reported: u8) -> Option<u32> {
     }
 
     matches!(reported, 8 | 16 | 32 | 64).then_some(reported as u32)
+}
+
+fn complete_all_requests_disconnected(device: &Arc<IrqMutex<XhciDevice>>) {
+    let requests = device.lock().take_all_requests();
+    for request in requests {
+        complete_request(request, UsbTransferStatus::Disconnected, 0);
+    }
 }
 
 /// Applies a completion to a request and runs its callback with no driver lock held.
@@ -3777,5 +3817,35 @@ impl UsbHostController for XHCI {
 
         //the address assigned by Address Device lives in the output slot context
         Some(dev.output_context().slot().get_usb_address())
+    }
+
+    fn disconnect_device(&self, hardware_id: u8) -> Result<(), &'static str> {
+        self.disconnect_device_by_slot(hardware_id)
+    }
+
+    fn enumerate_device_behind_hub(&self, hub: &Arc<UsbDevice>, hub_port: u8, speed: UsbSpeed) -> Result<(), &'static str> {
+        let hub_slot_id = hub.hardware_id;
+        let hub_device = self.device_from_slot_id(hub_slot_id).ok_or("Hub has no slot on this controller.")?;
+
+        let (hub_location, is_multi_tt) = {
+            let hub_device = hub_device.lock();
+            (hub_device.location(), hub_device.output_context().slot().is_multi_tt())
+        };
+
+        let location = hub_location
+            .behind_hub(hub_slot_id, is_multi_tt, hub_port, speed.to_xhci_slot_context_speed())
+            .ok_or("Device is deeper than the 5 hub tiers a route string can address.")?;
+
+        kprintln_xhci_debug!(
+            "[SLOT {}] Enumerating device on hub port {} at [{}], speed {:?}, behind TT={}.",
+            hub_slot_id,
+            hub_port,
+            location,
+            speed,
+            location.is_behind_transaction_translator()
+        );
+
+        self.send_enable_slot_command(location)
+            .map_err(|_| "Sending Enable Slot for the device behind the hub failed.")
     }
 }

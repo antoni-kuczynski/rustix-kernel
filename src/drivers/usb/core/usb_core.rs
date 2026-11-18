@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use spin::Once;
 use crate::drivers::usb::core::usb_descriptors::*;
 use crate::drivers::usb::core::irq_mutex::*;
-use crate::drivers::usb::core::usb_hub::{usb_issue_hub_descriptor};
+use crate::drivers::usb::core::usb_hub::{usb_hub_register_port_device, usb_issue_hub_descriptor};
 use crate::drivers::usb::core::usb_requests::{
     usb_request_clear_endpoint_halt, usb_request_clear_tt_buffer, usb_request_get_configuration_descriptor,
     usb_request_get_device_descriptor, usb_request_set_configuration,
@@ -20,9 +20,11 @@ use crate::{kprintln_usb_core, kprintln_usb_core_debug};
 const USB_CLASS_HID: u8 = 0x03;
 const USB_CLASS_HUB: u8 = 0x09;
 const CONFIGURATION_DESCRIPTOR_TOTAL_LENGTH_PREFIX: u16 = 8;
-const USB_ENDPOINT_TRANSFER_TYPE_MASK: u8 = 0x03;
-const USB_ENDPOINT_TRANSFER_TYPE_CONTROL: u8 = 0;
-const USB_ENDPOINT_TRANSFER_TYPE_BULK: u8 = 2;
+pub const USB_ENDPOINT_TRANSFER_TYPE_MASK: u8 = 0x03;
+pub const USB_ENDPOINT_TRANSFER_TYPE_CONTROL: u8 = 0;
+pub const USB_ENDPOINT_TRANSFER_TYPE_BULK: u8 = 2;
+pub const USB_ENDPOINT_TRANSFER_TYPE_INTERRUPT: u8 = 3;
+pub const USB_ENDPOINT_DIRECTION_IN: u8 = 0x80;
 const USB_HUB_PROTOCOL_MULTI_TT: u8 = 2;
 
 pub struct UsbCore {
@@ -144,7 +146,19 @@ fn on_clear_tt_buffer_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     }
 }
 
-/// Registers a newly addressed device and asks it for its device descriptor.
+pub fn usb_find_device(host_controller: &Weak<dyn UsbHostController>, hardware_id: u8) -> Option<Arc<UsbDevice>> {
+    let controller_address = host_controller.as_ptr() as *const ();
+
+    USB_CORE.lock()
+        .devices
+        .iter()
+        .rev()
+        .find(|device| {
+            device.hardware_id == hardware_id && device.host_controller.as_ptr() as *const () == controller_address
+        })
+        .cloned()
+}
+
 pub fn usb_register_device(
     hardware_id: u8, host_controller: Weak<dyn UsbHostController>, 
     parent_port: u8, speed: UsbSpeed, parent_hub: Option<Arc<UsbDevice>>) {
@@ -152,6 +166,11 @@ pub fn usb_register_device(
         let mut usb_core = USB_CORE.lock();
         usb_core.add_device(hardware_id, host_controller, parent_port, speed, parent_hub)
     };
+
+    //registered before any driver binds them so disconnect of the port can always find it
+    if let Some(parent_hub) = &device.parent_hub {
+        usb_hub_register_port_device(parent_hub, device.port_on_parent as u16, device.clone());
+    }
 
     let Some(request) = request else {
         kprintln_usb_core!(Error, "Failed to allocate GET_DESCRIPTOR request for device {}.", device.system_id);

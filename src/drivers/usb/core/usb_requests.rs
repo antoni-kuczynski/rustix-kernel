@@ -167,6 +167,35 @@ pub fn usb_request_set_hub_port_feature(
     control_request(device, setup_packet, callback)
 }
 
+pub fn usb_request_clear_hub_port_feature(
+    device: Arc<UsbDevice>,
+    port_number: u16,
+    feature_selector: u16,
+    callback: UsbTransferCallback,
+) -> Option<UsbRequestHandle> {
+    let setup_packet = UsbSetupPacket::new(
+        UsbBmRequestType::new(
+            UsbBmRequestType::DIR_HOST_TO_DEVICE,
+            UsbBmRequestType::TYPE_CLASS,
+            UsbBmRequestType::REC_OTHER,
+        ),
+        UsbBRequest::CLEAR_FEATURE,
+        feature_selector,
+        port_number,
+        0,
+    );
+
+    control_request(device, setup_packet, callback)
+}
+
+pub fn usb_request_clear_hub_port_connection_change(
+    device: Arc<UsbDevice>,
+    port_number: u16,
+    callback: UsbTransferCallback,
+) -> Option<UsbRequestHandle> {
+    usb_request_clear_hub_port_feature(device, port_number, WValue::C_PORT_CONNECTION, callback)
+}
+
 pub fn usb_request_get_hub_port_status(
     device: Arc<UsbDevice>,
     port_number: u16,

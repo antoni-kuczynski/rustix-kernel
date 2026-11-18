@@ -233,7 +233,16 @@ impl WValue {
     pub const DESC_ENDPOINT: u8 = 0x05;
     pub const DESC_DEVICE_QUALIFIER: u8 = 0x06;
     pub const DESC_OTHER_SPEED: u8 = 0x07;
+    pub const PORT_RESET: u16 = 0x04;
     pub const PORT_POWER: u16 = 0x08;
+    pub const C_PORT_CONNECTION: u16 = 0x10;
+    pub const C_PORT_ENABLE: u16 = 0x11;
+    pub const C_PORT_SUSPEND: u16 = 0x12;
+    pub const C_PORT_OVER_CURRENT: u16 = 0x13;
+    pub const C_PORT_RESET: u16 = 0x14;
+    pub const C_PORT_LINK_STATE: u16 = 0x19;
+    pub const C_PORT_CONFIG_ERROR: u16 = 0x1A;
+    pub const C_BH_PORT_RESET: u16 = 0x1D;
 
     pub const DESC_HID: u8 = 0x21;
     pub const DESC_HID_REPORT: u8 = 0x22;
