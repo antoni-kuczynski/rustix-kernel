@@ -48,6 +48,7 @@ use core::{mem, ptr};
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{compiler_fence, fence, Ordering};
 use x86_64::{PhysAddr, VirtAddr};
+use crate::drivers::usb::xhci::xhci::XhciDeviceLocation;
 use crate::drivers::usb::xhci::xhci_trb::Trb;
 use crate::drivers::usb::xhci::xhci_trb_ring::RingError::Unsupported;
 use crate::{kprintln_xhci, kprintln_xhci_debug};
@@ -550,8 +551,8 @@ pub fn xhci_alloc_dma_erst(
 #[derive(Clone, Copy, Debug)]
 pub enum CommandContext {
     Empty,
-    EnableSlot { port_id: u8 },
-    DisableSlot { port_id: u8, slot_id: u8 },
+    EnableSlot { location: XhciDeviceLocation },
+    DisableSlot { location: XhciDeviceLocation, slot_id: u8 },
     AddressDevice { slot_id: u8 },
 }
 

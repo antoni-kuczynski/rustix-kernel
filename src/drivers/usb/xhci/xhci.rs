@@ -716,11 +716,130 @@ enum XhciHaltReason {
     UnknownError = 6,
 }
 
+/// Where a device sits in the USB topology
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XhciDeviceLocation {
+    root_port: u8,
+    route_string: u32,
+    speed: u8,
+    transaction_translator: Option<XhciTransactionTranslator>,
+}
+
+impl core::fmt::Display for XhciDeviceLocation {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.is_on_root_port() {
+            write!(formatter, "PORT {}", self.root_port)
+        } else {
+            write!(formatter, "PORT {} ROUTE {:#x}", self.root_port, self.route_string)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct XhciTransactionTranslator {
+    hub_slot_id: u8,
+    hub_port_number: u8,
+    is_multi_tt: bool,
+}
+
+impl XhciDeviceLocation {
+    const ROUTE_STRING_MAX_TIERS: u32 = 5;
+    const ROUTE_STRING_MAX_PORT: u8 = 15;
+
+    pub fn on_root_port(root_port: u8, speed: u8) -> Self {
+        Self {
+            root_port,
+            route_string: 0,
+            speed,
+            transaction_translator: None,
+        }
+    }
+
+    /// Location of a device on hub_port of the hub.
+    /// Returns None past 5 hub tiers that route string can address
+    pub fn behind_hub(&self, hub_slot_id: u8, hub_is_multi_tt: bool, hub_port: u8, speed: u8) -> Option<Self> {
+        let depth = self.hub_depth();
+        if depth >= Self::ROUTE_STRING_MAX_TIERS {
+            return None;
+        }
+
+        let route_port = hub_port.min(Self::ROUTE_STRING_MAX_PORT) as u32;
+        let route_string = self.route_string | (route_port << (4 * depth));
+
+        //the first HS hub on the way down owns the TT deeper FS hubs reuse it
+        let transaction_translator = if self.is_high_speed() && Self::is_low_or_full_speed_id(speed) {
+            Some(XhciTransactionTranslator {
+                hub_slot_id,
+                hub_port_number: hub_port,
+                is_multi_tt: hub_is_multi_tt,
+            })
+        } else {
+            self.transaction_translator.filter(|_| Self::is_low_or_full_speed_id(speed))
+        };
+
+        Some(Self {
+            root_port: self.root_port,
+            route_string,
+            speed,
+            transaction_translator,
+        })
+    }
+
+    pub fn root_port(&self) -> u8 { self.root_port }
+    pub fn route_string(&self) -> u32 { self.route_string }
+    pub fn speed(&self) -> u8 { self.speed }
+    pub fn is_on_root_port(&self) -> bool { self.route_string == 0 }
+    pub fn is_behind_transaction_translator(&self) -> bool { self.transaction_translator.is_some() }
+    pub fn is_high_speed(&self) -> bool { self.speed == XhciPortSpeed::HIGH_SPEED }
+    pub fn is_super_speed_or_higher(&self) -> bool { self.speed >= XhciPortSpeed::SUPER_SPEED }
+    pub fn is_low_or_full_speed(&self) -> bool { Self::is_low_or_full_speed_id(self.speed) }
+
+    pub fn hub_depth(&self) -> u32 {
+        (0..Self::ROUTE_STRING_MAX_TIERS)
+            .take_while(|tier| (self.route_string >> (4 * tier)) & 0xF != 0)
+            .count() as u32
+    }
+
+    pub fn port_on_parent(&self) -> u8 {
+        match self.hub_depth() {
+            0 => self.root_port,
+            depth => ((self.route_string >> (4 * (depth - 1))) & 0xF) as u8,
+        }
+    }
+
+    pub fn default_max_packet_size_0(&self) -> u32 {
+        match self.speed {
+            XhciPortSpeed::HIGH_SPEED => 64,
+            speed if speed >= XhciPortSpeed::SUPER_SPEED => 512,
+            _ => 8,
+        }
+    }
+
+    pub fn write_to_slot_context(&self, slot_context: &mut SlotContext) {
+        slot_context.set_root_hub_port(self.root_port);
+        slot_context.set_route_string(self.route_string);
+        slot_context.set_speed(self.speed);
+
+        let transaction_translator = self.transaction_translator.unwrap_or(XhciTransactionTranslator {
+            hub_slot_id: 0,
+            hub_port_number: 0,
+            is_multi_tt: false,
+        });
+        slot_context.set_parent_hub_slot(transaction_translator.hub_slot_id);
+        slot_context.set_parent_port(transaction_translator.hub_port_number);
+        slot_context.set_multi_tt(transaction_translator.is_multi_tt);
+    }
+
+    fn is_low_or_full_speed_id(speed: u8) -> bool {
+        speed == XhciPortSpeed::LOW_SPEED || speed == XhciPortSpeed::FULL_SPEED
+    }
+}
+
 pub struct XhciDevice {
     input_context_dma: DmaAlloc,
     device_context_dma: DmaAlloc,
     transfer_rings: Vec<Option<TransferRingSlot>>,
-    port: u8,
+    location: XhciDeviceLocation,
     slot_id: u8,
     first_8_bytes_of_device_descriptor: Option<DmaAlloc>,
     descriptor_probe_trb: Option<TrbPhysAddr>,
@@ -736,7 +855,7 @@ impl XhciDevice {
         ep0_transfer_ring_dma: DmaAlloc,
         ep0_transfer_ring: TransferRing,
         device_context_dma: DmaAlloc,
-        port: u8,
+        location: XhciDeviceLocation,
         slot_id: u8,
     ) -> Self {
         let mut transfer_rings = Vec::with_capacity(MAX_DCI as usize + 1);
@@ -758,13 +877,21 @@ impl XhciDevice {
             input_context_dma,
             device_context_dma,
             transfer_rings,
-            port,
+            location,
             slot_id,
             first_8_bytes_of_device_descriptor: None,
             descriptor_probe_trb: None,
             pending_requests: BTreeMap::new(),
             configuration_state: XhciDeviceConfigurationState::Unconfigured,
         }
+    }
+
+    fn location(&self) -> XhciDeviceLocation {
+        self.location
+    }
+
+    fn root_port(&self) -> u8 {
+        self.location.root_port()
     }
 
     fn output_context(&self) -> &DeviceContext {
@@ -1189,29 +1316,43 @@ impl XHCI {
             return;
         };
 
-        let disable_slot_trb = DisableSlotCommandTrb::new(slot_id);
-        if let Err(error) = self.send_command(
-            *disable_slot_trb.raw(),
-            CommandContext::DisableSlot {
-                port_id: port,
-                slot_id,
-            },
-        ) {
-            kprintln_xhci!(
-                Error,
-                "[SLOT {}] [PORT {}] Sending disable slot command failed: {:?}.",
-                slot_id,
-                port,
-                error
-            );
-        }
+        //the device may not exist yet if Address Device was never sent
+        let location = self
+            .device_from_slot_id(slot_id)
+            .map(|device| device.lock().location())
+            .unwrap_or(XhciDeviceLocation::on_root_port(port, XhciPortSpeed::UNKNOWN));
 
+        self.send_disable_slot_command(location, slot_id);
         ports.set_state(port, PortState::Idle);
     }
 
     unsafe fn disable_slot(&self, port: u8) {
         let mut ports = self.ports.lock();
         self.disable_slot_locked(&mut ports, port);
+    }
+
+    unsafe fn disable_device_slot(&self, location: XhciDeviceLocation, slot_id: u8) {
+        if location.is_on_root_port() {
+            self.disable_slot(location.root_port());
+        } else {
+            self.send_disable_slot_command(location, slot_id);
+        }
+    }
+
+    fn send_disable_slot_command(&self, location: XhciDeviceLocation, slot_id: u8) {
+        let disable_slot_trb = DisableSlotCommandTrb::new(slot_id);
+        if let Err(error) = self.send_command(
+            *disable_slot_trb.raw(),
+            CommandContext::DisableSlot { location, slot_id },
+        ) {
+            kprintln_xhci!(
+                Error,
+                "[SLOT {}] [{}] Sending disable slot command failed: {:?}.",
+                slot_id,
+                location,
+                error
+            );
+        }
     }
 
     unsafe fn resume_port(&self, ports: &mut PortTable, port: u8) {
@@ -1287,19 +1428,25 @@ impl XHCI {
     }
 
     fn issue_enable_slot_command(&self, port: u8, ports: &mut PortTable) {
-        let slot_type = 0; //99,9999999999% cases its just zero
-        let trb = EnableSlotCommandTrb::new_command(slot_type);
-        if let Err(error) =
-            self.send_command(*trb.raw(), CommandContext::EnableSlot { port_id: port })
-        {
-            kprintln_xhci!(
-                Error,
-                "[PORT {}] Sending enable slot command failed: {:?}.",
-                port,
-                error
-            );
+        let location = XhciDeviceLocation::on_root_port(port, self.regs.portsc(port).ps_read());
+        if self.send_enable_slot_command(location).is_err() {
             ports.set_state(port, PortState::Idle);
         }
+    }
+
+    fn send_enable_slot_command(&self, location: XhciDeviceLocation) -> Result<(), RingError> {
+        let slot_type = 0; //99,9999999999% cases its just zero
+        let trb = EnableSlotCommandTrb::new_command(slot_type);
+        self.send_command(*trb.raw(), CommandContext::EnableSlot { location })
+            .map(|_| ())
+            .inspect_err(|error| {
+                kprintln_xhci!(
+                    Error,
+                    "[{}] Sending enable slot command failed: {:?}.",
+                    location,
+                    error
+                );
+            })
     }
 
 
@@ -1639,7 +1786,7 @@ impl XHCI {
         context: CommandContext,
     ) {
         let slot_id = trb.slot_id();
-        let CommandContext::EnableSlot { port_id: port } = context else {
+        let CommandContext::EnableSlot { location } = context else {
             kprintln_xhci!(
                 Error,
                 "[SLOT {}] Invalid command context type! Expected enable slot, found {:?}.",
@@ -1648,6 +1795,27 @@ impl XHCI {
             );
             return;
         };
+        let port = location.root_port();
+
+        //devices behind a hub have no port table entry, the slot itself is the key
+        if !location.is_on_root_port() {
+            if trb.completion_code() != TrbCompletionCode::SUCCESS || slot_id == 0 {
+                kprintln_xhci!(
+                    Warn,
+                    "[SLOT {}][{}] Handling enable slot command resulted in non successful exit code {}.",
+                    slot_id, location, trb.completion_code()
+                );
+                if slot_id != 0 {
+                    self.send_disable_slot_command(location, slot_id);
+                }
+                return;
+            }
+
+            defer_with_xhci(self.id, 10, move |xhci| unsafe {
+                xhci.allocate_device(location, slot_id)
+            });
+            return;
+        }
 
         {
             let mut ports = self.ports.lock();
@@ -1672,23 +1840,7 @@ impl XHCI {
                     existing
                 );
 
-                let disable_slot_trb = DisableSlotCommandTrb::new(slot_id);
-                if let Err(error) = self.send_command(
-                    *disable_slot_trb.raw(),
-                    CommandContext::DisableSlot {
-                        port_id: port,
-                        slot_id,
-                    },
-                ) {
-                    kprintln_xhci!(
-                        Error,
-                        "[SLOT {}][PORT {}] Sending disable slot command failed: {:?}.",
-                        slot_id,
-                        port,
-                        error
-                    );
-                }
-
+                self.send_disable_slot_command(location, slot_id);
                 return;
             }
 
@@ -1701,32 +1853,33 @@ impl XHCI {
         }
 
         defer_with_xhci(self.id, 10, move |xhci| unsafe {
-            xhci.allocate_device(port, slot_id)
+            xhci.allocate_device(location, slot_id)
         });
     }
 
     /// Builds the input context, EP0 transfer ring and output device context for a freshly
     /// enabled slot, then issues Address Device.
-    unsafe fn allocate_device(self: &Arc<Self>, port: u8, slot_id: u8) {
-        let ports = self.ports.lock();
-        if ports.slot(port) != Some(slot_id) {
-            kprintln_xhci!(
-                Error,
-                "[SLOT {}][PORT {}] Aborting allocation - port state changed.",
-                slot_id,
-                port
-            );
-            return;
+    unsafe fn allocate_device(self: &Arc<Self>, location: XhciDeviceLocation, slot_id: u8) {
+        let port = location.root_port();
+
+        if location.is_on_root_port() {
+            let ports = self.ports.lock();
+            if ports.slot(port) != Some(slot_id) {
+                kprintln_xhci!(
+                    Error,
+                    "[SLOT {}][PORT {}] Aborting allocation - port state changed.",
+                    slot_id,
+                    port
+                );
+                return;
+            }
         }
-        drop(ports);
 
         kprintln_xhci_debug!(
-            "[SLOT {}][PORT {}] Began allocating data structures for device.",
+            "[SLOT {}][{}] Began allocating data structures for device.",
             slot_id,
-            port
+            location
         );
-
-        let port_speed = self.regs.portsc(port).ps_read();
 
         let Some(input_context_dma) = dma_alloc_zeroed(size_of::<InputContext>(), 4096) else {
             kprintln_xhci!(
@@ -1735,7 +1888,7 @@ impl XHCI {
                 slot_id,
                 port
             );
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
             return;
         };
 
@@ -1746,7 +1899,7 @@ impl XHCI {
                 slot_id,
                 port
             );
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
             return;
         };
 
@@ -1757,7 +1910,7 @@ impl XHCI {
                 slot_id,
                 port
             );
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
             return;
         };
 
@@ -1767,20 +1920,10 @@ impl XHCI {
         ic_control.add_context(1);
 
         let input_slot_context = input_context.slot::<SlotContext>(self.regs.context_size);
-        input_slot_context.set_root_hub_port(port);
-        // only devices directly attached to the root hub are handled here, so the route
-        // string stays zero
-        input_slot_context.set_route_string(0);
+        location.write_to_slot_context(input_slot_context);
         input_slot_context.set_context_entries(1);
-        input_slot_context.set_speed(port_speed);
 
-        let max_packet_size = match port_speed {
-            1 => 8,
-            2 => 8,
-            3 => 64,
-            4 => 512,
-            _ => 8, //fallback
-        };
+        let max_packet_size = location.default_max_packet_size_0();
 
         let Some(transfer_ring) = TransferRing::new(transfer_trbs, transfer_ring_dma.phys) else {
             kprintln_xhci!(
@@ -1789,7 +1932,7 @@ impl XHCI {
                 slot_id,
                 port
             );
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
             return;
         };
 
@@ -1816,7 +1959,7 @@ impl XHCI {
             transfer_ring_dma,
             transfer_ring,
             device_context_dma,
-            port,
+            location,
             slot_id,
         );
 
@@ -1844,7 +1987,7 @@ impl XHCI {
                 port,
                 error
             );
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
         }
     }
 
@@ -1877,7 +2020,8 @@ impl XHCI {
             return;
         };
 
-        let port = device.lock().port;
+        let location = device.lock().location();
+        let port = location.root_port();
 
         match trb.completion_code() {
             TrbCompletionCode::SUCCESS => {}
@@ -1890,7 +2034,7 @@ impl XHCI {
                     "[SLOT {}] [PORT {}] SET_ADDRESS request was not successful. The device was likely removed.",
                     slot_id, port
                 );
-                self.disable_slot(port);
+                self.disable_device_slot(location, slot_id);
                 return;
             }
             TrbCompletionCode::SLOT_NOT_ENABLED_ERROR => {
@@ -1908,7 +2052,7 @@ impl XHCI {
                     port,
                     code
                 );
-                self.disable_slot(port);
+                self.disable_device_slot(location, slot_id);
                 return;
             }
         }
@@ -1927,7 +2071,7 @@ impl XHCI {
         };
 
         if !self.verify_addressed_device(slot_id, bsr) {
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
             return;
         }
 
@@ -2045,7 +2189,7 @@ impl XHCI {
         context: CommandContext,
     ) {
         let CommandContext::DisableSlot {
-            port_id: port,
+            location,
             slot_id,
         } = context
         else {
@@ -2060,32 +2204,32 @@ impl XHCI {
         if trb.completion_code() == TrbCompletionCode::SLOT_NOT_ENABLED_ERROR {
             kprintln_xhci!(
                 Warn,
-                "[SLOT {}] [PORT {}] Disabling slot failed! Slot has not been enabled by an Enable Slot command.",
-                slot_id, port
+                "[SLOT {}] [{}] Disabling slot failed! Slot has not been enabled by an Enable Slot command.",
+                slot_id, location
             );
         } else if trb.completion_code() != TrbCompletionCode::SUCCESS {
             kprintln_xhci!(
                 Error,
-                "[SLOT {}] [PORT {}]  Disabling slot failed! Unexpected trb completion code {}.",
+                "[SLOT {}] [{}]  Disabling slot failed! Unexpected trb completion code {}.",
                 slot_id,
-                port,
+                location,
                 trb.completion_code()
             );
             return;
         }
 
         kprintln_xhci_debug!(
-            "[SLOT {}] [PORT {}]  Received successful Disable Slot command trb completion code.",
+            "[SLOT {}] [{}]  Received successful Disable Slot command trb completion code.",
             slot_id,
-            port
+            location
         );
 
-        self.release_slot(port, slot_id);
+        self.release_slot(location, slot_id);
 
         kprintln_xhci_debug!(
-            "[SLOT {}] [PORT {}]  Finished deallocating slot's memory.",
+            "[SLOT {}] [{}]  Finished deallocating slot's memory.",
             slot_id,
-            port
+            location
         );
     }
 
@@ -2120,10 +2264,12 @@ impl XHCI {
     }
 
     /// Drops all state belonging to a slot the controller has finished disabling.
-    fn release_slot(&self, port: u8, slot_id: u8) {
+    fn release_slot(&self, location: XhciDeviceLocation, slot_id: u8) {
         self.dcbaa.lock().clear_context(slot_id as usize);
 
-        {
+        //devices behind a hub never had a port table entry
+        if location.is_on_root_port() {
+            let port = location.root_port();
             // Only reset the port when it is really this slot that is going away. A duplicate
             // slot handed back to the controller must not disturb the slot the port still uses.
             let mut ports = self.ports.lock();
@@ -2695,9 +2841,7 @@ impl XHCI {
                 configured_dcis.push(dci);
 
 
-                let port_speed = PortStatusControl::from_port(
-                    self.regs.operational_base, dev.port
-                ).ps_read();
+                let port_speed = dev.location().speed();
 
 
 
@@ -2939,7 +3083,8 @@ impl XHCI {
         slot_id: u8,
         status: UsbTransferStatus,
     ) {
-        let port = device.lock().port;
+        let location = device.lock().location();
+        let port = location.root_port();
 
         if status != UsbTransferStatus::Completed {
             kprintln_xhci!(
@@ -2948,14 +3093,12 @@ impl XHCI {
                 slot_id,
                 port
             );
-            self.disable_slot(port);
+            self.disable_device_slot(location, slot_id);
             return;
         }
 
         let reported = device.lock().reported_max_packet_size_0();
-        let port_speed = self.regs.portsc(port).ps_read();
-
-        let Some(max_packet_size) = reported.and_then(|value| max_packet_size_0(port_speed, value))
+        let Some(max_packet_size) = reported.and_then(|value| max_packet_size_0(location.speed(), value))
         else {
             kprintln_xhci!(
                 Warn,
@@ -3040,9 +3183,9 @@ impl XHCI {
                 error
             );
 
-            let port = self.devices.lock().get(&slot_id).map(|device| device.lock().port);
-            if let Some(port) = port {
-                self.disable_slot(port);
+            let location = self.device_from_slot_id(slot_id).map(|device| device.lock().location());
+            if let Some(location) = location {
+                self.disable_device_slot(location, slot_id);
             }
             None
         } else {
@@ -3054,17 +3197,13 @@ impl XHCI {
     fn register_with_usb_core(self: &Arc<XHCI>, slot_id: u8) {
         let controller: Weak<dyn UsbHostController> = Arc::downgrade(self) as _;
 
-        let (port_speed, port) = {
-            let dev_list = self.devices.lock();
-            let Some(device) = dev_list.get(&slot_id) else {
-                kprintln_xhci!(Error, "[SLOT {}] No device found to register in usb core.", slot_id);
-                return;
-            };
-            let port = device.lock().port;
-
-            let ps = PortStatusControl::from_port(self.regs.operational_base, port).ps_read();
-            (UsbSpeed::from_xhci_port_speed(ps), port)
+        let Some(device) = self.device_from_slot_id(slot_id) else {
+            kprintln_xhci!(Error, "[SLOT {}] No device found to register in usb core.", slot_id);
+            return;
         };
+        let location = device.lock().location();
+        let port_speed = UsbSpeed::from_xhci_port_speed(location.speed());
+        let port = location.port_on_parent();
 
         let parent_hub = None; //TODO
         set_timeout(10, move || {
