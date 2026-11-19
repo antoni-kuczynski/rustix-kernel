@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use crate::drivers::input::kbd::keyboard::{GlobalKeyboard, GLOBAL_KEYBOARD};
 use crate::drivers::input::mouse::mouse::{GlobalMouse, GLOBAL_MOUSE};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
-use crate::drivers::usb::core::usb_core::usb_clear_endpoint_halt;
+use crate::drivers::usb::core::usb_core::{usb_clear_endpoint_halt, usb_unregister_device};
 use crate::drivers::usb::core::usb_descriptors::{UsbInterfaceTree};
 use crate::drivers::usb::core::usb_requests::{hid_request_set_boot_protocol, hid_request_set_idle_indefinitely};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
@@ -87,6 +87,7 @@ fn hid_handle_device_disconnect(request: Arc<IrqMutex<UsbTransferRequest>>) {
         (dev.system_id, req.endpoint_address)
     };
 
+    usb_unregister_device(system_id);
     let mut hid_core = HID_CORE.lock();
 
     let _ = match hid_core.devices.remove(&(system_id, endpoint_address)) {

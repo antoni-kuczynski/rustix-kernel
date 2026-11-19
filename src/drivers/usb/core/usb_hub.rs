@@ -14,9 +14,7 @@ use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupP
 use crate::drivers::usb::{WValue};
 use crate::drivers::usb::core::UsbSpeed;
 use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Disconnected, Error, Stalled};
-use crate::drivers::usb::core::usb_core::{
-    usb_clear_endpoint_halt, USB_ENDPOINT_DIRECTION_IN, USB_ENDPOINT_TRANSFER_TYPE_INTERRUPT, USB_ENDPOINT_TRANSFER_TYPE_MASK,
-};
+use crate::drivers::usb::core::usb_core::{usb_clear_endpoint_halt, USB_ENDPOINT_DIRECTION_IN, USB_ENDPOINT_TRANSFER_TYPE_INTERRUPT, USB_ENDPOINT_TRANSFER_TYPE_MASK, usb_unregister_device};
 use crate::drivers::usb::core::usb_requests::usb_request_interrupt_in;
 use crate::{kprintln_hub_core, kprintln_hub_core_debug};
 use crate::memory::dma::{DmaAlloc};
@@ -165,6 +163,7 @@ fn usb_hub_handle_device_disconnect(request: Arc<IrqMutex<UsbTransferRequest>>) 
     let system_id = request.lock().target_device.system_id;
 
     let hub = USB_HUB_CORE.lock().devices.remove(&system_id);
+    usb_unregister_device(system_id);
 
     match hub {
         None => {
@@ -880,7 +879,7 @@ impl UsbDefaultAddressSemaphore {
         self.set_owner(next_hub_device.hardware_id, next_port_number);
         Some((next_hub_device, next_port_number))
     }
-    
+
     pub fn release_hub(&mut self, hub_hardware_id: u8) -> Option<(Arc<UsbDevice>, u16)> {
         self.waiting.retain(|(waiting_hub_device, _)| waiting_hub_device.hardware_id != hub_hardware_id);
 

@@ -3,7 +3,7 @@
  * 23/07/2026
  */
 use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
+use alloc::collections::BTreeMap;
 use spin::Once;
 use crate::drivers::usb::core::usb_descriptors::*;
 use crate::drivers::usb::core::irq_mutex::*;
@@ -28,14 +28,14 @@ pub const USB_ENDPOINT_DIRECTION_IN: u8 = 0x80;
 const USB_HUB_PROTOCOL_MULTI_TT: u8 = 2;
 
 pub struct UsbCore {
-    devices: Vec<Arc<UsbDevice>>,
+    devices: BTreeMap<UsbDeviceId, Arc<UsbDevice>>,
     next_system_id: u64
 }
 
 impl UsbCore {
     const fn new() -> Self {
         UsbCore {
-            devices: Vec::new(),
+            devices: BTreeMap::new(),
             next_system_id: 1
         }
     }
@@ -65,7 +65,7 @@ impl UsbCore {
             parent_hub
         });
 
-        self.devices.push(device.clone());
+        self.devices.insert(device.system_id, device.clone());
 
         let request = usb_request_get_device_descriptor(device.clone(), on_device_descriptor_received);
 
@@ -151,7 +151,7 @@ pub fn usb_find_device(host_controller: &Weak<dyn UsbHostController>, hardware_i
 
     USB_CORE.lock()
         .devices
-        .iter()
+        .values()
         .rev()
         .find(|device| {
             device.hardware_id == hardware_id && device.host_controller.as_ptr() as *const () == controller_address
@@ -188,6 +188,9 @@ pub fn usb_register_device(
     }
 }
 
+pub fn usb_unregister_device(device_id: UsbDeviceId) {
+    USB_CORE.lock().devices.remove(&device_id);
+}
 
 fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status != UsbTransferStatus::Completed {
