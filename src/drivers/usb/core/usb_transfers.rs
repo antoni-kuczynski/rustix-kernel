@@ -72,6 +72,13 @@ pub trait UsbHostController: Send + Sync {
 
     /// Fails every request of the device with `Disconnected` and releases it in the controller
     fn disconnect_device(&self, hardware_id: u8) -> Result<(), &'static str>;
+
+    /// Only one device of the bus may answer at the default address 0. 
+    /// `true` if `hub_port` of `hub` owns it now
+    fn acquire_default_address(&self, hub: &Arc<UsbDevice>, hub_port: u16) -> bool;
+
+    /// Doesnt do anything if `hub_port` of the hub does not own the default address.
+    fn release_default_address(&self, hub_hardware_id: u8, hub_port: u16);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

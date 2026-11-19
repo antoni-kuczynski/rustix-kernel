@@ -60,6 +60,7 @@ use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::pci::*;
 use crate::drivers::usb::core::irq_mutex::{IrqGuard, IrqMutex};
 use crate::drivers::usb::core::usb_core::{usb_find_device, usb_register_device};
+use crate::drivers::usb::core::usb_hub::{usb_hub_send_port_reset, UsbDefaultAddressSemaphore};
 use crate::drivers::usb::core::usb_transfers::{
     UsbDevice, UsbHostController, UsbTransferRequest, UsbTransferStatus,
 };
@@ -126,6 +127,8 @@ const EP0_DCI: u8 = 1;
 const MAX_DCI: u8 = 31;
 
 const MAX_EP_HALT_ATTEMPTS: usize = 5;
+/// A normal hub port holds the default address for a reset (<= 800 ms limit) and a few commands
+const DEFAULT_ADDRESS_TIMEOUT_MS: u64 = 5000;
 
 fn runtime_interrupter_offset(interrupter: u8) -> u64 {
     interrupter as u64 * INTERRUPTER_REGISTER_STRIDE
@@ -1307,9 +1310,58 @@ pub struct XHCI {
     transfer_interrupter_target: u16,
     _scratchpad: ScratchpadArea,
     id: usize,
+    /// Ports of hubs on this bus that are, or wait to be, between PORT_RESET and Address Device
+    default_address: IrqMutex<UsbDefaultAddressSemaphore>,
 }
 
 impl XHCI {
+    /// Gives back the default address held by a device that never got its address, and the one
+    /// held by a port of the device if it is a hub.
+    fn release_default_address_of_device(&self, location: XhciDeviceLocation, slot_id: u8) {
+        if let Some(parent_hub_slot_id) = location.parent_hub_slot_id() {
+            let next = self.default_address.lock().release(parent_hub_slot_id, location.port_on_parent() as u16);
+            self.hand_default_address_to(next);
+        }
+
+        let next = self.default_address.lock().release_hub(slot_id);
+        self.hand_default_address_to(next);
+    }
+
+    /// The next waiting port sends its PORT_RESET outside every controller lock.
+    fn hand_default_address_to(&self, next: Option<(Arc<UsbDevice>, u16)>) {
+        let Some((next_hub_device, next_port_number)) = next else {
+            return;
+        };
+
+        self.start_default_address_timeout(next_hub_device.hardware_id, next_port_number);
+        set_timeout(0, move || {
+            usb_hub_send_port_reset(next_hub_device, next_port_number);
+        });
+    }
+
+    fn start_default_address_timeout(&self, hub_hardware_id: u8, hub_port: u16) {
+        let Some(acquired_at_ms) = self.default_address.lock().owner_acquired_at_ms(hub_hardware_id, hub_port) else {
+            return;
+        };
+
+        defer_with_xhci(self.id, DEFAULT_ADDRESS_TIMEOUT_MS, move |xhci| {
+            //the port may have released and acquired it again since, that ownership has its own timeout
+            let owner_acquired_at_ms = xhci.default_address.lock().owner_acquired_at_ms(hub_hardware_id, hub_port);
+            if owner_acquired_at_ms != Some(acquired_at_ms) {
+                return;
+            }
+
+            kprintln_xhci!(
+                Warn,
+                "[SLOT {}] Hub port {} held the default address for {} ms, releasing it.",
+                hub_hardware_id,
+                hub_port,
+                DEFAULT_ADDRESS_TIMEOUT_MS
+            );
+            xhci.release_default_address(hub_hardware_id, hub_port);
+        });
+    }
+
     fn send_command(&self, trb: Trb, context: CommandContext) -> Result<PhysAddr, RingError> {
         let phys = {
             let mut commands_guard = self.commands.lock();
@@ -1355,6 +1407,9 @@ impl XHCI {
     }
 
     unsafe fn disable_device_slot(&self, location: XhciDeviceLocation, slot_id: u8) {
+        //should cover every falure path, so that no device locks the bus
+        self.release_default_address_of_device(location, slot_id);
+
         if location.is_on_root_port() {
             self.disable_slot(location.root_port());
         } else {
@@ -1645,6 +1700,8 @@ impl XHCI {
         }
 
         complete_all_requests_disconnected(&device);
+        //a hub on the root port may hold the default address for one of its ports
+        self.release_default_address_of_device(device.lock().location(), slot_id);
         self.disable_slot_locked(&mut ports, port);
     }
 
@@ -1837,6 +1894,7 @@ impl XHCI {
                 if slot_id != 0 {
                     self.send_disable_slot_command(location, slot_id);
                 }
+                self.release_default_address_of_device(location, slot_id);
                 return;
             }
 
@@ -3235,6 +3293,12 @@ impl XHCI {
         let port = location.port_on_parent();
 
         let parent_hub_slot_id = location.parent_hub_slot_id();
+
+        //the device has its address and the max packet size probe is done, it left address 0
+        if let Some(parent_hub_slot_id) = parent_hub_slot_id {
+            self.release_default_address(parent_hub_slot_id, port as u16);
+        }
+
         set_timeout(10, move || {
             let parent_hub = parent_hub_slot_id.and_then(|hub_slot_id| usb_find_device(&controller, hub_slot_id));
             if parent_hub_slot_id.is_some() && parent_hub.is_none() {
@@ -3680,6 +3744,7 @@ impl PciDeviceInitializer for XHCI {
                 transfer_interrupter_target,
                 _scratchpad: scratchpad,
                 id: NEXT_XHCI_ID.fetch_add(1, Ordering::Relaxed),
+                default_address: IrqMutex::new(UsbDefaultAddressSemaphore::new()),
             });
 
             for interrupter in &xhci_arc.interrupters {
@@ -3821,6 +3886,19 @@ impl UsbHostController for XHCI {
 
     fn disconnect_device(&self, hardware_id: u8) -> Result<(), &'static str> {
         self.disconnect_device_by_slot(hardware_id)
+    }
+
+    fn acquire_default_address(&self, hub: &Arc<UsbDevice>, hub_port: u16) -> bool {
+        let is_acquired = self.default_address.lock().acquire_or_wait(hub, hub_port);
+        if is_acquired {
+            self.start_default_address_timeout(hub.hardware_id, hub_port);
+        }
+        is_acquired
+    }
+
+    fn release_default_address(&self, hub_hardware_id: u8, hub_port: u16) {
+        let next = self.default_address.lock().release(hub_hardware_id, hub_port);
+        self.hand_default_address_to(next);
     }
 
     fn enumerate_device_behind_hub(&self, hub: &Arc<UsbDevice>, hub_port: u8, speed: UsbSpeed) -> Result<(), &'static str> {

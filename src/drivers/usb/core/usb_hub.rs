@@ -3,11 +3,11 @@
  * 04/08/2026
  */
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use core::cmp::{max, min};
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::drivers::apic::apic::set_timeout;
+use crate::drivers::apic::apic::{set_timeout, timer_lapic_uptime_ms};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
 use crate::drivers::usb::core::usb_requests::{usb_request_clear_hub_port_connection_change, usb_request_clear_hub_port_feature, usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_set_hub_depth, usb_request_set_hub_port_feature};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
@@ -688,6 +688,9 @@ fn on_port_change_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
     let mut connection_change_cleared_by_reset = false;
 
     if snapshot.connection_changed {
+        //a device that leaves between Address Device and registration still holds the default address
+        usb_hub_release_default_address(&hub_device, port_number);
+
         //a quick replug reports a single change, the old device is gone either way
         let previous_device = hub.lock().port_devices_by_port_number.remove(&port_number);
         if let Some(previous_device) = previous_device {
@@ -815,6 +818,84 @@ fn usb_hub_abort_port_sequence(hub_device: &Arc<UsbDevice>, port_number: u16) {
     if let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(hub_device.system_id) {
         hub.lock().clear_port_state(port_number);
     }
+    usb_hub_release_default_address(hub_device, port_number);
+}
+
+/// Only one port of a bus may be between PORT_RESET and Address Device,
+/// so that only one port gets reset when called on address 0
+/// (that applies only to usb2 hubs)
+pub struct UsbDefaultAddressSemaphore {
+    is_owned: bool,
+    owner_hub_hardware_id: u8,
+    owner_port_number: u16,
+    owner_acquired_at_ms: u64,
+    waiting: VecDeque<(Arc<UsbDevice>, u16)>,
+}
+
+impl UsbDefaultAddressSemaphore {
+    pub const fn new() -> Self {
+        Self {
+            is_owned: false,
+            owner_hub_hardware_id: 0,
+            owner_port_number: 0,
+            owner_acquired_at_ms: 0,
+            waiting: VecDeque::new(),
+        }
+    }
+
+    pub fn is_owner(&self, hub_hardware_id: u8, port_number: u16) -> bool {
+        self.is_owned && self.owner_hub_hardware_id == hub_hardware_id && self.owner_port_number == port_number
+    }
+
+    pub fn owner_acquired_at_ms(&self, hub_hardware_id: u8, port_number: u16) -> Option<u64> {
+        self.is_owner(hub_hardware_id, port_number).then_some(self.owner_acquired_at_ms)
+    }
+
+    fn set_owner(&mut self, hub_hardware_id: u8, port_number: u16) {
+        self.is_owned = true;
+        self.owner_hub_hardware_id = hub_hardware_id;
+        self.owner_port_number = port_number;
+        self.owner_acquired_at_ms = timer_lapic_uptime_ms();
+    }
+
+    /// `true` if the port owns the default address now, otherwise it is queued.
+    pub fn acquire_or_wait(&mut self, hub_device: &Arc<UsbDevice>, port_number: u16) -> bool {
+        if self.is_owned {
+            self.waiting.push_back((hub_device.clone(), port_number));
+            return false;
+        }
+
+        self.set_owner(hub_device.hardware_id, port_number);
+        true
+    }
+
+    /// Hands the default address to the next waiting port and returns it
+    pub fn release(&mut self, hub_hardware_id: u8, port_number: u16) -> Option<(Arc<UsbDevice>, u16)> {
+        if !self.is_owner(hub_hardware_id, port_number) {
+            return None;
+        }
+
+        self.is_owned = false;
+        let (next_hub_device, next_port_number) = self.waiting.pop_front()?;
+        self.set_owner(next_hub_device.hardware_id, next_port_number);
+        Some((next_hub_device, next_port_number))
+    }
+    
+    pub fn release_hub(&mut self, hub_hardware_id: u8) -> Option<(Arc<UsbDevice>, u16)> {
+        self.waiting.retain(|(waiting_hub_device, _)| waiting_hub_device.hardware_id != hub_hardware_id);
+
+        if !self.is_owned || self.owner_hub_hardware_id != hub_hardware_id {
+            return None;
+        }
+        self.release(self.owner_hub_hardware_id, self.owner_port_number)
+    }
+}
+
+/// Doesnt do anything if the port does not own the default address.
+fn usb_hub_release_default_address(hub_device: &UsbDevice, port_number: u16) {
+    if let Some(controller) = hub_device.host_controller.upgrade() {
+        controller.release_default_address(hub_device.hardware_id, port_number);
+    }
 }
 
 fn on_clear_port_connection_change_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
@@ -928,18 +1009,36 @@ fn on_debounced_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
 
     hub.lock().clear_debounce_attempts(port_number);
 
-    kprintln_hub_core_debug!("Port {} of hub device {} debounced, resetting.", port_number, hub_device.system_id);
+    let Some(controller) = hub_device.host_controller.upgrade() else {
+        kprintln_hub_core!(Warn, "Host controller of hub device {} is gone, port {} is not reset.", hub_device.system_id, port_number);
+        usb_hub_abort_port_sequence(&hub_device, port_number);
+        return;
+    };
 
+    //a waiting port gets its reset from the controller once the default address is free
+    if !controller.acquire_default_address(&hub_device, port_number) {
+        kprintln_hub_core_debug!("Port {} of hub device {} debounced, waiting for the default address.", port_number, hub_device.system_id);
+        return;
+    }
+
+    kprintln_hub_core_debug!("Port {} of hub device {} debounced, resetting.", port_number, hub_device.system_id);
+    usb_hub_send_port_reset(hub_device, port_number);
+}
+
+/// The port has to own the default address 0 of its controller.
+pub fn usb_hub_send_port_reset(hub_device: Arc<UsbDevice>, port_number: u16) {
     let Some(request) = usb_request_set_hub_port_feature(
         hub_device.clone(), port_number, WValue::PORT_RESET, on_port_reset_started
     ) else {
         kprintln_hub_core!(Error, "Failed to allocate SetPortFeature(PORT_RESET) for port {}.", port_number);
+        usb_hub_abort_port_sequence(&hub_device, port_number);
         return;
     };
 
     if let Some(controller) = hub_device.host_controller.upgrade() {
         if let Err(error) = controller.submit_request(request) {
             kprintln_hub_core!(Error, "Failed to submit SetPortFeature(PORT_RESET) for port {}: {}", port_number, error);
+            usb_hub_abort_port_sequence(&hub_device, port_number);
         }
     }
 }
@@ -1008,19 +1107,19 @@ fn on_port_reset_poll_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
     };
 
     if status != Completed {
-        hub.lock().clear_port_state(port_number);
+        usb_hub_abort_port_sequence(&hub_device, port_number);
         kprintln_hub_core!(Error, "GetPortStatus during the reset of port {} failed with status {:?}.", port_number, status);
         return;
     }
 
     let Some(snapshot) = snapshot else {
-        hub.lock().clear_port_state(port_number);
+        usb_hub_abort_port_sequence(&hub_device, port_number);
         kprintln_hub_core!(Error, "GetPortStatus during the reset of port {} is malformed.", port_number);
         return;
     };
 
     if !snapshot.is_connected {
-        hub.lock().clear_port_state(port_number);
+        usb_hub_abort_port_sequence(&hub_device, port_number);
         kprintln_hub_core_debug!("Device on port {} of hub device {} left during the reset.", port_number, hub_device.system_id);
         return;
     }
@@ -1030,7 +1129,7 @@ fn on_port_reset_poll_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
         let waited_ms = attempts as u64 * HUB_PORT_RESET_POLL_INTERVAL_MS;
 
         if waited_ms >= HUB_PORT_RESET_TIMEOUT_MS {
-            hub.lock().clear_port_state(port_number);
+            usb_hub_abort_port_sequence(&hub_device, port_number);
             kprintln_hub_core!(Warn, "Reset of port {} of hub device {} did not finish in {} ms, giving up.", port_number, hub_device.system_id, waited_ms);
             return;
         }
@@ -1078,11 +1177,13 @@ fn on_clear_port_reset_change_complete(request: Arc<IrqMutex<UsbTransferRequest>
 
     if status != Completed {
         kprintln_hub_core!(Error, "ClearPortFeature(C_PORT_RESET) for port {} failed with status {:?}.", port_number, status);
+        usb_hub_release_default_address(&hub_device, port_number);
         return;
     }
 
     let Some(speed) = speed_after_reset else {
         kprintln_hub_core!(Error, "Port {} of hub device {} is not enabled after the reset.", port_number, hub_device.system_id);
+        usb_hub_release_default_address(&hub_device, port_number);
         return;
     };
 
@@ -1101,12 +1202,15 @@ fn on_port_reset_recovered(hub_device: Arc<UsbDevice>, port_number: u16, speed: 
 
     let Some(controller) = hub_device.host_controller.upgrade() else {
         kprintln_hub_core!(Warn, "Host controller of hub device {} is gone, port {} is not enumerated.", hub_device.system_id, port_number);
+        usb_hub_release_default_address(&hub_device, port_number);
         return;
     };
 
     //hub ports go up to 255 (bNbrPorts is a byte), HUB_MAX_PORTS caps them lower already
+    //on success the default address is released by usb_hub_register_port_device
     if let Err(error) = controller.enumerate_device_behind_hub(&hub_device, port_number as u8, speed) {
         kprintln_hub_core!(Error, "Failed to enumerate the device on port {} of hub device {}: {}", port_number, hub_device.system_id, error);
+        usb_hub_release_default_address(&hub_device, port_number);
     }
 }
 
