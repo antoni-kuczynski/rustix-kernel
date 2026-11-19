@@ -9,7 +9,7 @@ use core::cmp::{max, min};
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::drivers::apic::apic::set_timeout;
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
-use crate::drivers::usb::core::usb_requests::{usb_request_clear_hub_port_connection_change, usb_request_clear_hub_port_feature, usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_set_hub_port_feature};
+use crate::drivers::usb::core::usb_requests::{usb_request_clear_hub_port_connection_change, usb_request_clear_hub_port_feature, usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_set_hub_depth, usb_request_set_hub_port_feature};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::{WValue};
 use crate::drivers::usb::core::UsbSpeed;
@@ -219,6 +219,62 @@ fn usb_hub_disconnect_port_devices(hub: &Arc<IrqMutex<Box<UsbHub>>>) {
     }
 }
 
+fn usb_hub_depth(hub_device: &UsbDevice) -> u16 {
+    let mut depth = 0;
+    let mut parent = hub_device.parent_hub.clone();
+    while let Some(hub) = parent {
+        depth += 1;
+        parent = hub.parent_hub.clone();
+    }
+    depth
+}
+
+fn issue_set_hub_depth_usb3(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let device = {
+        let req = request.lock();
+        let usb_dev = req.target_device.clone();
+        usb_dev
+    };
+
+    let hub_depth = usb_hub_depth(&device);
+    let Some(set_hub_depth_req) =
+        usb_request_set_hub_depth(device.clone(), hub_depth, on_set_hub_depth_completion)
+        else {
+            kprintln_hub_core!(Error, "Building SET_HUB_DEPTH request failed.");
+            return;
+        };
+
+
+    if let Some(controller) = device.host_controller.upgrade() {
+        let Ok(a) = controller.submit_request(set_hub_depth_req) else {
+            kprintln_hub_core!(Error, "Submitting SET_HUB_DEPTH req failed.");
+            return;
+        };
+    }
+}
+
+fn on_set_hub_depth_completion(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    let status = {request.lock().status};
+    if status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
+    let device = {
+        let req = request.lock();
+        let usb_dev = req.target_device.clone();
+        usb_dev
+    };
+
+    if status != Completed {
+        kprintln_hub_core!(Error, "SET_HUB_DEPTH for hub device {} failed with status {:?}.", device.system_id, status);
+        return;
+    }
+
+    //start the port power chain after setting hub depth
+    issue_set_port_power_for_first_port(device);
+}
+
 fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status == Disconnected {
         usb_hub_handle_device_disconnect(request);
@@ -267,11 +323,32 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         port_states_by_port_number: BTreeMap::new(),
         port_devices_by_port_number: BTreeMap::new(),
     };
-
-    //now, set the PORT_POWER for all ports of the hub, one at a time
-    let port_power_req = hub_device.next_set_port_power_request();
-
     USB_HUB_CORE.lock().devices.insert(device.system_id, Arc::new(IrqMutex::new(Box::new(hub_device))));
+
+    //for super speed hubs we need to configure its depth, so that route string can be set properly
+    if is_super_speed {
+        issue_set_hub_depth_usb3(request.clone());
+        return;
+    }
+
+    issue_set_port_power_for_first_port(device);
+}
+
+fn issue_set_port_power_for_first_port(device: Arc<UsbDevice>) {
+    //now, set the PORT_POWER for all ports of the hub, one at a time
+    let port_power_req = {
+        let Some(hub_dev_lock) = USB_HUB_CORE
+            .lock()
+            .find_by_system_id(device.system_id)
+            else {
+                kprintln_hub_core_debug!("Hub with system_id={} disappeared.", device.system_id);
+                return;
+            };
+        let mut hub_dev = hub_dev_lock.lock();
+
+        let port_power_req = hub_dev.next_set_port_power_request();
+        port_power_req
+    };
 
     let Ok(port_power_req) = port_power_req else {
         return;

@@ -200,6 +200,9 @@ impl UsbBRequest {
     pub const HID_SET_REPORT: u8 = 0x09;
     pub const HID_SET_IDLE: u8 = 0x0A;
     pub const HID_SET_PROTOCOL: u8 = 0x0B;
+
+    /// USB 3.2 hub class request
+    pub const HUB_SET_HUB_DEPTH: u8 = 0x0C;
 }
 
 pub struct UsbBmRequestType;

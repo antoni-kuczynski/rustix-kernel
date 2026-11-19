@@ -167,6 +167,27 @@ pub fn usb_request_set_hub_port_feature(
     control_request(device, setup_packet, callback)
 }
 
+/// `hub_depth` is the number of hubs between the root port and this hub, 0 for a hub on a root port.
+pub fn usb_request_set_hub_depth(
+    device: Arc<UsbDevice>,
+    hub_depth: u16,
+    callback: UsbTransferCallback,
+) -> Option<UsbRequestHandle> {
+    let setup_packet = UsbSetupPacket::new(
+        UsbBmRequestType::new(
+            UsbBmRequestType::DIR_HOST_TO_DEVICE,
+            UsbBmRequestType::TYPE_CLASS,
+            UsbBmRequestType::REC_DEVICE,
+        ),
+        UsbBRequest::HUB_SET_HUB_DEPTH,
+        hub_depth,
+        0,
+        0,
+    );
+
+    control_request(device, setup_packet, callback)
+}
+
 pub fn usb_request_clear_hub_port_feature(
     device: Arc<UsbDevice>,
     port_number: u16,
