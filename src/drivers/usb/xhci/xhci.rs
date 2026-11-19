@@ -3815,33 +3815,35 @@ impl UsbHostController for XHCI {
             None
         };
 
+        if let Some(setup) = setup_packet {
+            //a SET_CONFIGURATION that is already pending is a retry of its TD (e.g. after
+            //babble), its configure endpoint command was already done
+            let is_set_configuration_retry =
+                dev.lock().configuration_state == PendingSetConfiguration;
+
+            //for the SET_CONFIGURATION request, first we need to send a configure endpoint
+            //trb before we issue the request
+            if setup.b_request == 0x09 && !is_set_configuration_retry {
+                dev.lock().configuration_state = PendingSetConfiguration;
+                kprintln_xhci_debug!( "Set device to pending set configuration.");
+
+                unsafe { self.on_pending_set_configuration(request, &dev) };
+                return Ok(());
+            } else if (setup.w_value >> 8) == 0x2A {
+                //usb3 hub
+                let is_super_speed = true;
+                dev.lock().configuration_state = PendingHubConfiguration {is_super_speed};
+            } else if (setup.w_value >> 8) == 0x29 {
+                //usb2 hub
+                let is_super_speed = false;
+                dev.lock().configuration_state = PendingHubConfiguration {is_super_speed};
+            }
+        }
+
         {
+            let mut dev_lock = dev.lock();
             let issued = match setup_packet {
                 Some(setup) => unsafe {
-                    //a SET_CONFIGURATION that is already pending is a retry of its TD (e.g. after
-                    //babble), its configure endpoint command was already done
-                    let is_set_configuration_retry =
-                        dev.lock().configuration_state == PendingSetConfiguration;
-
-                    //for the SET_CONFIGURATION request, first we need to send a configure endpoint
-                    //trb before we issue the request
-                    if setup.b_request == 0x09 && !is_set_configuration_retry {
-                        dev.lock().configuration_state = PendingSetConfiguration;
-                        kprintln_xhci_debug!( "Set device to pending set configuration.");
-
-                        self.on_pending_set_configuration(request, &dev);
-                        return Ok(());
-                    } else if (setup.w_value >> 8) == 0x2A {
-                        //usb3 hub
-                        let is_super_speed = true;
-                        dev.lock().configuration_state = PendingHubConfiguration {is_super_speed};
-                    } else if (setup.w_value >> 8) == 0x29 {
-                        //usb2 hub
-                        let is_super_speed = false;
-                        dev.lock().configuration_state = PendingHubConfiguration {is_super_speed};
-                    }
-
-                    let mut dev_lock = dev.lock();
                     dev_lock.ep0_issue_request(
                         interrupter_target,
                         setup.bm_request_type,
@@ -3853,7 +3855,6 @@ impl UsbHostController for XHCI {
                     )
                 },
                 None => unsafe {
-                    let mut dev_lock = dev.lock();
                     dev_lock.issue_normal_transfer(
                         interrupter_target,
                         dci,
@@ -3863,7 +3864,6 @@ impl UsbHostController for XHCI {
                 },
             };
 
-            let mut dev_lock = dev.lock();
             let trb_phys = issued.map_err(|_| "Failed to enqueue the transfer TRBs.")?;
             dev_lock.insert_pending(trb_phys, request.clone());
         }

@@ -13,6 +13,7 @@ use crate::{kprintln_ok};
 use core::alloc::{GlobalAlloc, Layout};
 use core::ops::{Div, Mul};
 use spin::Mutex;
+use x86_64::instructions::interrupts;
 use x86_64::{PhysAddr, VirtAddr};
 
 const KHEAP_START: u64 = 0xffff_c200_0000_0000;
@@ -49,10 +50,13 @@ pub fn kheap_init() {
 
 unsafe impl GlobalAlloc for Locked<LinkedListAllocator> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.lock().allocate(layout)
+        //the laziest possible fix for allocating inside IRQs
+        //if interrupts were enabled, functions like lapic set_timeout
+        //called from IRQ context would deadlock randomly
+        interrupts::without_interrupts(|| self.lock().allocate(layout))
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.lock().deallocate(ptr, layout)
+        interrupts::without_interrupts(|| self.lock().deallocate(ptr, layout))
     }
 }
