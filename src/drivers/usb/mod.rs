@@ -246,6 +246,10 @@ impl WValue {
     pub const C_PORT_LINK_STATE: u16 = 0x19;
     pub const C_PORT_CONFIG_ERROR: u16 = 0x1A;
     pub const C_BH_PORT_RESET: u16 = 0x1D;
+    
+    /// Hub feature selectors, they overlap PORT_CONNECTION / PORT_ENABLE, the device recipient tells them apart
+    pub const C_HUB_LOCAL_POWER: u16 = 0x00;
+    pub const C_HUB_OVER_CURRENT: u16 = 0x01;
 
     pub const DESC_HID: u8 = 0x21;
     pub const DESC_HID_REPORT: u8 = 0x22;

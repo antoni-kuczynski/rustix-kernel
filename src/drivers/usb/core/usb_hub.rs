@@ -9,7 +9,7 @@ use core::cmp::{max, min};
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::drivers::apic::apic::{set_timeout, timer_lapic_uptime_ms};
 use crate::drivers::usb::core::irq_mutex::IrqMutex;
-use crate::drivers::usb::core::usb_requests::{usb_request_clear_hub_port_connection_change, usb_request_clear_hub_port_feature, usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_set_hub_depth, usb_request_set_hub_port_feature};
+use crate::drivers::usb::core::usb_requests::{usb_request_clear_hub_feature, usb_request_clear_hub_port_connection_change, usb_request_clear_hub_port_feature, usb_request_get_hub_descriptor, usb_request_get_hub_port_status, usb_request_get_hub_status, usb_request_set_hub_depth, usb_request_set_hub_port_feature};
 use crate::drivers::usb::core::usb_transfers::{UsbDevice, UsbDeviceId, UsbSetupPacket, UsbTransferDirection, UsbTransferRecipient, UsbTransferRequest, UsbTransferStatus, UsbTransferType};
 use crate::drivers::usb::{WValue};
 use crate::drivers::usb::core::UsbSpeed;
@@ -17,6 +17,7 @@ use crate::drivers::usb::core::usb_transfers::UsbTransferStatus::{Completed, Dis
 use crate::drivers::usb::core::usb_core::{usb_clear_endpoint_halt, USB_ENDPOINT_DIRECTION_IN, USB_ENDPOINT_TRANSFER_TYPE_INTERRUPT, USB_ENDPOINT_TRANSFER_TYPE_MASK, usb_unregister_device};
 use crate::drivers::usb::core::usb_requests::usb_request_interrupt_in;
 use crate::{kprintln_hub_core, kprintln_hub_core_debug};
+use crate::drivers::usb::core::usb_hub::PortPowerReason::OverCurrent;
 use crate::memory::dma::{DmaAlloc};
 
 //the device removable mask only covers 31 ports
@@ -40,6 +41,17 @@ pub struct UsbHub {
     hub_descriptor: DmaAlloc,
     port_states_by_port_number: BTreeMap<u16, UsbHubPortState>,
     port_devices_by_port_number: BTreeMap<u16, Arc<UsbDevice>>,
+    /// Over-current repowers and re-enumerations after the hub disabled the port, kept across
+    /// connect sequences and reset only when the device is really unplugged
+    port_recovery_attempts_by_port_number: BTreeMap<u16, u8>,
+    port_power_reason: PortPowerReason
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum PortPowerReason {
+    Initialization,
+    OverCurrent,
+    Finished
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -90,6 +102,16 @@ impl UsbHub {
 
     fn clear_port_state(&mut self, port_number: u16) {
         self.port_states_by_port_number.remove(&port_number);
+    }
+
+    fn record_recovery_attempt(&mut self, port_number: u16) -> u8 {
+        let attempts = self.port_recovery_attempts_by_port_number.entry(port_number).or_insert(0);
+        *attempts = attempts.saturating_add(1);
+        *attempts
+    }
+
+    fn clear_recovery_attempts(&mut self, port_number: u16) {
+        self.port_recovery_attempts_by_port_number.remove(&port_number);
     }
 
     fn record_debounce_bounce(&mut self, port_number: u16) -> u8 {
@@ -312,7 +334,7 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
     };
 
     let system_id = UsbHubId(USB_HUB_SYSTEM_ID.fetch_add(1, Ordering::AcqRel));
-    let mut hub_device = UsbHub {
+    let hub_device = UsbHub {
         device: device.clone(),
         system_id,
         number_of_ports: amount_of_ports,
@@ -321,6 +343,8 @@ fn on_get_hub_descriptor_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         hub_descriptor,
         port_states_by_port_number: BTreeMap::new(),
         port_devices_by_port_number: BTreeMap::new(),
+        port_recovery_attempts_by_port_number: BTreeMap::new(),
+        port_power_reason: PortPowerReason::Initialization
     };
     USB_HUB_CORE.lock().devices.insert(device.system_id, Arc::new(IrqMutex::new(Box::new(hub_device))));
 
@@ -358,9 +382,7 @@ fn issue_set_port_power_for_first_port(device: Arc<UsbDevice>) {
         return;
     };
 
-    if let Some(controller) = device.host_controller.upgrade() {
-        let _ = controller.submit_request(port_power_req);
-    }
+    usb_hub_submit_hub_request(&device, "SetPortFeature(PORT_POWER)", Some(port_power_req));
 }
 
 //callback is called for each port completion
@@ -370,14 +392,13 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         return;
     }
 
-    let (req, device) = {
-        let req1 = request.lock();
-        if req1.status != Completed {
-            kprintln_hub_core!(Error, "Setting port power on hub failed with status {:?}.", req1.status);
+    let device = {
+        let req = request.lock();
+        if req.status != Completed {
+            kprintln_hub_core!(Error, "Setting port power on hub failed with status {:?}.", req.status);
             return;
         }
-        let device = req1.target_device.clone();
-        (req1, device)
+        req.target_device.clone()
     };
 
     let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(device.system_id) else {
@@ -412,9 +433,7 @@ fn on_set_port_power_complete(request: Arc<IrqMutex<UsbTransferRequest>>) {
         return;
     };
 
-    if let Some(controller) = device.host_controller.upgrade() {
-        let _ = controller.submit_request(port_power_req);
-    }
+    usb_hub_submit_hub_request(&device, "SetPortFeature(PORT_POWER)", Some(port_power_req));
 }
 
 fn on_all_ports_powered(device_system_id: UsbDeviceId) {
@@ -445,9 +464,7 @@ fn on_all_ports_powered(device_system_id: UsbDeviceId) {
         return;
     };
 
-    if let Some(controller) = usb_device.host_controller.upgrade() {
-        let _ = controller.submit_request(get_port_power_req);
-    }
+    usb_hub_submit_hub_request(&usb_device, "GetPortStatus", Some(get_port_power_req));
 }
 
 fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
@@ -503,8 +520,26 @@ fn on_get_port_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
     }
 }
 
-fn on_all_ports_status_checked(hub_device: Arc<UsbDevice>) {
-    usb_hub_start_status_change_listening(hub_device);
+fn on_all_ports_status_checked(usb_device: Arc<UsbDevice>) {
+    let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(usb_device.system_id) else {
+        kprintln_hub_core!(Error, "No hub device with system_id={} in HUB_CORE.", usb_device.system_id);
+        return;
+    };
+
+    let port_power_reason = {
+        let mut hub = hub.lock();
+        let port_power_reason = hub.port_power_reason;
+        hub.port_power_reason = PortPowerReason::Finished;
+        port_power_reason
+    };
+
+    //dont start listening to status change again if the port repowering was due to
+    //overcurrent protecion
+    if port_power_reason == OverCurrent {
+        return;
+    }
+
+    usb_hub_start_status_change_listening(usb_device);
 }
 
 fn usb_hub_status_change_endpoint_address(hub_device: &UsbDevice) -> Option<u8> {
@@ -634,7 +669,116 @@ fn on_hub_status_change_endpoint_cleared(request: Arc<IrqMutex<UsbTransferReques
 }
 
 fn usb_hub_handle_hub_change(hub_device: Arc<UsbDevice>) {
-    //TODO: GetHubStatus, clear C_HUB_LOCAL_POWER / C_HUB_OVER_CURRENT
+    let request = usb_request_get_hub_status(hub_device.clone(), on_hub_change_status);
+    usb_hub_submit_hub_request(&hub_device, "GetHubStatus", request);
+}
+
+fn on_hub_change_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    //the condition temporary drops the request lock before the call
+    if request.lock().status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
+    let (status, hub_status, hub_device) = {
+        let req = request.lock();
+        (req.status, req.received_bytes().and_then(UsbHubStatus::from_bytes), req.target_device.clone())
+    };
+
+    if status != Completed {
+        kprintln_hub_core!(Error, "GetHubStatus of hub device {} failed with status {:?}.", hub_device.system_id, status);
+        return;
+    }
+
+    let Some(hub_status) = hub_status else {
+        kprintln_hub_core!(Error, "GetHubStatus of hub device {} is malformed.", hub_device.system_id);
+        return;
+    };
+
+    kprintln_hub_core_debug!(
+        "Hub device {} changed: wHubStatus={:#06x} wHubChange={:#06x}.",
+        hub_device.system_id, hub_status.raw_hub_status(), hub_status.raw_hub_change()
+    );
+
+    if hub_status.local_power_changed() {
+        if hub_status.is_local_power_lost() {
+            kprintln_hub_core!(Warn, "Hub device {} lost its local power supply, it runs from the bus now.", hub_device.system_id);
+        } else {
+            kprintln_hub_core!(Info, "Hub device {} has its local power supply again.", hub_device.system_id);
+        }
+
+        let request = usb_request_clear_hub_feature(hub_device.clone(), WValue::C_HUB_LOCAL_POWER, on_hub_change_cleared);
+        usb_hub_submit_hub_request(&hub_device, "ClearHubFeature(C_HUB_LOCAL_POWER)", request);
+    }
+    if hub_status.over_current_changed() {
+        //cleared first, the ports are powered again only after that
+        let request = usb_request_clear_hub_feature(hub_device.clone(), WValue::C_HUB_OVER_CURRENT, on_hub_change_cleared);
+        usb_hub_submit_hub_request(&hub_device, "ClearHubFeature(C_HUB_OVER_CURRENT)", request);
+
+        if hub_status.is_over_current() {
+            //with global over-current reporting the hub cuts the power of every port itself
+            kprintln_hub_core!(Warn, "Hub device {} reports an over-current, its ports are unpowered.", hub_device.system_id);
+        } else {
+            kprintln_hub_core!(Warn, "Over-current of hub device {} is gone, powering its ports again.", hub_device.system_id);
+
+            let Some(hub) = USB_HUB_CORE.lock().find_by_system_id(hub_device.system_id) else {
+                kprintln_hub_core!(Error, "No hub present in HUB_CORE with system_id={} for overcurrent protection.", hub_device.system_id);
+                return;
+            };
+
+            //port 0 is the hub itself, like bit 0 of the status change bitmap
+            let attempts = hub.lock().record_recovery_attempt(HUB_ITSELF_PORT_NUMBER);
+            if attempts > HUB_PORT_MAX_RECOVERY_ATTEMPTS {
+                kprintln_hub_core!(Error, "Hub device {} went over-current {} times, leaving its ports unpowered.", hub_device.system_id, attempts);
+                return;
+            }
+
+            {
+                let mut hub = hub.lock();
+                hub.port_power_reason = OverCurrent;
+                hub.current_port_index = 1;
+            }
+            issue_set_port_power_for_first_port(hub_device.clone());
+        }
+    }
+}
+
+fn on_hub_change_cleared(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
+    let req = request.lock();
+    if req.status != Completed {
+        kprintln_hub_core!(
+            Error,
+            "ClearHubFeature({:?}) of hub device {} failed with status {:?}.",
+            req.setup_packet.map(|setup_packet| setup_packet.w_value),
+            req.target_device.system_id,
+            req.status
+        );
+    }
+}
+
+/// Returns whether the request was submitted.
+fn usb_hub_submit_hub_request(hub_device: &Arc<UsbDevice>, request_name: &str, request: Option<Arc<IrqMutex<UsbTransferRequest>>>) -> bool {
+    let Some(request) = request else {
+        kprintln_hub_core!(Error, "Failed to allocate {} for hub device {}.", request_name, hub_device.system_id);
+        return false;
+    };
+
+    let Some(controller) = hub_device.host_controller.upgrade() else {
+        kprintln_hub_core!(Warn, "Host controller of hub device {} is gone, {} is not sent.", hub_device.system_id, request_name);
+        return false;
+    };
+
+    if let Err(error) = controller.submit_request(request) {
+        kprintln_hub_core!(Error, "Failed to submit {} for hub device {}: {}", request_name, hub_device.system_id, error);
+        return false;
+    }
+
+    true
 }
 
 fn usb_hub_handle_port_change(hub_device: Arc<UsbDevice>, port_number: u16) {
@@ -684,26 +828,74 @@ fn on_port_change_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
         return;
     }
 
-    let mut connection_change_cleared_by_reset = false;
+
+    let mut needs_reset = false;
+
+    if snapshot.over_current_changed {
+        //the hub cut the power to this port, the device lost power anyways
+        usb_hub_disconnect_port_device(&hub, &hub_device, port_number, "lost power after an over-current");
+
+        let attempts = if snapshot.is_over_current { 0 } else { hub.lock().record_recovery_attempt(port_number) };
+
+        if snapshot.is_over_current {
+            kprintln_hub_core!(Error, "Port {} of hub device {} is over-current, leaving it unpowered.", port_number, hub_device.system_id);
+        } else if attempts > HUB_PORT_MAX_RECOVERY_ATTEMPTS {
+            kprintln_hub_core!(
+                Error,
+                "Port {} of hub device {} went over-current {} times, leaving it unpowered until the device is unplugged.",
+                port_number, hub_device.system_id, attempts
+            );
+        } else {
+            kprintln_hub_core!(Warn, "Over-current on port {} of hub device {} is gone, powering it again.", port_number, hub_device.system_id);
+            let power_hub_device = hub_device.clone();
+            set_timeout(HUB_PORT_OVER_CURRENT_RECOVERY_MS, move || {
+                let request = usb_request_set_hub_port_feature(
+                    power_hub_device.clone(), port_number, WValue::PORT_POWER, on_port_power_restored
+                );
+                usb_hub_submit_port_request(&power_hub_device, port_number, "SetPortFeature(PORT_POWER) after an over-current", request);
+            });
+        }
+    }
 
     if snapshot.connection_changed {
         //a device that leaves between Address Device and registration still holds the default address
         usb_hub_release_default_address(&hub_device, port_number);
 
         //a quick replug reports a single change, the old device is gone either way
-        let previous_device = hub.lock().port_devices_by_port_number.remove(&port_number);
-        if let Some(previous_device) = previous_device {
-            kprintln_hub_core!(Info, "Device {} on port {} of hub device {} was disconnected.", previous_device.system_id, port_number, hub_device.system_id);
-            usb_hub_disconnect_device_tree(previous_device);
-        }
+        usb_hub_disconnect_port_device(&hub, &hub_device, port_number, "was disconnected");
 
         if snapshot.is_connected {
             kprintln_hub_core!(Info, "Device connected on port {} of hub device {}.", port_number, hub_device.system_id);
-            hub.lock().clear_port_state(port_number);
-            //starts with ClearPortFeature(C_PORT_CONNECTION) itself
-            usb_hub_reset_port(hub_device.clone(), port_number);
-            connection_change_cleared_by_reset = true;
+            needs_reset = true;
+        } else if snapshot.is_powered && !snapshot.over_current_changed {
+            //a device that loses power to an over-current also disconnects
+            hub.lock().clear_recovery_attempts(port_number);
         }
+    }
+
+    if snapshot.enable_changed && !snapshot.is_enabled {
+        //the device is still plugged in but unreachable, so enumerate it from scratch
+        usb_hub_disconnect_port_device(&hub, &hub_device, port_number, "was disabled by the hub (babble or EMI)");
+
+        if snapshot.is_connected && !snapshot.is_over_current {
+            let attempts = hub.lock().record_recovery_attempt(port_number);
+            if attempts > HUB_PORT_MAX_RECOVERY_ATTEMPTS {
+                kprintln_hub_core!(
+                    Error,
+                    "Port {} of hub device {} was disabled by the hub {} times, leaving it until the device is unplugged.",
+                    port_number, hub_device.system_id, attempts
+                );
+            } else {
+                needs_reset = true;
+            }
+        }
+    }
+
+    //starts with ClearPortFeature(C_PORT_CONNECTION)
+    let connection_change_cleared_by_reset = needs_reset;
+    if needs_reset {
+        hub.lock().clear_port_state(port_number);
+        usb_hub_reset_port(hub_device.clone(), port_number);
     }
 
     for feature_selector in usb_hub_port_change_feature_selectors(is_super_speed, snapshot.raw_port_change) {
@@ -719,6 +911,39 @@ fn on_port_change_status(request: Arc<IrqMutex<UsbTransferRequest>>) {
             hub_device.clone(), port_number, feature_selector, on_port_change_cleared
         );
         usb_hub_submit_port_request(&hub_device, port_number, "ClearPortFeature for a port change", request);
+    }
+}
+
+const HUB_PORT_OVER_CURRENT_RECOVERY_MS: u64 = 100;
+const HUB_PORT_MAX_RECOVERY_ATTEMPTS: u8 = 3;
+/// Recovery attempts of the whole hub are under port 0
+const HUB_ITSELF_PORT_NUMBER: u16 = 0;
+
+fn usb_hub_disconnect_port_device(hub: &Arc<IrqMutex<Box<UsbHub>>>, hub_device: &UsbDevice, port_number: u16, reason: &str) {
+    let previous_device = hub.lock().port_devices_by_port_number.remove(&port_number);
+    let Some(previous_device) = previous_device else {
+        return;
+    };
+
+    kprintln_hub_core!(Info, "Device {} on port {} of hub device {} {}.", previous_device.system_id, port_number, hub_device.system_id, reason);
+    usb_hub_disconnect_device_tree(previous_device);
+}
+
+fn on_port_power_restored(request: Arc<IrqMutex<UsbTransferRequest>>) {
+    if request.lock().status == Disconnected {
+        usb_hub_handle_device_disconnect(request);
+        return;
+    }
+
+    let req = request.lock();
+    if req.status != Completed {
+        kprintln_hub_core!(
+            Error,
+            "SetPortFeature(PORT_POWER) after an over-current for port {:?} of hub device {} failed with status {:?}.",
+            req.setup_packet.map(|setup_packet| setup_packet.w_index),
+            req.target_device.system_id,
+            req.status
+        );
     }
 }
 
@@ -1217,8 +1442,13 @@ fn on_port_reset_recovered(hub_device: Arc<UsbDevice>, port_number: u16, speed: 
 struct UsbHubPortSnapshot {
     is_connected: bool,
     is_enabled: bool,
+    is_over_current: bool,
+    is_powered: bool,
     connection_changed: bool,
     reset_changed: bool,
+    over_current_changed: bool,
+    /// USB2 only, the hub disabled the port on an error
+    enable_changed: bool,
     speed: UsbSpeed,
     raw_port_change: u16,
 }
@@ -1230,8 +1460,12 @@ impl UsbHubPortSnapshot {
             Some(Self {
                 is_connected: port_status.is_connected(),
                 is_enabled: port_status.is_enabled(),
+                is_over_current: port_status.is_over_current(),
+                is_powered: port_status.is_powered(),
                 connection_changed: port_status.connection_changed(),
                 reset_changed: port_status.reset_changed(),
+                over_current_changed: port_status.over_current_changed(),
+                enable_changed: false,
                 raw_port_change: port_status.raw_port_change(),
                 //a USB3 hub downstream port only runs SuperSpeed, raw speed 0 = 5 Gb/s
                 speed: UsbSpeed::SuperSpeed,
@@ -1241,8 +1475,12 @@ impl UsbHubPortSnapshot {
             Some(Self {
                 is_connected: port_status.is_connected(),
                 is_enabled: port_status.is_enabled(),
+                is_over_current: port_status.is_over_current(),
+                is_powered: port_status.is_powered(),
                 connection_changed: port_status.connection_changed(),
                 reset_changed: port_status.reset_changed(),
+                over_current_changed: port_status.over_current_changed(),
+                enable_changed: port_status.enable_changed(),
                 raw_port_change: port_status.raw_port_change(),
                 speed: port_status.speed(),
             })
@@ -1407,6 +1645,44 @@ impl UsbHubDescriptor {
 }
 
 pub const HUB_PORT_STATUS_LENGTH: usize = 4;
+pub const HUB_STATUS_LENGTH: usize = 4;
+
+#[derive(Debug, Clone, Copy)]
+pub struct UsbHubStatus {
+    hub_status: u16,
+    hub_change: u16,
+}
+
+impl UsbHubStatus {
+    pub fn from_bytes(buffer: &[u8]) -> Option<Self> {
+        if buffer.len() < HUB_STATUS_LENGTH {
+            return None;
+        }
+
+        Some(Self {
+            hub_status: u16::from_le_bytes([buffer[0], buffer[1]]),
+            hub_change: u16::from_le_bytes([buffer[2], buffer[3]]),
+        })
+    }
+
+    fn status_bit(&self, bit: u8) -> bool {
+        self.hub_status & (1 << bit) != 0
+    }
+
+    fn change_bit(&self, bit: u8) -> bool {
+        self.hub_change & (1 << bit) != 0
+    }
+
+    pub fn raw_hub_status(&self) -> u16 { self.hub_status }
+    pub fn raw_hub_change(&self) -> u16 { self.hub_change }
+
+    /// Only valid for hubs with dedicated power supplies
+    pub fn is_local_power_lost(&self) -> bool { self.status_bit(0) }
+
+    pub fn is_over_current(&self) -> bool { self.status_bit(1) }
+    pub fn local_power_changed(&self) -> bool { self.change_bit(0) }
+    pub fn over_current_changed(&self) -> bool { self.change_bit(1) }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Usb2HubPortStatus {

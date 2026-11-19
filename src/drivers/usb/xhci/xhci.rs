@@ -3014,15 +3014,18 @@ impl XHCI {
                 break 'parse None;
             };
 
-            let num_ports = if is_super_speed {
+            //superspeed hubs dont have TT, their TT think time is 0
+            let (num_ports, tt_think_time) = if is_super_speed {
                 let desc = dma.as_ref::<Usb3HubDescriptor>();
-                desc.b_nbr_ports
+                (desc.b_nbr_ports, 0)
             } else {
                 let Some(desc) = Usb2HubDescriptor::parse_from_dma(dma.as_bytes()) else {
                     kprintln_xhci!(Error, "Failed to parse usb2 hub descriptor.");
                     break 'parse None;
                 };
-                desc.b_nbr_ports
+                
+                let hub_characteristics = desc.w_hub_characteristics;
+                (desc.b_nbr_ports, ((hub_characteristics >> 5) & 0b11) as u8)
             };
 
             let usb_dev = lock.target_device.clone();
@@ -3032,14 +3035,16 @@ impl XHCI {
             };
 
             //if b_device_protocol is 2, it means that hub is multi-tt
-            Some((num_ports, device_descriptor.b_device_protocol() == 0x02))
+            Some((num_ports, device_descriptor.b_device_protocol() == 0x02, tt_think_time))
         };
 
-        let Some((number_of_ports, is_multi_tt)) = parsed_hub_fields else {
+        let Some((number_of_ports, is_multi_tt, tt_think_time)) = parsed_hub_fields else {
             complete_request(pending, UsbTransferStatus::Error, 0);
             return;
         };
         let mut dev = device.lock();
+        //only high speed hubs have a TT
+        let tt_think_time = if dev.location().is_high_speed() { tt_think_time } else { 0 };
         let slot_id = dev.slot_id;
         let input_context_phys = dev.input_context_dma.phys.as_u64();
 
@@ -3054,6 +3059,7 @@ impl XHCI {
         slot_context.set_hub(true);
         slot_context.set_num_ports(number_of_ports);
         slot_context.set_multi_tt(is_multi_tt);
+        slot_context.set_tt_think_time(tt_think_time);
 
         //sent while holding the device lock, so the completion handler cannot look the
         //request up before it is inserted

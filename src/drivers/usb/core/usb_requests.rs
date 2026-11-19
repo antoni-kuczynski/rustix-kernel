@@ -17,6 +17,7 @@ const FIRST_DESCRIPTOR_INDEX: u8 = 0;
 const DEVICE_DESCRIPTOR_LENGTH: u16 = 18;
 const HUB_DESCRIPTOR_MAX_LENGTH: u16 = 128;
 const HUB_PORT_STATUS_LENGTH: u16 = 4;
+const HUB_STATUS_LENGTH: u16 = 4;
 const HID_BOOT_PROTOCOL: u16 = 0;
 const HID_IDLE_INDEFINITELY_ALL_REPORTS: u16 = 0;
 const HUB_CLEAR_TT_BUFFER: u8 = 8;
@@ -215,6 +216,46 @@ pub fn usb_request_clear_hub_port_connection_change(
     callback: UsbTransferCallback,
 ) -> Option<UsbRequestHandle> {
     usb_request_clear_hub_port_feature(device, port_number, WValue::C_PORT_CONNECTION, callback)
+}
+
+pub fn usb_request_get_hub_status(
+    device: Arc<UsbDevice>,
+    callback: UsbTransferCallback,
+) -> Option<UsbRequestHandle> {
+    let setup_packet = UsbSetupPacket::new(
+        UsbBmRequestType::new(
+            UsbBmRequestType::DIR_DEVICE_TO_HOST,
+            UsbBmRequestType::TYPE_CLASS,
+            UsbBmRequestType::REC_DEVICE,
+        ),
+        UsbBRequest::GET_STATUS,
+        0,
+        0,
+        HUB_STATUS_LENGTH,
+    );
+
+    control_request(device, setup_packet, callback)
+}
+
+/// `feature_selector` is C_HUB_LOCAL_POWER or C_HUB_OVER_CURRENT (USB 2.0 11.24.2.1)
+pub fn usb_request_clear_hub_feature(
+    device: Arc<UsbDevice>,
+    feature_selector: u16,
+    callback: UsbTransferCallback,
+) -> Option<UsbRequestHandle> {
+    let setup_packet = UsbSetupPacket::new(
+        UsbBmRequestType::new(
+            UsbBmRequestType::DIR_HOST_TO_DEVICE,
+            UsbBmRequestType::TYPE_CLASS,
+            UsbBmRequestType::REC_DEVICE,
+        ),
+        UsbBRequest::CLEAR_FEATURE,
+        feature_selector,
+        0,
+        0,
+    );
+
+    control_request(device, setup_packet, callback)
 }
 
 pub fn usb_request_get_hub_port_status(
