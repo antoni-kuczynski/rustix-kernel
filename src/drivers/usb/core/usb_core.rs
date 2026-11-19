@@ -192,6 +192,12 @@ pub fn usb_unregister_device(device_id: UsbDeviceId) {
     USB_CORE.lock().devices.remove(&device_id);
 }
 
+pub fn usb_unregister_device_by_hardware_id(host_controller: &Weak<dyn UsbHostController>, hardware_id: u8) {
+    if let Some(device) = usb_find_device(host_controller, hardware_id) {
+        usb_unregister_device(device.system_id);
+    }
+}
+
 fn on_device_descriptor_received(request: Arc<IrqMutex<UsbTransferRequest>>) {
     if request.lock().status != UsbTransferStatus::Completed {
         kprintln_usb_core!(Error, "Failed to complete GET_DESCRIPTOR request for device descriptor.");

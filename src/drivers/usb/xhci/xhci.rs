@@ -59,7 +59,7 @@ use crate::drivers::pci::pci_io::PciVendor;
 use crate::drivers::pci::pci_msi::{MsiCapability, MsixCapability, MsixPBA};
 use crate::drivers::pci::*;
 use crate::drivers::usb::core::irq_mutex::{IrqGuard, IrqMutex};
-use crate::drivers::usb::core::usb_core::{usb_find_device, usb_register_device};
+use crate::drivers::usb::core::usb_core::{usb_find_device, usb_register_device, usb_unregister_device_by_hardware_id};
 use crate::drivers::usb::core::usb_hub::{usb_hub_send_port_reset, UsbDefaultAddressSemaphore};
 use crate::drivers::usb::core::usb_transfers::{
     UsbDevice, UsbHostController, UsbTransferRequest, UsbTransferStatus,
@@ -2370,6 +2370,12 @@ impl XHCI {
         let Some(device) = device else {
             return;
         };
+
+        //every device goes through here, also the ones without a driver
+        if let Some(xhci) = xhci_by_id(self.id) {
+            let controller: Weak<dyn UsbHostController> = Arc::downgrade(&xhci) as _;
+            usb_unregister_device_by_hardware_id(&controller, slot_id);
+        }
 
         // Requests are failed before `device` goes out of scope, because dropping it frees the
         // transfer rings and DMA buffers those requests refer to.
