@@ -180,6 +180,7 @@ fn kernel_main_post_stack() -> ! {
     kheap_init();
     double_buffering_init();
     dma_init();
+    dma32_init();
     ioremap_init();
 
     acpi_init();
@@ -205,17 +206,5 @@ pub extern "C" fn rust_main() -> ! {
 
     pmm_init();
     dir_mapping_init();
-    kheap_init();
-    double_buffering_init();
-    dma_init();
-    dma32_init();
-    ioremap_init();
-
-    acpi_init();
-    apic_bsp_init();
-    pci_init();
-
-    prng_init();
-
     switch_to_secure_stack()
 }
