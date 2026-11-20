@@ -7,6 +7,7 @@ use x86_64::{PhysAddr, VirtAddr};
 
 pub mod dir_mapping;
 pub mod dma;
+pub mod dma32;
 pub mod eba;
 pub mod kheap;
 pub mod kheap_test;
