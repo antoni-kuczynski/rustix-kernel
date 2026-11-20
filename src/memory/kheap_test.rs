@@ -7,7 +7,9 @@
 
 use crate::memory::{dma, dma32, SizeUnit};
 use crate::memory::ll_allocator::{LinkedListAllocator, ListNode};
-use crate::memory::page_tables::PageSize;
+use crate::memory::page_tables::{PageSize, PageTableEntry};
+use crate::memory::paging::{virtual_to_physical, vmm_unmap_page};
+use crate::memory::pmm::{pmm_allocate_frame, pmm_free_frame};
 use crate::{kprintln};
 use core::alloc::Layout;
 use x86_64::VirtAddr;
@@ -944,7 +946,111 @@ pub fn run_dma_tests() {
     test_dma_basic();
     test_dma_continuity();
     test_dma_fragmentation();
+    test_dma_chunk_merge_contiguity();
     kprintln!(Debug,"--- DMA TEST SUITE COMPLETED ---\n");
+}
+
+/// K1: the contiguous grow path maps a new physically contiguous chunk and add_free_region merges
+/// it with the free tail of the previous chunk. An allocation that starts in the old tail and
+/// continues into the new chunk is then virtually contiguous but physically split.
+///
+/// Uses its own LinkedListAllocator configured like the DMA pools (bypassing the contiguity check
+/// in dma.rs), placed in an unused part of the DMA32 virtual range.
+/// Returns true if the allocation is physically contiguous (bug fixed), false if K1 reproduced.
+fn test_dma_chunk_merge_contiguity() -> bool {
+    kprintln!(Debug,"[TEST] DMA chunk merge physical contiguity (K1)");
+
+    const TEST_VA_START: u64 = dma::DMA64_START + dma::DMA64_SIZE + 2 * 1_099_511_627_776;
+    const TEST_VA_SIZE: u64 = 1_099_511_627_776;
+    let page = PageSize::SIZE_4KB;
+
+    let mut allocator = LinkedListAllocator::new();
+    unsafe {
+        allocator.init(TEST_VA_START as usize, TEST_VA_SIZE as usize);
+    }
+    allocator.set_contiguous(true);
+    allocator.set_flags(
+        PageTableEntry::PRESENT
+            | PageTableEntry::WRITABLE
+            | PageTableEntry::CACHE_DISABLE
+            | PageTableEntry::WRITE_THROUGH,
+    );
+
+    let small = Layout::from_size_align(64, 64).unwrap();
+    let big = Layout::from_size_align(2 * page as usize, 64).unwrap();
+
+    unsafe {
+        // 1. first chunk: one page, A takes its first 64 bytes, the rest stays as a free tail.
+        //    A single frame comes from pmm_allocate_frame, so it is the lowest free frame.
+        let a = allocator.allocate(small);
+        assert!(!a.is_null(), "  FAIL: K1 setup allocation A failed");
+        let chunk1_phys = virtual_to_physical(VirtAddr::new(TEST_VA_START)).unwrap();
+
+        // 2. take the next lowest free frame, like the heap / page tables would in the meantime.
+        //    Everything below it is used, so the next chunk lands above it - not right after chunk 1.
+        let stolen = pmm_allocate_frame().expect("  FAIL: K1 could not take a frame from PMM");
+
+        // 3. B does not fit into the 4032 byte tail -> the pool grows by a 2 page chunk, which gets
+        //    merged with the tail, and B is carved out starting in the tail of chunk 1.
+        let b = allocator.allocate(big);
+        assert!(!b.is_null(), "  FAIL: K1 allocation B failed");
+
+        let b_virt = VirtAddr::new(b as u64);
+        let b_phys = virtual_to_physical(b_virt).unwrap();
+        // with the fix, the second chunk starts after an unmapped guard page
+        let guard_page_mapped = virtual_to_physical(VirtAddr::new(TEST_VA_START + page)).is_some();
+
+        kprintln!(Debug,
+            "  chunk1 phys={:#x}, stolen frame={:#x}, page after chunk1 mapped: {} (false = guard page)",
+            chunk1_phys.as_u64(),
+            stolen.as_u64(),
+            guard_page_mapped
+        );
+        kprintln!(Debug,
+            "  B virt={:#x}, phys={:#x}, size={}",
+            b_virt.as_u64(),
+            b_phys.as_u64(),
+            big.size()
+        );
+
+        let mut contiguous = true;
+        let b_end = b_virt.as_u64() + big.size() as u64;
+        let mut page_virt = (b_virt.as_u64() & !(page - 1)) + page;
+        while page_virt < b_end {
+            let expected = b_phys.as_u64() + (page_virt - b_virt.as_u64());
+            let actual = virtual_to_physical(VirtAddr::new(page_virt)).unwrap();
+            if actual.as_u64() != expected {
+                kprintln!(Debug,
+                    "  page virt={:#x}: expected phys {:#x}, got {:#x}",
+                    page_virt,
+                    expected,
+                    actual.as_u64()
+                );
+                contiguous = false;
+            }
+            page_virt += page;
+        }
+
+        // cleanup: unmap everything the test allocator mapped and give all frames back,
+        // guard pages are not mapped, skip them
+        let mapped_end = allocator.current_end as u64;
+        let mut addr = TEST_VA_START;
+        while addr < mapped_end {
+            if virtual_to_physical(VirtAddr::new(addr)).is_some() {
+                let frame = vmm_unmap_page(VirtAddr::new(addr));
+                pmm_free_frame(frame).ok();
+            }
+            addr += page;
+        }
+        pmm_free_frame(stolen).ok();
+
+        if contiguous {
+            kprintln!(Debug,"  OK: allocation spanning two chunks is physically contiguous");
+        } else {
+            kprintln!(Debug,"  FAIL: K1 reproduced - DMA allocation spanning two chunks is not physically contiguous");
+        }
+        contiguous
+    }
 }
 
 fn test_dma_basic() {
