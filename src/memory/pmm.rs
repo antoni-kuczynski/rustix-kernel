@@ -232,11 +232,20 @@ impl PmmBitmap {
     }
 
     pub unsafe fn allocate_contiguous(&self, requested_frame_count: u64) -> Option<PhysAddr> {
-        if requested_frame_count == 0 || requested_frame_count > self.frame_count {
-            return None;
-        }
         if requested_frame_count == 1 {
             return self.allocate_frame();
+        }
+        self.allocate_contiguous_in(requested_frame_count, self.frame_count)
+    }
+
+    pub unsafe fn allocate_contiguous_below(&self, requested_frame_count: u64, max_phys: PhysAddr) -> Option<PhysAddr> {
+        let frame_limit = (max_phys.as_u64() / FRAME_SIZE).min(self.frame_count);
+        self.allocate_contiguous_in(requested_frame_count, frame_limit)
+    }
+
+    unsafe fn allocate_contiguous_in(&self, requested_frame_count: u64, frame_limit: u64) -> Option<PhysAddr> {
+        if requested_frame_count == 0 || requested_frame_count > frame_limit {
+            return None;
         }
 
         let mut consecutive_free = 0;
@@ -244,7 +253,7 @@ impl PmmBitmap {
 
         let base_ptr = self.ptr.load(Ordering::Acquire) as *const AtomicU64;
 
-        for frame_idx in 0..self.frame_count {
+        for frame_idx in 0..frame_limit {
             let u64_idx = (frame_idx / 64) as usize;
             let bit_mask = 1u64 << (frame_idx % 64);
             let val = (*base_ptr.add(u64_idx)).load(Ordering::Acquire);
@@ -344,6 +353,11 @@ pub fn pmm_allocate_frame() -> Option<PhysAddr> {
 /// Allocates multiple contiguous frames in PMM
 pub fn pmm_allocate_contiguous(frame_count: u64) -> Option<PhysAddr> {
     unsafe { PMM_BITMAP.lock().allocate_contiguous(frame_count) }
+}
+
+/// Allocates multiple contiguous frames in PMM, the whole range ends at or below `max_phys`
+pub fn pmm_allocate_contiguous_below(frame_count: u64, max_phys: PhysAddr) -> Option<PhysAddr> {
+    unsafe { PMM_BITMAP.lock().allocate_contiguous_below(frame_count, max_phys) }
 }
 
 /// Reserves a frame range in pmm bitmap

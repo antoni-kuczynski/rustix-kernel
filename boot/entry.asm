@@ -409,6 +409,7 @@ __oldMultibootPhysAddr:
     RESD 1  ; 4 bytes
 ; ====================================================
 
+alignb 16
 stack_bottom:
     RESB 16384   ; 16kb stack space
 stack_top: ; TODO: stack overflow protection

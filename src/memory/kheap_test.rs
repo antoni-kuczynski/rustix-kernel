@@ -5,9 +5,11 @@
  * 27/04/2026
  */
 
-use crate::memory::{dma, SizeUnit};
+use crate::memory::{dma, dma32, SizeUnit};
 use crate::memory::ll_allocator::{LinkedListAllocator, ListNode};
-use crate::memory::page_tables::PageSize;
+use crate::memory::page_tables::{PageSize, PageTableEntry};
+use crate::memory::paging::{virtual_to_physical, vmm_unmap_page};
+use crate::memory::pmm::{pmm_allocate_frame, pmm_free_frame};
 use crate::{kprintln};
 use core::alloc::Layout;
 use x86_64::VirtAddr;
@@ -944,7 +946,111 @@ pub fn run_dma_tests() {
     test_dma_basic();
     test_dma_continuity();
     test_dma_fragmentation();
+    test_dma_chunk_merge_contiguity();
     kprintln!(Debug,"--- DMA TEST SUITE COMPLETED ---\n");
+}
+
+/// K1: the contiguous grow path maps a new physically contiguous chunk and add_free_region merges
+/// it with the free tail of the previous chunk. An allocation that starts in the old tail and
+/// continues into the new chunk is then virtually contiguous but physically split.
+///
+/// Uses its own LinkedListAllocator configured like the DMA pools (bypassing the contiguity check
+/// in dma.rs), placed in an unused part of the DMA32 virtual range.
+/// Returns true if the allocation is physically contiguous (bug fixed), false if K1 reproduced.
+fn test_dma_chunk_merge_contiguity() -> bool {
+    kprintln!(Debug,"[TEST] DMA chunk merge physical contiguity (K1)");
+
+    const TEST_VA_START: u64 = dma::DMA64_START + dma::DMA64_SIZE + 2 * 1_099_511_627_776;
+    const TEST_VA_SIZE: u64 = 1_099_511_627_776;
+    let page = PageSize::SIZE_4KB;
+
+    let mut allocator = LinkedListAllocator::new();
+    unsafe {
+        allocator.init(TEST_VA_START as usize, TEST_VA_SIZE as usize);
+    }
+    allocator.set_contiguous(true);
+    allocator.set_flags(
+        PageTableEntry::PRESENT
+            | PageTableEntry::WRITABLE
+            | PageTableEntry::CACHE_DISABLE
+            | PageTableEntry::WRITE_THROUGH,
+    );
+
+    let small = Layout::from_size_align(64, 64).unwrap();
+    let big = Layout::from_size_align(2 * page as usize, 64).unwrap();
+
+    unsafe {
+        // 1. first chunk: one page, A takes its first 64 bytes, the rest stays as a free tail.
+        //    A single frame comes from pmm_allocate_frame, so it is the lowest free frame.
+        let a = allocator.allocate(small);
+        assert!(!a.is_null(), "  FAIL: K1 setup allocation A failed");
+        let chunk1_phys = virtual_to_physical(VirtAddr::new(TEST_VA_START)).unwrap();
+
+        // 2. take the next lowest free frame, like the heap / page tables would in the meantime.
+        //    Everything below it is used, so the next chunk lands above it - not right after chunk 1.
+        let stolen = pmm_allocate_frame().expect("  FAIL: K1 could not take a frame from PMM");
+
+        // 3. B does not fit into the 4032 byte tail -> the pool grows by a 2 page chunk, which gets
+        //    merged with the tail, and B is carved out starting in the tail of chunk 1.
+        let b = allocator.allocate(big);
+        assert!(!b.is_null(), "  FAIL: K1 allocation B failed");
+
+        let b_virt = VirtAddr::new(b as u64);
+        let b_phys = virtual_to_physical(b_virt).unwrap();
+        // with the fix, the second chunk starts after an unmapped guard page
+        let guard_page_mapped = virtual_to_physical(VirtAddr::new(TEST_VA_START + page)).is_some();
+
+        kprintln!(Debug,
+            "  chunk1 phys={:#x}, stolen frame={:#x}, page after chunk1 mapped: {} (false = guard page)",
+            chunk1_phys.as_u64(),
+            stolen.as_u64(),
+            guard_page_mapped
+        );
+        kprintln!(Debug,
+            "  B virt={:#x}, phys={:#x}, size={}",
+            b_virt.as_u64(),
+            b_phys.as_u64(),
+            big.size()
+        );
+
+        let mut contiguous = true;
+        let b_end = b_virt.as_u64() + big.size() as u64;
+        let mut page_virt = (b_virt.as_u64() & !(page - 1)) + page;
+        while page_virt < b_end {
+            let expected = b_phys.as_u64() + (page_virt - b_virt.as_u64());
+            let actual = virtual_to_physical(VirtAddr::new(page_virt)).unwrap();
+            if actual.as_u64() != expected {
+                kprintln!(Debug,
+                    "  page virt={:#x}: expected phys {:#x}, got {:#x}",
+                    page_virt,
+                    expected,
+                    actual.as_u64()
+                );
+                contiguous = false;
+            }
+            page_virt += page;
+        }
+
+        // cleanup: unmap everything the test allocator mapped and give all frames back,
+        // guard pages are not mapped, skip them
+        let mapped_end = allocator.current_end as u64;
+        let mut addr = TEST_VA_START;
+        while addr < mapped_end {
+            if virtual_to_physical(VirtAddr::new(addr)).is_some() {
+                let frame = vmm_unmap_page(VirtAddr::new(addr));
+                pmm_free_frame(frame).ok();
+            }
+            addr += page;
+        }
+        pmm_free_frame(stolen).ok();
+
+        if contiguous {
+            kprintln!(Debug,"  OK: allocation spanning two chunks is physically contiguous");
+        } else {
+            kprintln!(Debug,"  FAIL: K1 reproduced - DMA allocation spanning two chunks is not physically contiguous");
+        }
+        contiguous
+    }
 }
 
 fn test_dma_basic() {
@@ -1043,4 +1149,188 @@ fn test_dma_fragmentation() {
     }
 
     kprintln!(Debug,"  OK: DMA fragmentation reuse test passed");
+}
+
+//==================================================================================================
+// DMA32
+//==================================================================================================
+
+pub fn run_dma32_tests() {
+    kprintln!(Debug,"\n--- STARTING DMA32 TEST SUITE ---");
+    test_dma32_basic();
+    test_dma32_continuity();
+    test_dma32_fragmentation();
+    test_dma32_zone_routing();
+    kprintln!(Debug,"--- DMA32 TEST SUITE COMPLETED ---\n");
+}
+
+fn dma32_va_range() -> (u64, u64) {
+    let start = dma::DMA64_START + dma::DMA64_SIZE;
+    (start, start + 4 * 1_099_511_627_776)
+}
+
+fn assert_dma32_alloc(alloc: &dma::DmaAlloc, size: usize, label: &str) {
+    let (va_start, va_end) = dma32_va_range();
+    assert!(
+        alloc.zone == dma::DmaZone::Dma32,
+        "{}: wrong zone {:?}",
+        label,
+        alloc.zone
+    );
+    assert!(
+        alloc.virt.as_u64() >= va_start && alloc.virt.as_u64() + size as u64 <= va_end,
+        "{}: virt {:#x} outside of the DMA32 pool",
+        label,
+        alloc.virt.as_u64()
+    );
+    assert!(
+        alloc.phys.as_u64() + size as u64 <= dma32::DMA32_PHYS_LIMIT,
+        "{}: phys {:#x} + {} is above 4 GiB",
+        label,
+        alloc.phys.as_u64(),
+        size
+    );
+}
+
+fn test_dma32_basic() {
+    kprintln!(Debug,"[TEST] DMA32 Basic Alloc/Free");
+    let size = 1024 * 1024 * 16; //16mb
+    let align = 64;
+
+    let alloc = dma32::dma32_alloc_coherent(size, align).expect("  FAIL: Basic DMA32 allocation failed");
+    kprintln!(Debug,"  Allocated 16MB DMA32 at virt: {:?}, phys: {:?}", alloc.virt, alloc.phys);
+
+    assert_dma32_alloc(&alloc, size, "DMA32 basic");
+    assert!(alloc.virt.as_u64() % align as u64 == 0, "DMA32 alignment failed");
+
+    unsafe {
+        let first = alloc.virt.as_u64() as *mut u8;
+        let last = (alloc.virt.as_u64() + size as u64 - 1) as *mut u8;
+        first.write_volatile(0xDE);
+        last.write_volatile(0xAD);
+        assert!(first.read_volatile() == 0xDE, "DMA32 read/write failed (first byte)");
+        assert!(last.read_volatile() == 0xAD, "DMA32 read/write failed (last byte)");
+    }
+
+    dma::dma_free(alloc);
+    kprintln!(Debug,"  OK: Basic DMA32 test passed");
+}
+
+fn test_dma32_continuity() {
+    kprintln!(Debug,"[TEST] DMA32 Physical Continuity");
+    let pages = 1024;
+    let size = pages * 4096;
+
+    let alloc = dma32::dma32_alloc_coherent(size, 4096).expect("  FAIL: DMA32 continuity allocation failed");
+    kprintln!(Debug,"  Allocated {} pages DMA32 at phys: {:?}", pages, alloc.phys);
+    assert_dma32_alloc(&alloc, size, "DMA32 continuity");
+
+    for i in 0..pages {
+        let offset = i * 4096;
+        let virt_page = VirtAddr::new(alloc.virt.as_u64() + offset as u64);
+        let phys_page = crate::memory::paging::virtual_to_physical(virt_page).unwrap();
+        let expected_phys = alloc.phys.as_u64() + offset as u64;
+
+        if phys_page.as_u64() != expected_phys {
+            dump_debug(dma32::DMA32_MANAGER.lock().allocator());
+        }
+
+        assert!(
+            phys_page.as_u64() == expected_phys,
+            "DMA32 continuity failed at page {}: expected {:#x}, got {:?}",
+            i,
+            expected_phys,
+            phys_page
+        );
+    }
+
+    dma::dma_free(alloc);
+    kprintln!(Debug,"  OK: DMA32 physical continuity verified");
+}
+
+fn test_dma32_fragmentation() {
+    kprintln!(Debug,"[TEST] DMA32 Fragmentation and Reuse");
+    let size = 4096;
+    let mut allocs: [Option<dma::DmaAlloc>; 8] = Default::default();
+
+    for i in 0..8 {
+        allocs[i] = dma32::dma32_alloc_coherent(size, size);
+        assert!(allocs[i].is_some(), "  FAIL: DMA32 fragmentation seed allocation {} failed", i);
+        assert_dma32_alloc(allocs[i].as_ref().unwrap(), size, "DMA32 fragmentation seed");
+    }
+
+    // free every second one and remember the holes
+    let mut holes = [0u64; 4];
+    for (hole, i) in (0..8).step_by(2).enumerate() {
+        if let Some(a) = allocs[i].take() {
+            holes[hole] = a.virt.as_u64();
+            dma::dma_free(a);
+        }
+    }
+
+    let a1 = dma32::dma32_alloc_coherent(size, size).expect("Failed to reuse DMA32 hole 1");
+    let a2 = dma32::dma32_alloc_coherent(size, size).expect("Failed to reuse DMA32 hole 2");
+    assert_dma32_alloc(&a1, size, "DMA32 hole 1");
+    assert_dma32_alloc(&a2, size, "DMA32 hole 2");
+    assert!(
+        holes.contains(&a1.virt.as_u64()) && holes.contains(&a2.virt.as_u64()),
+        "DMA32 holes were not reused: a1={:#x}, a2={:#x}",
+        a1.virt.as_u64(),
+        a2.virt.as_u64()
+    );
+
+    dma::dma_free(a1);
+    dma::dma_free(a2);
+
+    for i in (1..8).step_by(2) {
+        if let Some(a) = allocs[i].take() {
+            dma::dma_free(a);
+        }
+    }
+
+    kprintln!(Debug,"  OK: DMA32 fragmentation reuse test passed");
+}
+
+/// Interleaves DMA64 and DMA32 allocations, checks that each lands in its own pool
+/// and that freeing goes back to the right one (a freed block must be reusable by its own pool)
+fn test_dma32_zone_routing() {
+    kprintln!(Debug,"[TEST] DMA32 / DMA64 Zone Routing");
+    let size = 4096;
+    let dma64_end = dma::DMA64_START + dma::DMA64_SIZE;
+
+    let a64 = dma::dma_alloc_coherent(size, size).expect("  FAIL: DMA64 allocation failed");
+    let a32 = dma32::dma32_alloc_coherent(size, size).expect("  FAIL: DMA32 allocation failed");
+
+    assert!(a64.zone == dma::DmaZone::Dma64, "DMA64 allocation has zone {:?}", a64.zone);
+    assert!(
+        a64.virt.as_u64() >= dma::DMA64_START && a64.virt.as_u64() + size as u64 <= dma64_end,
+        "DMA64 virt {:#x} outside of the DMA64 pool",
+        a64.virt.as_u64()
+    );
+    assert_dma32_alloc(&a32, size, "DMA32 routing");
+
+    let a64_virt = a64.virt.as_u64();
+    let a32_virt = a32.virt.as_u64();
+    dma::dma_free(a32);
+    dma::dma_free(a64);
+
+    let b32 = dma32::dma32_alloc_coherent(size, size).expect("  FAIL: DMA32 re-allocation failed");
+    let b64 = dma::dma_alloc_coherent(size, size).expect("  FAIL: DMA64 re-allocation failed");
+
+    assert!(
+        b32.virt.as_u64() == a32_virt,
+        "DMA32 block was not returned to the DMA32 pool: expected {:#x}, got {:#x}",
+        a32_virt,
+        b32.virt.as_u64()
+    );
+    assert!(
+        b64.virt.as_u64() == a64_virt,
+        "DMA64 block was not returned to the DMA64 pool: expected {:#x}, got {:#x}",
+        a64_virt,
+        b64.virt.as_u64()
+    );
+
+    dma::dma_free(b32);
+    dma::dma_free(b64);
+    kprintln!(Debug,"  OK: DMA32 / DMA64 zone routing test passed");
 }

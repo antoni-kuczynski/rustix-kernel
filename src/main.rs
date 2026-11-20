@@ -26,6 +26,7 @@ use crate::interrupts::gdt::gdt_init;
 use crate::interrupts::{idt_init, interrupts_enable};
 use crate::memory::dir_mapping::dir_mapping_init;
 use crate::memory::dma::dma_init;
+use crate::memory::dma32::dma32_init;
 use crate::memory::eba::{eba_init};
 use crate::memory::ioremap::ioremap_init;
 use crate::memory::kheap::kheap_init;
@@ -159,6 +160,7 @@ pub extern "C" fn rust_main() -> ! {
     kheap_init();
     double_buffering_init();
     dma_init();
+    dma32_init();
     ioremap_init();
 
     acpi_init();

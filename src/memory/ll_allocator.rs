@@ -459,30 +459,77 @@ impl LinkedListAllocator {
 
             // we didnt find a region, so allocate new pages to make room for that
             unsafe {
-                let map_start = self.current_end.add(PageSize::SIZE_4KB as usize - 1)
+                let mut map_start = self.current_end.add(PageSize::SIZE_4KB as usize - 1)
                     & !(PageSize::SIZE_4KB as usize - 1);
                 let alloc_start = map_start.add(align - 1) & !(align - 1);
                 let alloc_end = alloc_start.add(size);
-                let map_end = alloc_end.add(PageSize::SIZE_4KB as usize - 1)
+                let mut map_end = alloc_end.add(PageSize::SIZE_4KB as usize - 1)
                     & !(PageSize::SIZE_4KB as usize - 1);
 
-                let map_size = map_end - map_start;
+                let mut map_size = map_end - map_start;
                 let frame_count = (map_size / PageSize::SIZE_4KB as usize) as u64;
 
                 if self.is_contiguous {
-                    let frame_addr = pmm_allocate_contiguous(frame_count);
-                    if frame_addr.is_none() {
+                    let page_size = PageSize::SIZE_4KB as usize;
+
+                    let Some(mut frame_addr) = pmm_allocate_contiguous(frame_count) else {
+                        kprintln!(Error, "[ALLOCATOR] Contiguous grow: PMM could not allocate {} contiguous frames.", frame_count);
+                        return None;
+                    };
+
+                    // add_free_region merges the new chunk with a free tail of the previous chunk,
+                    // so an allocation could start in the old chunk and continue into the new one.
+                    // That is only correct if the new frames continue the previous ones physically.
+                    // If they don't, the chunk starts one unmapped guard page further, regions that
+                    // are not virtually adjacent are never merged.
+                    if self.current_end > self.global_start {
+                        let Some(prev_last_phys) = virtual_to_physical(VirtAddr::new((self.current_end - 1) as u64)) else {
+                            kprintln!(Error, "[ALLOCATOR] Contiguous grow: last pool byte {:#x} is not mapped.", self.current_end - 1);
+                            pmm_free_range(frame_addr, map_size as u64).ok();
+                            return None;
+                        };
+
+                        let physically_adjacent = map_start == self.current_end
+                            && prev_last_phys.as_u64() + 1 == frame_addr.as_u64();
+
+                        if !physically_adjacent {
+                            let guarded_start = map_start + page_size;
+                            let guarded_alloc_start = align_up(guarded_start, align);
+                            let guarded_end = align_up(guarded_alloc_start + size, page_size);
+                            let guarded_size = guarded_end - guarded_start;
+
+                            // a big alignment can need a different amount of frames after the shift
+                            if guarded_size != map_size {
+                                pmm_free_range(frame_addr, map_size as u64).ok();
+                                let guarded_frame_count = (guarded_size / page_size) as u64;
+                                let Some(new_frames) = pmm_allocate_contiguous(guarded_frame_count) else {
+                                    kprintln!(Error, "[ALLOCATOR] Contiguous grow: PMM could not allocate {} contiguous frames for the guarded chunk.", guarded_frame_count);
+                                    return None;
+                                };
+                                frame_addr = new_frames;
+                            }
+
+                            map_start = guarded_start;
+                            map_end = guarded_end;
+                            map_size = guarded_size;
+                        }
+                    }
+
+                    if map_end > self.global_end {
+                        kprintln!(Error, "[ALLOCATOR] Contiguous grow: chunk {:#x}..{:#x} exceeds the pool end {:#x}.", map_start, map_end, self.global_end);
+                        pmm_free_range(frame_addr, map_size as u64).ok();
                         return None;
                     }
 
                     if !vmm_map_range_ext(
                         VirtAddr::new(map_start as u64),
-                        frame_addr.unwrap(),
+                        frame_addr,
                         map_size as u64,
                         &PageSize::Size4Kb,
                         self.flags,
                     ) {
-                        pmm_free_range(frame_addr.unwrap(), map_size as u64).ok();
+                        kprintln!(Error, "[ALLOCATOR] Contiguous grow: mapping {:#x}..{:#x} to phys {:#x} failed.", map_start, map_end, frame_addr.as_u64());
+                        pmm_free_range(frame_addr, map_size as u64).ok();
                         return None;
                     }
                 } else {
