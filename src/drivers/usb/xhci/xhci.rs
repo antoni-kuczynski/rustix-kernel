@@ -129,6 +129,10 @@ const MAX_DCI: u8 = 31;
 const MAX_EP_HALT_ATTEMPTS: usize = 5;
 /// A normal hub port holds the default address for a reset (<= 800 ms limit) and a few commands
 const DEFAULT_ADDRESS_TIMEOUT_MS: u64 = 5000;
+const COMMAND_TIMEOUT_MS: u64 = 5000;
+const CONTROL_TRANSFER_TIMEOUT_MS: u64 = 5000;
+/// CRCR bit 2, Command Abort
+const COMMAND_RING_ABORT: u64 = 1 << 2;
 
 fn runtime_interrupter_offset(interrupter: u8) -> u64 {
     interrupter as u64 * INTERRUPTER_REGISTER_STRIDE
@@ -989,6 +993,24 @@ impl XhciDevice {
 
     /// Whether `trb` completes the descriptor read the driver issued for itself, consuming the
     /// record if it does.
+    /// Requests whose TRBs are on the EP0 transfer ring, the ones waiting for a command
+    /// (keyed by the command TRB) stay.
+    fn take_ep0_ring_requests(&mut self) -> Vec<Arc<IrqMutex<UsbTransferRequest>>> {
+        let Some(ep0) = self.transfer_rings[EP0_DCI as usize].as_ref() else {
+            return Vec::new();
+        };
+        let first_trb = ep0.ring.ring().trb_phys(0).as_u64();
+        let last_trb = ep0.ring.ring().trb_phys(TRANSFER_RING_TRBS - 1).as_u64();
+
+        let keys: Vec<TrbPhysAddr> = self.pending_requests
+            .keys()
+            .filter(|trb| (first_trb..=last_trb).contains(&trb.0))
+            .copied()
+            .collect();
+
+        keys.into_iter().filter_map(|trb| self.pending_requests.remove(&trb)).collect()
+    }
+
     fn take_descriptor_probe(&mut self, trb: TrbPhysAddr) -> bool {
         if self.descriptor_probe_trb == Some(trb) {
             self.descriptor_probe_trb = None;
@@ -1372,7 +1394,74 @@ impl XHCI {
         unsafe { _mm_mfence() }
         self.regs.ring_command_doorbell();
 
+        self.start_command_timeout(phys);
         Ok(phys)
+    }
+
+    fn start_command_timeout(&self, command_trb_phys: PhysAddr) {
+        defer_with_xhci(self.id, COMMAND_TIMEOUT_MS, move |xhci| {
+            let dequeue_phys = xhci.commands.lock().ring.ring().get_dequeue_phys();
+            if dequeue_phys != command_trb_phys {
+                return;
+            }
+
+            kprintln_xhci!(Warn, "Command at {:#x} did not complete in {} ms, aborting it.", command_trb_phys.as_u64(), COMMAND_TIMEOUT_MS);
+            //while the ring runs, only the stop and abort bits of CRCR are used
+            unsafe { mmio_write::<u64>(xhci.regs.operational_base, OP_REG_CRCR as u64, COMMAND_RING_ABORT) };
+        });
+    }
+
+    fn start_control_transfer_timeout(&self, slot_id: u8, request_trb: TrbPhysAddr) {
+        defer_with_xhci(self.id, CONTROL_TRANSFER_TIMEOUT_MS, move |xhci| {
+            let Some(device) = xhci.device_from_slot_id(slot_id) else {
+                return;
+            };
+
+            //the max packet size probe has no request, a device that does not answer it is dropped
+            let is_descriptor_probe = device.lock().take_descriptor_probe(request_trb);
+            if is_descriptor_probe {
+                kprintln_xhci!(Warn, "[SLOT {}] Device did not answer the max packet size probe in {} ms, disabling it.", slot_id, CONTROL_TRANSFER_TIMEOUT_MS);
+                let location = device.lock().location();
+                unsafe { xhci.disable_device_slot(location, slot_id) };
+                return;
+            }
+
+            {
+                let mut dev = device.lock();
+                if !dev.pending_requests.contains_key(&request_trb) {
+                    return;
+                }
+
+                let Some(ring) = dev.transfer_rings[EP0_DCI as usize].as_mut() else {
+                    return;
+                };
+                //a halt being handled right now owns the endpoint, its own path finishes the request
+                if ring.halted_request.is_some() || ring.halt_reason != XhciHaltReason::None {
+                    return;
+                }
+
+                //a timed out SET_CONFIGURATION or hub descriptor never reaches the completion that
+                //moves the state on, so a later control transfer would be routed by the stale state
+                dev.configuration_state = match dev.configuration_state {
+                    PendingSetConfiguration => XhciDeviceConfigurationState::Unconfigured,
+                    PendingHubConfiguration { .. } => Configured,
+                    configuration_state => configuration_state,
+                };
+
+                let request = dev.take_pending(request_trb);
+                let Some(ring) = dev.transfer_rings[EP0_DCI as usize].as_mut() else {
+                    return;
+                };
+                ring.halted_request = request;
+                ring.halt_reason = XhciHaltReason::UnknownError;
+            }
+
+            kprintln_xhci!(Warn, "[SLOT {}] Control transfer did not complete in {} ms, stopping EP0.", slot_id, CONTROL_TRANSFER_TIMEOUT_MS);
+            if let Err(error) = xhci.cancel_request_for_device(slot_id, EP0_DCI) {
+                kprintln_xhci!(Error, "[SLOT {}] Sending Stop Endpoint for the timed out control transfer failed: {:?}.", slot_id, error);
+                let _ = xhci.take_halted_request_and_submit_error(slot_id, EP0_DCI);
+            }
+        });
     }
 
     fn device_from_slot_id(&self, slot_id: u8) -> Option<Arc<IrqMutex<XhciDevice>>> {
@@ -1815,6 +1904,12 @@ impl XHCI {
     unsafe fn on_command_completion(self: &Arc<Self>, trb: CommandCompletionEventTrb) {
         let command_trb_phys = PhysAddr::new(trb.command_trb_pointer());
 
+        if trb.completion_code() == TrbCompletionCode::COMMAND_RING_STOPPED {
+            kprintln_xhci_debug!("Command ring stopped at {:#x}, restarting it.", command_trb_phys.as_u64());
+            self.regs.ring_command_doorbell();
+            return;
+        }
+
         let context = {
             let mut commands = self.commands.lock();
             if !commands.contains(command_trb_phys) {
@@ -1855,6 +1950,7 @@ impl XHCI {
             Trb::TRB_CONFIGURE_ENDPOINT_COMMAND => self.on_endpoint_configured(trb),
             Trb::TRB_RESET_ENDPOINT_COMMAND => self.on_endpoint_reset_completion(trb, command_trb),
             Trb::TRB_SET_DEQUEUE_PTR_COMMAND => self.on_set_dequeue_ptr_completion(trb, command_trb),
+            Trb::TRB_STOP_ENDPOINT_COMMAND => self.on_stop_endpoint_completion(trb, command_trb),
             other => {
                 kprintln_xhci!(
                     Warn,
@@ -2207,7 +2303,10 @@ impl XHCI {
         };
 
         match issued {
-            Ok(_) => self.regs.ring_doorbell(slot_id, EP0_DCI, 0),
+            Ok(status_stage_trb) => {
+                self.regs.ring_doorbell(slot_id, EP0_DCI, 0);
+                self.start_control_transfer_timeout(slot_id, status_stage_trb);
+            }
             Err(error) => {
                 kprintln_xhci!(
                     Error,
@@ -2408,6 +2507,51 @@ impl XHCI {
         }
     }
 
+    fn on_stop_endpoint_completion(&self, command_completion_trb: CommandCompletionEventTrb, command_trb: Trb) {
+        let command = match StopEndpointCommandTrb::from_raw(command_trb) {
+            Ok(command) => command,
+            Err(error) => {
+                kprintln_xhci!(Error, "StopEndpoint parse error: {:?}", error);
+                return;
+            }
+        };
+        let slot_id = command.slot_id();
+        let dci = command.endpoint_id();
+
+        //CONTEXT_STATE_ERROR: the endpoint already stopped or halted on its own, it is still moved
+        let code = command_completion_trb.completion_code();
+        if code != TrbCompletionCode::SUCCESS && code != TrbCompletionCode::CONTEXT_STATE_ERROR {
+            kprintln_xhci!(Error, "[SLOT {}] [DCI={}] Stop Endpoint failed with completion code {}.", slot_id, dci, code);
+            let _ = self.take_halted_request_and_submit_error(slot_id, dci);
+            return;
+        }
+
+        //moving to the enqueue pointer skips every TD queued on EP0, so their requests are failed
+        //now, otherwise their own timeouts would move the dequeue pointer over newer requests
+        let mut skipped_requests = Vec::new();
+        let dequeue_target = self.device_from_slot_id(slot_id).and_then(|device| {
+            let mut dev = device.lock();
+            if dci == EP0_DCI {
+                skipped_requests = dev.take_ep0_ring_requests();
+            }
+            let ring = dev.transfer_rings.get_mut(dci as usize)?.as_mut()?;
+            ring.ring.get_enqueue_phys().ok().map(|address| (address, ring.ring.cycle_state()))
+        });
+
+        for request in skipped_requests {
+            complete_request(request, UsbTransferStatus::Error, 0);
+        }
+
+        match dequeue_target {
+            Some((new_address, dequeue_cycle_state)) => {
+                self.set_new_tr_dequeue_pointer(new_address, slot_id, dci, dequeue_cycle_state);
+            }
+            None => {
+                let _ = self.take_halted_request_and_submit_error(slot_id, dci);
+            }
+        }
+    }
+
     fn on_set_dequeue_ptr_completion(&self, command_completion_trb: CommandCompletionEventTrb, command_trb: Trb) {
         let command = match SetTrDequeuePointerCommandTrb::from_raw(command_trb) {
             Ok(cmd) => cmd,
@@ -2449,6 +2593,10 @@ impl XHCI {
         }
 
         kprintln_xhci_debug!( "Completed SET_DEQUEUE_PTR command for EP with DCI={}", dci);
+
+        //requests submitted during the halt are on the ring without a doorbell, an empty ring
+        //makes this a no-op for the controller
+        self.regs.ring_doorbell(slot_id, dci, 0);
 
         let (request, is_within_attempts) = {
             let dev_lock = match self.device_from_slot_id(slot_id) {
@@ -2655,6 +2803,13 @@ impl XHCI {
             TrbCompletionCode::SPLIT_TRANSACTION_ERROR => {
                 let soft_reset_requested = false;
                 self.reset_halted_endpoint(&device, slot_id, endpoint_dci, event_trb, completion_code, soft_reset_requested);
+                return;
+            }
+
+            TrbCompletionCode::STOPPED |
+            TrbCompletionCode::STOPPED_LENGTH_INVALID |
+            TrbCompletionCode::STOPPED_SHORT_PACKET => {
+                kprintln_xhci_debug!("[SLOT {}] [DCI={}] Endpoint stopped at {:#x}.", slot_id, endpoint_dci, event_trb.0);
                 return;
             }
 
@@ -3846,7 +4001,7 @@ impl UsbHostController for XHCI {
             }
         }
 
-        {
+        let should_ring_doorbell = {
             let mut dev_lock = dev.lock();
             let issued = match setup_packet {
                 Some(setup) => unsafe {
@@ -3872,9 +4027,23 @@ impl UsbHostController for XHCI {
 
             let trb_phys = issued.map_err(|_| "Failed to enqueue the transfer TRBs.")?;
             dev_lock.insert_pending(trb_phys, request.clone());
-        }
 
-        self.regs.ring_doorbell(slot_id, dci, 0);
+            //interrupt IN is meant to wait forever, only control transfers get a timeout
+            if dci == EP0_DCI {
+                self.start_control_transfer_timeout(slot_id, trb_phys);
+            }
+
+            //while a halted request waits for Set TR Dequeue, a doorbell would restart the endpoint
+            //and make Set TR Dequeue fail; on_set_dequeue_ptr_completion rings it afterwards
+            dev_lock.transfer_rings
+                .get(dci as usize)
+                .and_then(|ring| ring.as_ref())
+                .is_none_or(|ring| ring.halted_request.is_none())
+        };
+
+        if should_ring_doorbell {
+            self.regs.ring_doorbell(slot_id, dci, 0);
+        }
 
         Ok(())
     }

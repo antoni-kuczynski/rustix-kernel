@@ -1353,6 +1353,18 @@ impl StopEndpointCommandTrb {
         Self { raw }
     }
 
+    pub fn from_raw(raw: Trb) -> Result<Self, TrbParseError> {
+        let actual = raw.trb_type();
+        if actual != Trb::TRB_STOP_ENDPOINT_COMMAND {
+            return Err(TrbParseError::UnexpectedType {
+                expected: Trb::TRB_STOP_ENDPOINT_COMMAND,
+                actual,
+            });
+        }
+
+        Ok(Self { raw })
+    }
+
     pub fn endpoint_id(&self) -> u8 {
         ((self.raw.control() >> 16) & 0x1F) as u8
     }
